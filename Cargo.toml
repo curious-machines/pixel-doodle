@@ -15,7 +15,10 @@ cranelift-backend = [
 llvm-backend = ["dep:inkwell"]
 
 [dependencies]
-minifb = "0.28"
+wgpu = "25"
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
 rayon = "1.10"
 
 # Cranelift (optional)

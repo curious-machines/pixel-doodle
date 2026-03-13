@@ -1,6 +1,6 @@
 # Running pixel-doodle with Different Backends
 
-pixel-doodle supports three backends for computing the Mandelbrot fractal: a native Rust implementation and two JIT compilers (Cranelift and LLVM). This lets you compare compile speed versus code quality across approaches.
+pixel-doodle supports four backends for computing the Mandelbrot fractal: a native Rust implementation, two JIT compilers (Cranelift and LLVM), and a GPU compute backend via wgpu. This lets you compare compile speed, code quality, and CPU vs GPU performance.
 
 ## Backends
 
@@ -9,6 +9,7 @@ pixel-doodle supports three backends for computing the Mandelbrot fractal: a nat
 | `native`   | Plain Rust, compiled ahead of time   | (always available)   | 0ms          | Best (rustc) |
 | `cranelift` | JIT compiled at startup via Cranelift | `cranelift-backend`  | ~1ms         | Good         |
 | `llvm`     | JIT compiled at startup via LLVM     | `llvm-backend`       | ~8ms         | Very good    |
+| `gpu`      | WGSL compute shader via wgpu         | (always available)   | 0ms          | GPU-native   |
 
 ## Quick Start
 
@@ -21,6 +22,9 @@ cargo run --release -- --backend cranelift
 
 # LLVM backend (requires feature flag + system LLVM)
 cargo run --release --features llvm-backend -- --backend llvm
+
+# GPU compute backend
+cargo run --release -- --backend gpu
 ```
 
 ## Building
@@ -82,6 +86,9 @@ cargo run --release -- --backend cranelift
 
 # LLVM JIT (must be compiled with --features llvm-backend)
 cargo run --release --features llvm-backend -- --backend llvm
+
+# GPU compute
+cargo run --release -- --backend gpu
 ```
 
 If no `--backend` is specified, `native` is used.
@@ -89,8 +96,18 @@ If no `--backend` is specified, `native` is used.
 If you request a backend that wasn't compiled in, the program prints the available backends and exits:
 
 ```
-Unknown backend 'llvm'. Available: native, cranelift
+Unknown backend 'llvm'. Available: native, gpu, cranelift
 ```
+
+## GPU Backend Notes
+
+The GPU backend runs a WGSL compute shader (`src/gpu/mandelbrot.wgsl`) via wgpu. It uses whatever GPU is available (Vulkan, Metal, or DX12 depending on platform).
+
+Key differences from the CPU backends:
+
+- **Precision**: Uses f32 instead of f64. At deep zoom levels you will see precision artifacts sooner than with the CPU backends.
+- **No CPU pixel buffer**: The compute shader writes directly to a GPU storage buffer, which is copied to the display texture. No data crosses the CPU-GPU boundary.
+- **No JIT**: The shader is a handwritten WGSL file, not generated from the custom language IR. It exists for performance comparison, not as a compilation target.
 
 ## Window Title
 
@@ -103,7 +120,7 @@ cranelift | 4.2ms | 1.0x | compile 1.2ms
 - The backend name
 - Render time for the current frame
 - Current zoom level
-- One-time JIT compile time (0ms for native)
+- One-time JIT compile time (0ms for native; omitted for GPU)
 
 ## Controls
 
