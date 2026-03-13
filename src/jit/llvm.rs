@@ -1,4 +1,5 @@
 use inkwell::context::Context;
+use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
 use inkwell::values::FunctionValue;
 use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
@@ -83,6 +84,15 @@ fn compile_mandelbrot(max_iter: u32) -> LlvmKernel {
 
     let function = module.add_function("mandelbrot_tile", fn_type, None);
     build_mandelbrot_body(context, &module, function, max_iter);
+
+    // Run the full O3 optimization pipeline on the IR.
+    // This is critical: it runs mem2reg (promotes allocas to SSA registers),
+    // loop unrolling, auto-vectorization, and other passes that transform
+    // our naive alloca-based IR into efficient code.
+    let pass_options = PassBuilderOptions::create();
+    module
+        .run_passes("default<O3>", &machine, pass_options)
+        .expect("failed to run LLVM optimization passes");
 
     let engine = module
         .create_jit_execution_engine(OptimizationLevel::Aggressive)
