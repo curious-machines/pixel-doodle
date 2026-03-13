@@ -43,12 +43,14 @@ fn compile_mandelbrot(max_iter: u32) -> LlvmKernel {
     Target::initialize_native(&InitializationConfig::default())
         .expect("failed to initialize native target");
     let triple = TargetMachine::get_default_triple();
+    let cpu = TargetMachine::get_host_cpu_name();
+    let features = TargetMachine::get_host_cpu_features();
     let target = Target::from_triple(&triple).unwrap();
     let machine = target
         .create_target_machine(
             &triple,
-            "native",
-            "",
+            cpu.to_str().unwrap(),
+            features.to_str().unwrap(),
             OptimizationLevel::Aggressive,
             RelocMode::Default,
             CodeModel::JITDefault,
