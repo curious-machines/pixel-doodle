@@ -3,6 +3,27 @@ name = "pixel-doodle"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["cranelift-backend"]
+cranelift-backend = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:target-lexicon",
+]
+llvm-backend = ["dep:inkwell"]
+
 [dependencies]
 minifb = "0.28"
 rayon = "1.10"
+
+# Cranelift (optional)
+cranelift-codegen = { version = "0.116", optional = true }
+cranelift-frontend = { version = "0.116", optional = true }
+cranelift-jit = { version = "0.116", optional = true }
+cranelift-module = { version = "0.116", optional = true }
+target-lexicon = { version = "0.12", optional = true }
+
+# LLVM via inkwell (optional)
+inkwell = { version = "0.5", optional = true, features = ["llvm18-0"] }

@@ -1,67 +1,83 @@
+mod jit;
+mod kernel_ir;
+mod native_kernel;
+mod render;
+
+use jit::TileKernelFn;
+use kernel_ir::KernelIr;
 use minifb::{Key, Window, WindowOptions};
-use rayon::prelude::*;
 use std::time::Instant;
 
 const WIDTH: usize = 1200;
 const HEIGHT: usize = 900;
 const MAX_ITER: u32 = 256;
 
-fn mandelbrot(cx: f64, cy: f64) -> u32 {
-    let mut zx = 0.0;
-    let mut zy = 0.0;
-    let mut i = 0;
-    while zx * zx + zy * zy <= 4.0 && i < MAX_ITER {
-        let tmp = zx * zx - zy * zy + cx;
-        zy = 2.0 * zx * zy + cy;
-        zx = tmp;
-        i += 1;
+fn parse_backend() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() - 1 {
+        if args[i] == "--backend" {
+            return args[i + 1].clone();
+        }
     }
-    i
-}
-
-fn iter_to_color(iter: u32) -> u32 {
-    if iter == MAX_ITER {
-        return 0x00_00_00;
-    }
-    // Smooth coloring using a simple palette
-    let t = iter as f64 / MAX_ITER as f64;
-    let r = (9.0 * (1.0 - t) * t * t * t * 255.0) as u32;
-    let g = (15.0 * (1.0 - t) * (1.0 - t) * t * t * 255.0) as u32;
-    let b = (8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t * 255.0) as u32;
-    (r.min(255) << 16) | (g.min(255) << 8) | b.min(255)
-}
-
-fn render(buffer: &mut [u32], center_x: f64, center_y: f64, zoom: f64) {
-    let aspect = WIDTH as f64 / HEIGHT as f64;
-    let view_w = 3.5 / zoom;
-    let view_h = view_w / aspect;
-    let x_min = center_x - view_w / 2.0;
-    let y_min = center_y - view_h / 2.0;
-
-    buffer
-        .par_chunks_mut(WIDTH)
-        .enumerate()
-        .for_each(|(row, pixels)| {
-            let cy = y_min + (row as f64 / HEIGHT as f64) * view_h;
-            for (col, pixel) in pixels.iter_mut().enumerate() {
-                let cx = x_min + (col as f64 / WIDTH as f64) * view_w;
-                *pixel = iter_to_color(mandelbrot(cx, cy));
-            }
-        });
+    "native".to_string()
 }
 
 fn main() {
+    let backend_name = parse_backend();
+
+    let compile_start = Instant::now();
+
+    let (kernel_fn, label): (TileKernelFn, &str) = match backend_name.as_str() {
+        "native" => (native_kernel::native_mandelbrot_kernel, "native"),
+
+        #[cfg(feature = "cranelift-backend")]
+        "cranelift" => {
+            let backend = jit::cranelift::CraneliftBackend;
+            let ir = KernelIr::Mandelbrot { max_iter: MAX_ITER };
+            let compiled = jit::JitBackend::compile(&backend, &ir);
+            // Leak the compiled kernel so the function pointer lives forever.
+            // We only compile once, so this is fine.
+            let kernel: &'static dyn jit::CompiledKernel = Box::leak(compiled);
+            (kernel.function_ptr(), "cranelift")
+        }
+
+        #[cfg(feature = "llvm-backend")]
+        "llvm" => {
+            let backend = jit::llvm::LlvmBackend;
+            let ir = KernelIr::Mandelbrot { max_iter: MAX_ITER };
+            let compiled = jit::JitBackend::compile(&backend, &ir);
+            let kernel: &'static dyn jit::CompiledKernel = Box::leak(compiled);
+            (kernel.function_ptr(), "llvm")
+        }
+
+        other => {
+            let mut available = vec!["native"];
+            #[cfg(feature = "cranelift-backend")]
+            available.push("cranelift");
+            #[cfg(feature = "llvm-backend")]
+            available.push("llvm");
+            eprintln!(
+                "Unknown backend '{}'. Available: {}",
+                other,
+                available.join(", ")
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("[{label}] compile: {compile_ms:.1}ms");
+
     let mut buffer = vec![0u32; WIDTH * HEIGHT];
 
     let mut window = Window::new(
-        "pixel-doodle — Mandelbrot",
+        &format!("pixel-doodle [{label}]"),
         WIDTH,
         HEIGHT,
         WindowOptions::default(),
     )
     .expect("failed to create window");
 
-    // ~60 fps cap
     window.set_target_fps(60);
 
     let mut center_x = -0.5;
@@ -101,10 +117,10 @@ fn main() {
 
         if moved || needs_render {
             let t0 = Instant::now();
-            render(&mut buffer, center_x, center_y, zoom);
+            render::render(&mut buffer, WIDTH, HEIGHT, center_x, center_y, zoom, kernel_fn);
             let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
             window.set_title(&format!(
-                "Mandelbrot | {render_ms:.1}ms | {zoom:.1}x"
+                "{label} | {render_ms:.1}ms | {zoom:.1}x | compile {compile_ms:.1}ms"
             ));
             needs_render = false;
         }
