@@ -34,6 +34,8 @@ enum Token {
     Or,
     Min,
     Max,
+    Atan2,
+    Pow,
     // Comparison ops
     Eq_,
     Ne,
@@ -48,6 +50,20 @@ enum Token {
     Sqrt,
     Floor,
     Ceil,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Exp,
+    Exp2,
+    Log,
+    Log2,
+    Log10,
+    Round,
+    Trunc,
+    Fract,
     // Conversion ops
     F64ToU32,
     U32ToF64,
@@ -137,6 +153,22 @@ fn keyword_lookup(word: &str) -> Token {
         "sqrt" => Token::Sqrt,
         "floor" => Token::Floor,
         "ceil" => Token::Ceil,
+        "sin" => Token::Sin,
+        "cos" => Token::Cos,
+        "tan" => Token::Tan,
+        "asin" => Token::Asin,
+        "acos" => Token::Acos,
+        "atan" => Token::Atan,
+        "atan2" => Token::Atan2,
+        "exp" => Token::Exp,
+        "exp2" => Token::Exp2,
+        "log" => Token::Log,
+        "log2" => Token::Log2,
+        "log10" => Token::Log10,
+        "pow" => Token::Pow,
+        "round" => Token::Round,
+        "trunc" => Token::Trunc,
+        "fract" => Token::Fract,
         "f64_to_u32" => Token::F64ToU32,
         "u32_to_f64" => Token::U32ToF64,
         "true" => Token::True,
@@ -479,7 +511,7 @@ impl Parser {
                 self.advance();
                 self.parse_const_literal(declared_ty)
             }
-            Token::Add | Token::Sub | Token::Mul | Token::Div | Token::Rem | Token::Min | Token::Max => {
+            Token::Add | Token::Sub | Token::Mul | Token::Div | Token::Rem | Token::Min | Token::Max | Token::Atan2 | Token::Pow => {
                 let op = match sp.token {
                     Token::Add => BinOp::Add,
                     Token::Sub => BinOp::Sub,
@@ -488,6 +520,8 @@ impl Parser {
                     Token::Rem => BinOp::Rem,
                     Token::Min => BinOp::Min,
                     Token::Max => BinOp::Max,
+                    Token::Atan2 => BinOp::Atan2,
+                    Token::Pow => BinOp::Pow,
                     _ => unreachable!(),
                 };
                 self.advance();
@@ -574,11 +608,30 @@ impl Parser {
                 self.check_types_match(ScalarType::Bool, self.var_ty(arg), "arg", line, col)?;
                 Ok(Inst::Unary { op: UnaryOp::Not, arg })
             }
-            Token::Sqrt | Token::Floor | Token::Ceil => {
+            Token::Sqrt | Token::Floor | Token::Ceil
+            | Token::Sin | Token::Cos | Token::Tan
+            | Token::Asin | Token::Acos | Token::Atan
+            | Token::Exp | Token::Exp2
+            | Token::Log | Token::Log2 | Token::Log10
+            | Token::Round | Token::Trunc | Token::Fract => {
                 let op = match sp.token {
                     Token::Sqrt => UnaryOp::Sqrt,
                     Token::Floor => UnaryOp::Floor,
                     Token::Ceil => UnaryOp::Ceil,
+                    Token::Sin => UnaryOp::Sin,
+                    Token::Cos => UnaryOp::Cos,
+                    Token::Tan => UnaryOp::Tan,
+                    Token::Asin => UnaryOp::Asin,
+                    Token::Acos => UnaryOp::Acos,
+                    Token::Atan => UnaryOp::Atan,
+                    Token::Exp => UnaryOp::Exp,
+                    Token::Exp2 => UnaryOp::Exp2,
+                    Token::Log => UnaryOp::Log,
+                    Token::Log2 => UnaryOp::Log2,
+                    Token::Log10 => UnaryOp::Log10,
+                    Token::Round => UnaryOp::Round,
+                    Token::Trunc => UnaryOp::Trunc,
+                    Token::Fract => UnaryOp::Fract,
                     _ => unreachable!(),
                 };
                 self.advance();
@@ -1072,6 +1125,18 @@ kernel carry_test(x: f64, y: f64) -> u32 {
         let printed = crate::lang::printer::print(&kernel);
         let kernel2 = parse(&printed).unwrap();
         assert_eq!(kernel2.name, kernel.name);
+    }
+
+    #[test]
+    fn test_parse_sdf_flower() {
+        let src = include_str!("../../examples/sdf_flower.pdl");
+        let kernel = parse(src).unwrap();
+        assert_eq!(kernel.name, "sdf_flower");
+        // Verify roundtrip
+        let printed = crate::lang::printer::print(&kernel);
+        let kernel2 = parse(&printed).unwrap();
+        assert_eq!(kernel2.name, kernel.name);
+        assert_eq!(kernel2.body.len(), kernel.body.len());
     }
 
     #[test]

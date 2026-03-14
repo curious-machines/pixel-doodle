@@ -250,6 +250,8 @@ fn binop_name(op: BinOp) -> &'static str {
         BinOp::Or => "or",
         BinOp::Min => "min",
         BinOp::Max => "max",
+        BinOp::Atan2 => "atan2",
+        BinOp::Pow => "pow",
     }
 }
 
@@ -272,6 +274,20 @@ fn unaryop_name(op: UnaryOp) -> &'static str {
         UnaryOp::Sqrt => "sqrt",
         UnaryOp::Floor => "floor",
         UnaryOp::Ceil => "ceil",
+        UnaryOp::Sin => "sin",
+        UnaryOp::Cos => "cos",
+        UnaryOp::Tan => "tan",
+        UnaryOp::Asin => "asin",
+        UnaryOp::Acos => "acos",
+        UnaryOp::Atan => "atan",
+        UnaryOp::Exp => "exp",
+        UnaryOp::Exp2 => "exp2",
+        UnaryOp::Log => "log",
+        UnaryOp::Log2 => "log2",
+        UnaryOp::Log10 => "log10",
+        UnaryOp::Round => "round",
+        UnaryOp::Trunc => "trunc",
+        UnaryOp::Fract => "fract",
     }
 }
 

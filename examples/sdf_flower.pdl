@@ -1,0 +1,87 @@
+# SDF scene: six-petal flower + concentric ring, blended with smooth min.
+# Uses polar coords (atan2, sqrt), sinusoidal modulation (sin, cos),
+# exponential smooth min (exp, log), glow falloff (exp), gamma (pow).
+kernel sdf_flower(x: f64, y: f64) -> u32 {
+    # ── Polar coordinates ──
+    x2: f64 = mul x x
+    y2: f64 = mul y y
+    r2: f64 = add x2 y2
+    r: f64 = sqrt r2
+    angle: f64 = atan2 y x
+
+    # ── Flower SDF: circle modulated by sin(6θ) ──
+    a6: f64 = mul angle 6.0
+    wave: f64 = sin a6
+    petal: f64 = mul wave 0.12
+    flower_r: f64 = add 0.45 petal
+    d_flower: f64 = sub r flower_r
+
+    # ── Ring SDF: |r - 0.85| - 0.04 ──
+    ring_d: f64 = sub r 0.85
+    ring_abs: f64 = abs ring_d
+    d_ring: f64 = sub ring_abs 0.04
+
+    # ── Smooth min (exponential, k=12) ──
+    # smin(a,b) = -ln(e^{-ka} + e^{-kb}) / k
+    k: f64 = const 12.0
+    ka: f64 = mul k d_flower
+    neg_ka: f64 = neg ka
+    kb: f64 = mul k d_ring
+    neg_kb: f64 = neg kb
+    ea: f64 = exp neg_ka
+    eb: f64 = exp neg_kb
+    esum: f64 = add ea eb
+    log_sum: f64 = log esum
+    neg_log: f64 = neg log_sum
+    d: f64 = div neg_log k
+
+    # ── Brightness: sharp fill + soft glow halo ──
+    # fill = clamp(-d * 40, 0, 1)  — hard edge for inside
+    neg_d: f64 = neg d
+    sharp: f64 = mul neg_d 40.0
+    sharp_lo: f64 = max sharp 0.0
+    fill: f64 = min sharp_lo 1.0
+
+    # glow = exp(-|d| * 6)  — soft falloff around edges
+    abs_d: f64 = abs d
+    fall: f64 = mul abs_d 6.0
+    neg_fall: f64 = neg fall
+    glow: f64 = exp neg_fall
+    glow_scaled: f64 = mul glow 0.4
+
+    bright: f64 = add fill glow_scaled
+    brightness: f64 = min bright 1.0
+
+    # ── Angular rainbow hue: 0.5 + 0.5·cos(θ + phase) ──
+    r_cos: f64 = cos angle
+    r_hue: f64 = mul r_cos 0.5
+    r_base: f64 = add 0.5 r_hue
+
+    g_off: f64 = add angle 2.094
+    g_cos: f64 = cos g_off
+    g_hue: f64 = mul g_cos 0.5
+    g_base: f64 = add 0.5 g_hue
+
+    b_off: f64 = add angle 4.189
+    b_cos: f64 = cos b_off
+    b_hue: f64 = mul b_cos 0.5
+    b_base: f64 = add 0.5 b_hue
+
+    # ── Gamma correction: pow(hue, 0.8) to lift midtones ──
+    r_gamma: f64 = pow r_base 0.8
+    g_gamma: f64 = pow g_base 0.8
+    b_gamma: f64 = pow b_base 0.8
+
+    # ── Final color = hue × brightness × 255 ──
+    r_lit: f64 = mul r_gamma brightness
+    g_lit: f64 = mul g_gamma brightness
+    b_lit: f64 = mul b_gamma brightness
+    r_f: f64 = mul r_lit 255.0
+    g_f: f64 = mul g_lit 255.0
+    b_f: f64 = mul b_lit 255.0
+    r_u: u32 = f64_to_u32 r_f
+    g_u: u32 = f64_to_u32 g_f
+    b_u: u32 = f64_to_u32 b_f
+    pixel: u32 = pack_argb r_u g_u b_u
+    emit pixel
+}

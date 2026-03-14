@@ -370,6 +370,8 @@ fn lower_inst(
                 (BinOp::Max, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.maxnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 (BinOp::Min, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umin.i32", l.into_int_value(), r.into_int_value(), i32_type),
                 (BinOp::Max, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umax.i32", l.into_int_value(), r.into_int_value(), i32_type),
+                (BinOp::Atan2, ScalarType::F64) => call_libm_f64_binary(context, module, builder, "atan2", l.into_float_value(), r.into_float_value()),
+                (BinOp::Pow, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.pow.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }
@@ -391,6 +393,23 @@ fn lower_inst(
                 }
                 (UnaryOp::Ceil, _) => {
                     call_f64_intrinsic(module, builder, "llvm.ceil.f64", a.into_float_value(), f64_type)
+                }
+                (UnaryOp::Sin, _) => call_f64_intrinsic(module, builder, "llvm.sin.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Cos, _) => call_f64_intrinsic(module, builder, "llvm.cos.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Tan, _) => call_libm_f64(context, module, builder, "tan", a.into_float_value()),
+                (UnaryOp::Asin, _) => call_libm_f64(context, module, builder, "asin", a.into_float_value()),
+                (UnaryOp::Acos, _) => call_libm_f64(context, module, builder, "acos", a.into_float_value()),
+                (UnaryOp::Atan, _) => call_libm_f64(context, module, builder, "atan", a.into_float_value()),
+                (UnaryOp::Exp, _) => call_f64_intrinsic(module, builder, "llvm.exp.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Exp2, _) => call_f64_intrinsic(module, builder, "llvm.exp2.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Log, _) => call_f64_intrinsic(module, builder, "llvm.log.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Log2, _) => call_f64_intrinsic(module, builder, "llvm.log2.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Log10, _) => call_f64_intrinsic(module, builder, "llvm.log10.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Round, _) => call_f64_intrinsic(module, builder, "llvm.round.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Trunc, _) => call_f64_intrinsic(module, builder, "llvm.trunc.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Fract, _) => {
+                    let floored = call_f64_intrinsic(module, builder, "llvm.floor.f64", a.into_float_value(), f64_type);
+                    builder.build_float_sub(a.into_float_value(), floored.into_float_value(), "fract").unwrap().into()
                 }
                 _ => unreachable!("invalid unary op/type combination"),
             }
@@ -457,6 +476,43 @@ fn lower_inst(
             builder.build_or(color, bv, "argb").unwrap().into()
         }
     }
+}
+
+fn call_libm_f64(
+    context: &'static Context,
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    name: &str,
+    arg: inkwell::values::FloatValue<'static>,
+) -> BasicValueEnum<'static> {
+    let f64_type = context.f64_type();
+    let fn_type = f64_type.fn_type(&[f64_type.into()], false);
+    let func = module.get_function(name)
+        .unwrap_or_else(|| module.add_function(name, fn_type, Some(inkwell::module::Linkage::External)));
+    builder.build_call(func, &[arg.into()], name)
+        .unwrap()
+        .try_as_basic_value()
+        .left()
+        .unwrap()
+}
+
+fn call_libm_f64_binary(
+    context: &'static Context,
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    name: &str,
+    lhs: inkwell::values::FloatValue<'static>,
+    rhs: inkwell::values::FloatValue<'static>,
+) -> BasicValueEnum<'static> {
+    let f64_type = context.f64_type();
+    let fn_type = f64_type.fn_type(&[f64_type.into(), f64_type.into()], false);
+    let func = module.get_function(name)
+        .unwrap_or_else(|| module.add_function(name, fn_type, Some(inkwell::module::Linkage::External)));
+    builder.build_call(func, &[lhs.into(), rhs.into()], name)
+        .unwrap()
+        .try_as_basic_value()
+        .left()
+        .unwrap()
 }
 
 fn call_f64_binary_intrinsic(

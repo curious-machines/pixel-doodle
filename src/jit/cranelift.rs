@@ -176,7 +176,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let cy = builder.ins().fma(row_f64, y_step, y_min);
 
     // Lower kernel body
-    let color = lower_kernel_body(&mut builder, kernel, cx, cy, &mut var_alloc);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, &mut var_alloc);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -241,6 +241,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
 
 /// Lower kernel IR body into Cranelift instructions.
 fn lower_kernel_body(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     cx: cranelift_codegen::ir::Value,
@@ -253,12 +254,13 @@ fn lower_kernel_body(
     val_map.insert(Var(0), cx);
     val_map.insert(Var(1), cy);
 
-    lower_body_items(builder, kernel, &kernel.body, &mut val_map, var_alloc);
+    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map, var_alloc);
 
     val_map[&kernel.emit]
 }
 
 fn lower_body_items(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     body: &[BodyItem],
@@ -268,17 +270,18 @@ fn lower_body_items(
     for item in body {
         match item {
             BodyItem::Stmt(stmt) => {
-                let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
+                let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(builder, kernel, w, val_map, var_alloc);
+                lower_while(module, builder, kernel, w, val_map, var_alloc);
             }
         }
     }
 }
 
 fn lower_while(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     w: &While,
@@ -320,7 +323,7 @@ fn lower_while(
 
     // Lower cond_body
     for stmt in &w.cond_body {
-        let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
+        let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
         val_map.insert(stmt.binding.var, v);
     }
 
@@ -333,7 +336,7 @@ fn lower_while(
     builder.seal_block(loop_body);
 
     for stmt in &w.body {
-        let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
+        let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
         val_map.insert(stmt.binding.var, v);
     }
 
@@ -359,7 +362,40 @@ fn lower_while(
     }
 }
 
+fn call_libm_f64_unary(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder,
+    name: &str,
+    arg: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(F64));
+    sig.returns.push(AbiParam::new(F64));
+    let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(func_ref, &[arg]);
+    builder.inst_results(call)[0]
+}
+
+fn call_libm_f64_binary(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder,
+    name: &str,
+    lhs: cranelift_codegen::ir::Value,
+    rhs: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(F64));
+    sig.params.push(AbiParam::new(F64));
+    sig.returns.push(AbiParam::new(F64));
+    let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(func_ref, &[lhs, rhs]);
+    builder.inst_results(call)[0]
+}
+
 fn lower_inst(
+    module: &mut JITModule,
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     inst: &Inst,
@@ -402,6 +438,8 @@ fn lower_inst(
                 (BinOp::Max, ScalarType::F64) => builder.ins().fmax(l, r),
                 (BinOp::Min, ScalarType::U32) => builder.ins().umin(l, r),
                 (BinOp::Max, ScalarType::U32) => builder.ins().umax(l, r),
+                (BinOp::Atan2, ScalarType::F64) => call_libm_f64_binary(module, builder, "atan2", l, r),
+                (BinOp::Pow, ScalarType::F64) => call_libm_f64_binary(module, builder, "pow", l, r),
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }
@@ -422,6 +460,23 @@ fn lower_inst(
                 (UnaryOp::Sqrt, _) => builder.ins().sqrt(a),
                 (UnaryOp::Floor, _) => builder.ins().floor(a),
                 (UnaryOp::Ceil, _) => builder.ins().ceil(a),
+                (UnaryOp::Sin, _) => call_libm_f64_unary(module, builder, "sin", a),
+                (UnaryOp::Cos, _) => call_libm_f64_unary(module, builder, "cos", a),
+                (UnaryOp::Tan, _) => call_libm_f64_unary(module, builder, "tan", a),
+                (UnaryOp::Asin, _) => call_libm_f64_unary(module, builder, "asin", a),
+                (UnaryOp::Acos, _) => call_libm_f64_unary(module, builder, "acos", a),
+                (UnaryOp::Atan, _) => call_libm_f64_unary(module, builder, "atan", a),
+                (UnaryOp::Exp, _) => call_libm_f64_unary(module, builder, "exp", a),
+                (UnaryOp::Exp2, _) => call_libm_f64_unary(module, builder, "exp2", a),
+                (UnaryOp::Log, _) => call_libm_f64_unary(module, builder, "log", a),
+                (UnaryOp::Log2, _) => call_libm_f64_unary(module, builder, "log2", a),
+                (UnaryOp::Log10, _) => call_libm_f64_unary(module, builder, "log10", a),
+                (UnaryOp::Round, _) => builder.ins().nearest(a),
+                (UnaryOp::Trunc, _) => builder.ins().trunc(a),
+                (UnaryOp::Fract, _) => {
+                    let floored = builder.ins().floor(a);
+                    builder.ins().fsub(a, floored)
+                }
                 _ => unreachable!("invalid unary op/type combination"),
             }
         }

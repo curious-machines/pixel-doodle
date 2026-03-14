@@ -56,6 +56,8 @@ pub enum BinOp {
     Or,
     Min,
     Max,
+    Atan2,
+    Pow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,20 @@ pub enum UnaryOp {
     Sqrt,
     Floor,
     Ceil,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Exp,
+    Exp2,
+    Log,
+    Log2,
+    Log10,
+    Round,
+    Trunc,
+    Fract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

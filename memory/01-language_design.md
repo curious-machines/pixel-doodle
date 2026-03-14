@@ -252,6 +252,12 @@ Both backends split into:
 | `PackArgb(r,g,b)` | shift+or sequence | shift+or sequence |
 | `Select(c,t,f)` | `select` | `build_select` |
 
+### LLVM 18 libm workaround
+
+Five math intrinsics were added in LLVM 19 and don't exist in LLVM 18's intrinsic table: `llvm.tan.f64`, `llvm.asin.f64`, `llvm.acos.f64`, `llvm.atan.f64`, `llvm.atan2.f64`. The LLVM backend calls these as external libm functions (`tan`, `asin`, `acos`, `atan`, `atan2`) instead, declared with `Linkage::External` and resolved by OrcJIT from the host process. The remaining intrinsics (`sin`, `cos`, `exp`, `exp2`, `log`, `log2`, `log10`, `pow`, `sqrt`, `fabs`, `floor`, `ceil`, `round`, `trunc`, `minnum`, `maxnum`) are standard LLVM intrinsics that work on LLVM 18.
+
+**When upgrading to LLVM 19+:** replace the 5 `call_libm_f64`/`call_libm_f64_binary` calls in `src/jit/llvm.rs` with their corresponding `call_f64_intrinsic`/`call_f64_binary_intrinsic` equivalents (see `Sin`/`Cos` arms for the pattern). The `call_libm_f64` and `call_libm_f64_binary` helpers can then be removed if no longer needed.
+
 ### While Loop Lowering
 
 - **Cranelift**: Carry vars become `Variable`s (Cranelift's SSA construction handles phi insertion). Loop header block reads vars, runs cond_body, branches to body or exit. Body runs, updates vars with yield values, jumps back to header.
