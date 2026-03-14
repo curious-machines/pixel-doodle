@@ -210,6 +210,12 @@ impl App {
                     self.zoom /= zoom_factor;
                     moved = true;
                 }
+                KeyCode::Digit0 | KeyCode::Numpad0 => {
+                    self.center_x = -0.5;
+                    self.center_y = 0.0;
+                    self.zoom = 1.0;
+                    moved = true;
+                }
                 _ => {}
             }
         }
@@ -255,7 +261,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    if code == KeyCode::Escape && event.state == ElementState::Pressed {
+                    if (code == KeyCode::Escape || code == KeyCode::KeyQ) && event.state == ElementState::Pressed {
                         event_loop.exit();
                         return;
                     }
