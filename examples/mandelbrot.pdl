@@ -1,0 +1,61 @@
+kernel mandelbrot {
+    max_iter: u32 = const 256
+    zero: f64 = const 0.0
+    four: f64 = const 4.0
+    i_zero: u32 = const 0
+
+    while carry(zx: f64 = zero, zy: f64 = zero, iter: u32 = i_zero) {
+        # Escape check: |z|^2 > 4 or iter >= max_iter
+        zx2: f64 = mul zx zx
+        zy2: f64 = mul zy zy
+        mag: f64 = add zx2 zy2
+        escaped: bool = gt mag four
+        too_many: bool = ge iter max_iter
+        done: bool = or escaped too_many
+        cont: bool = not done
+        cond cont
+
+        # z = z^2 + c  (where c = x + yi)
+        new_zx: f64 = sub zx2 zy2
+        new_zx2: f64 = add new_zx x
+        zxzy: f64 = mul zx zy
+        new_zy: f64 = mul zxzy 2.0
+        new_zy2: f64 = add new_zy y
+        new_iter: u32 = add iter 1
+        yield new_zx2 new_zy2 new_iter
+    }
+
+    # Color mapping: polynomial approximation
+    is_inside: bool = eq iter max_iter
+    t: f64 = u32_to_f64 iter
+    max_f: f64 = u32_to_f64 max_iter
+    t_norm: f64 = div t max_f
+    one_minus_t: f64 = sub 1.0 t_norm
+
+    # r = 9 * (1-t) * t^3 * 255
+    t2: f64 = mul t_norm t_norm
+    t3: f64 = mul t2 t_norm
+    r_base: f64 = mul 9.0 one_minus_t
+    r_base2: f64 = mul r_base t3
+    r_f: f64 = mul r_base2 255.0
+    r_raw: u32 = f64_to_u32 r_f
+
+    # g = 15 * (1-t)^2 * t^2 * 255
+    omt2: f64 = mul one_minus_t one_minus_t
+    g_base: f64 = mul 15.0 omt2
+    g_base2: f64 = mul g_base t2
+    g_f: f64 = mul g_base2 255.0
+    g_raw: u32 = f64_to_u32 g_f
+
+    # b = 8.5 * (1-t)^3 * t * 255
+    omt3: f64 = mul omt2 one_minus_t
+    b_base: f64 = mul 8.5 omt3
+    b_base2: f64 = mul b_base t_norm
+    b_f: f64 = mul b_base2 255.0
+    b_raw: u32 = f64_to_u32 b_f
+
+    black: u32 = const 0
+    color: u32 = pack_argb r_raw g_raw b_raw
+    pixel: u32 = select is_inside black color
+    emit pixel
+}

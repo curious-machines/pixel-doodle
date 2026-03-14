@@ -32,6 +32,22 @@ impl JitBackend for CraneliftBackend {
     }
 }
 
+/// Tracks next available Cranelift Variable index.
+struct VarAlloc {
+    next: u32,
+}
+
+impl VarAlloc {
+    fn new(start: u32) -> Self {
+        Self { next: start }
+    }
+    fn alloc(&mut self) -> Variable {
+        let v = Variable::from_u32(self.next);
+        self.next += 1;
+        v
+    }
+}
+
 fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -65,7 +81,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let mut fb_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut func, &mut fb_ctx);
 
-    // -- Tile loop variables --
+    // -- Tile loop variables (indices 0-9) --
     let v_output = Variable::from_u32(0);
     let v_width = Variable::from_u32(1);
     let v_x_min = Variable::from_u32(2);
@@ -87,6 +103,9 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     builder.declare_var(v_row_end, I32);
     builder.declare_var(v_row, I32);
     builder.declare_var(v_col, I32);
+
+    // Variable allocator starts after tile loop variables
+    let mut var_alloc = VarAlloc::new(10);
 
     // -- Blocks --
     let entry_block = builder.create_block();
@@ -157,7 +176,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let cy = builder.ins().fma(row_f64, y_step, y_min);
 
     // Lower kernel body
-    let color = lower_kernel_body(&mut builder, kernel, cx, cy);
+    let color = lower_kernel_body(&mut builder, kernel, cx, cy, &mut var_alloc);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -226,6 +245,7 @@ fn lower_kernel_body(
     kernel: &Kernel,
     cx: cranelift_codegen::ir::Value,
     cy: cranelift_codegen::ir::Value,
+    var_alloc: &mut VarAlloc,
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
@@ -233,12 +253,110 @@ fn lower_kernel_body(
     val_map.insert(Var(0), cx);
     val_map.insert(Var(1), cy);
 
-    for stmt in &kernel.body {
-        let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, &val_map);
+    lower_body_items(builder, kernel, &kernel.body, &mut val_map, var_alloc);
+
+    val_map[&kernel.emit]
+}
+
+fn lower_body_items(
+    builder: &mut FunctionBuilder,
+    kernel: &Kernel,
+    body: &[BodyItem],
+    val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
+    var_alloc: &mut VarAlloc,
+) {
+    for item in body {
+        match item {
+            BodyItem::Stmt(stmt) => {
+                let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
+                val_map.insert(stmt.binding.var, v);
+            }
+            BodyItem::While(w) => {
+                lower_while(builder, kernel, w, val_map, var_alloc);
+            }
+        }
+    }
+}
+
+fn lower_while(
+    builder: &mut FunctionBuilder,
+    kernel: &Kernel,
+    w: &While,
+    val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
+    var_alloc: &mut VarAlloc,
+) {
+    // Cranelift uses Variables for SSA construction (like mutable locals).
+    // We allocate a Variable for each carry var, def it with the initial value,
+    // then update it each iteration.
+
+    let loop_header = builder.create_block();
+    let loop_body = builder.create_block();
+    let loop_exit = builder.create_block();
+
+    // Declare Variables for carry vars and initialize them
+    let carry_vars: Vec<Variable> = w.carry.iter().map(|cv| {
+        let cl_var = var_alloc.alloc();
+        let cl_ty = match cv.binding.ty {
+            ScalarType::F64 => F64,
+            ScalarType::U32 => I32,
+            ScalarType::Bool => I8,
+        };
+        builder.declare_var(cl_var, cl_ty);
+        let init_val = val_map[&cv.init];
+        builder.def_var(cl_var, init_val);
+        cl_var
+    }).collect();
+
+    builder.ins().jump(loop_header, &[]);
+
+    // -- Loop header: read carry vars, execute cond_body, branch --
+    builder.switch_to_block(loop_header);
+
+    // Map carry vars from Cranelift Variables
+    for (i, cv) in w.carry.iter().enumerate() {
+        let val = builder.use_var(carry_vars[i]);
+        val_map.insert(cv.binding.var, val);
+    }
+
+    // Lower cond_body
+    for stmt in &w.cond_body {
+        let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
         val_map.insert(stmt.binding.var, v);
     }
 
-    val_map[&kernel.emit]
+    // Branch on cond
+    let cond_val = val_map[&w.cond];
+    builder.ins().brif(cond_val, loop_body, &[], loop_exit, &[]);
+
+    // -- Loop body --
+    builder.switch_to_block(loop_body);
+    builder.seal_block(loop_body);
+
+    for stmt in &w.body {
+        let v = lower_inst(builder, kernel, &stmt.inst, &stmt.binding, val_map);
+        val_map.insert(stmt.binding.var, v);
+    }
+
+    // Update carry Variables with yield values
+    for (i, yv) in w.yields.iter().enumerate() {
+        let val = val_map[yv];
+        builder.def_var(carry_vars[i], val);
+    }
+
+    builder.ins().jump(loop_header, &[]);
+
+    // Seal blocks now that all predecessors are known
+    builder.seal_block(loop_header);
+    builder.seal_block(loop_exit);
+
+    // Continue after loop
+    builder.switch_to_block(loop_exit);
+
+    // Re-read carry vars for use after the loop
+    for (i, cv) in w.carry.iter().enumerate() {
+        let val = builder.use_var(carry_vars[i]);
+        val_map.insert(cv.binding.var, val);
+    }
 }
 
 fn lower_inst(

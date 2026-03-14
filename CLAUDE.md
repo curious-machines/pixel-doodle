@@ -24,9 +24,9 @@ Two viable stacks were evaluated:
 
 Key JIT tradeoff: LLVM provides auto-vectorization; Cranelift does not but compiles faster. AsmJIT supports both x86_64 and AArch64.
 
-## Custom Language
+## Custom Language (PDL — Pixel Doodle Language)
 
-The project includes a small custom language designed for AI-assisted generation. Design principles:
+The project includes a small custom language called **PDL** (Pixel Doodle Language), designed for AI-assisted generation. Design principles:
 - SSA form (every value assigned once, named)
 - Explicit types everywhere — no inference, no implicit conversions
 - Flat over nested — sequence of named assignments over deep expression trees

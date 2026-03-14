@@ -11,6 +11,10 @@ enum Token {
     Const_,
     Select,
     PackArgb,
+    While,
+    Carry,
+    Cond,
+    Yield,
     // Types
     TyF64,
     TyU32,
@@ -53,6 +57,9 @@ enum Token {
     // Punctuation
     LBrace,
     RBrace,
+    LParen,
+    RParen,
+    Comma,
     Colon,
     Equals,
     // Identifier (anything not a keyword)
@@ -94,6 +101,10 @@ fn keyword_lookup(word: &str) -> Token {
         "const" => Token::Const_,
         "select" => Token::Select,
         "pack_argb" => Token::PackArgb,
+        "while" => Token::While,
+        "carry" => Token::Carry,
+        "cond" => Token::Cond,
+        "yield" => Token::Yield,
         "f64" => Token::TyF64,
         "u32" => Token::TyU32,
         "bool" => Token::TyBool,
@@ -162,6 +173,18 @@ fn lex(input: &str) -> Result<Vec<Spanned>, ParseError> {
             }
             '}' => {
                 tokens.push(Spanned { token: Token::RBrace, line, col });
+                chars.next();
+            }
+            '(' => {
+                tokens.push(Spanned { token: Token::LParen, line, col });
+                chars.next();
+            }
+            ')' => {
+                tokens.push(Spanned { token: Token::RParen, line, col });
+                chars.next();
+            }
+            ',' => {
+                tokens.push(Spanned { token: Token::Comma, line, col });
                 chars.next();
             }
             ':' => {
@@ -650,6 +673,155 @@ impl Parser {
         }
     }
 
+    /// Parse a single statement: `name: type = instruction`
+    fn parse_statement(&mut self) -> Result<(Statement, Vec<Statement>), ParseError> {
+        let (var_name, line, col) = self.expect_ident()?;
+        self.expect_tok(&Token::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect_tok(&Token::Equals)?;
+
+        self.implicit_stmts.clear();
+        let inst = self.parse_instruction(ty, line, col)?;
+
+        let implicits = std::mem::take(&mut self.implicit_stmts);
+        let var = self.alloc_var(var_name.clone(), ty, line, col)?;
+        let stmt = Statement {
+            binding: Binding { var, name: var_name, ty },
+            inst,
+        };
+        Ok((stmt, implicits))
+    }
+
+    /// Parse a while loop: `while carry(name: type = init, ...) { ... cond var ... yield v1 v2 ... }`
+    fn parse_while(&mut self) -> Result<While, ParseError> {
+        let while_sp = self.expect_tok(&Token::While)?;
+        self.expect_tok(&Token::Carry)?;
+        self.expect_tok(&Token::LParen)?;
+
+        // Save outer scope for cleanup
+        let outer_vars: HashMap<String, Var> = self.vars.clone();
+
+        // Parse carry variable declarations
+        let mut carry = Vec::new();
+        loop {
+            let sp = self.peek().clone();
+            if sp.token == Token::RParen {
+                self.advance();
+                break;
+            }
+            if !carry.is_empty() {
+                self.expect_tok(&Token::Comma)?;
+            }
+            let (name, line, col) = self.expect_ident()?;
+            self.expect_tok(&Token::Colon)?;
+            let ty = self.parse_type()?;
+            self.expect_tok(&Token::Equals)?;
+            let init = self.resolve_var_ident()?;
+            self.check_types_match(ty, self.var_ty(init), &format!("carry var '{name}' init"), line, col)?;
+
+            let var = self.alloc_var(name.clone(), ty, line, col)?;
+            carry.push(CarryVar {
+                binding: Binding { var, name, ty },
+                init,
+            });
+        }
+
+        if carry.is_empty() {
+            return Err(ParseError {
+                line: while_sp.line,
+                col: while_sp.col,
+                message: "while loop must have at least one carry variable".to_string(),
+            });
+        }
+
+        self.expect_tok(&Token::LBrace)?;
+
+        // Parse cond_body: statements until `cond`
+        let mut cond_body = Vec::new();
+        loop {
+            let sp = self.peek().clone();
+            match sp.token {
+                Token::Cond => break,
+                Token::RBrace | Token::Eof => {
+                    return Err(ParseError {
+                        line: sp.line,
+                        col: sp.col,
+                        message: "expected 'cond' in while body".to_string(),
+                    });
+                }
+                _ => {
+                    let (stmt, implicits) = self.parse_statement()?;
+                    for imp in implicits {
+                        cond_body.push(imp);
+                    }
+                    cond_body.push(stmt);
+                }
+            }
+        }
+
+        // Parse `cond <var>`
+        self.expect_tok(&Token::Cond)?;
+        let (cond_name, cond_line, cond_col) = self.expect_ident()?;
+        let cond = self.resolve_var(&cond_name, cond_line, cond_col)?;
+        self.check_types_match(ScalarType::Bool, self.var_ty(cond), "cond", cond_line, cond_col)?;
+
+        // Parse body: statements until `yield`
+        let mut body = Vec::new();
+        loop {
+            let sp = self.peek().clone();
+            match sp.token {
+                Token::Yield => break,
+                Token::RBrace | Token::Eof => {
+                    return Err(ParseError {
+                        line: sp.line,
+                        col: sp.col,
+                        message: "expected 'yield' in while body".to_string(),
+                    });
+                }
+                _ => {
+                    let (stmt, implicits) = self.parse_statement()?;
+                    for imp in implicits {
+                        body.push(imp);
+                    }
+                    body.push(stmt);
+                }
+            }
+        }
+
+        // Parse `yield v1 v2 ...`
+        let yield_sp = self.expect_tok(&Token::Yield)?;
+        let mut yields = Vec::new();
+        for (i, cv) in carry.iter().enumerate() {
+            let (name, line, col) = self.expect_ident()?;
+            let var = self.resolve_var(&name, line, col)?;
+            self.check_types_match(cv.binding.ty, self.var_ty(var),
+                &format!("yield[{}] for carry var '{}'", i, cv.binding.name), line, col)?;
+            yields.push(var);
+        }
+
+        if yields.len() != carry.len() {
+            return Err(ParseError {
+                line: yield_sp.line,
+                col: yield_sp.col,
+                message: format!("yield has {} values but {} carry variables", yields.len(), carry.len()),
+            });
+        }
+
+        self.expect_tok(&Token::RBrace)?;
+
+        // Restore outer scope but keep carry vars visible
+        let carry_entries: Vec<(String, Var, ScalarType)> = carry.iter()
+            .map(|cv| (cv.binding.name.clone(), cv.binding.var, cv.binding.ty))
+            .collect();
+        self.vars = outer_vars;
+        for (name, var, ty) in carry_entries {
+            self.vars.insert(name, var);
+            self.var_types.insert(var, ty);
+        }
+
+        Ok(While { carry, cond_body, cond, body, yields })
+    }
+
     fn parse_kernel(&mut self) -> Result<Kernel, ParseError> {
         self.expect_tok(&Token::Kernel)?;
         let (name, _line, _col) = self.expect_ident()?;
@@ -675,23 +847,16 @@ impl Parser {
                         message: "unexpected end of file, expected 'emit'".to_string(),
                     });
                 }
+                Token::While => {
+                    let w = self.parse_while()?;
+                    body.push(BodyItem::While(w));
+                }
                 _ => {
-                    let (var_name, line, col) = self.expect_ident()?;
-                    self.expect_tok(&Token::Colon)?;
-                    let ty = self.parse_type()?;
-                    self.expect_tok(&Token::Equals)?;
-
-                    self.implicit_stmts.clear();
-                    let inst = self.parse_instruction(ty, line, col)?;
-
-                    // Drain implicit const statements first
-                    body.append(&mut self.implicit_stmts);
-
-                    let var = self.alloc_var(var_name.clone(), ty, line, col)?;
-                    body.push(Statement {
-                        binding: Binding { var, name: var_name, ty },
-                        inst,
-                    });
+                    let (stmt, implicits) = self.parse_statement()?;
+                    for imp in implicits {
+                        body.push(BodyItem::Stmt(imp));
+                    }
+                    body.push(BodyItem::Stmt(stmt));
                 }
             }
         }
@@ -810,5 +975,93 @@ kernel bad {
         let kernel2 = parse(&printed).unwrap();
         assert_eq!(kernel2.name, kernel.name);
         assert_eq!(kernel2.body.len(), kernel.body.len());
+    }
+
+    #[test]
+    fn test_parse_while_basic() {
+        let src = r#"
+kernel loop_test {
+    zero: f64 = const 0.0
+    limit: f64 = const 10.0
+    init_i: u32 = const 0
+    while carry(val: f64 = zero, i: u32 = init_i) {
+        done: bool = ge val limit
+        cont: bool = not done
+        cond cont
+        new_val: f64 = add val 1.0
+        new_i: u32 = add i 1
+        yield new_val new_i
+    }
+    result: u32 = f64_to_u32 val
+    pixel: u32 = pack_argb result result result
+    emit pixel
+}
+"#;
+        let kernel = parse(src).unwrap();
+        assert_eq!(kernel.name, "loop_test");
+        // Check that while body item exists
+        let has_while = kernel.body.iter().any(|item| matches!(item, BodyItem::While(_)));
+        assert!(has_while, "expected a while body item");
+    }
+
+    #[test]
+    fn test_parse_while_carry_vars_live_after() {
+        // Carry vars (val, i) should be accessible after the while
+        let src = r#"
+kernel carry_test {
+    zero: f64 = const 0.0
+    init_i: u32 = const 0
+    while carry(val: f64 = zero, i: u32 = init_i) {
+        done: bool = ge i 5
+        cont: bool = not done
+        cond cont
+        new_val: f64 = add val 1.0
+        new_i: u32 = add i 1
+        yield new_val new_i
+    }
+    # val and i should be in scope here
+    result: u32 = f64_to_u32 val
+    pixel: u32 = pack_argb result i result
+    emit pixel
+}
+"#;
+        let kernel = parse(src).unwrap();
+        assert_eq!(kernel.name, "carry_test");
+    }
+
+    #[test]
+    fn test_parse_mandelbrot() {
+        let src = include_str!("../../examples/mandelbrot.pdl");
+        let kernel = parse(src).unwrap();
+        assert_eq!(kernel.name, "mandelbrot");
+        // Verify roundtrip
+        let printed = crate::lang::printer::print(&kernel);
+        let kernel2 = parse(&printed).unwrap();
+        assert_eq!(kernel2.name, kernel.name);
+    }
+
+    #[test]
+    fn test_parse_while_inner_vars_not_visible_outside() {
+        // Variables defined inside the while body should not be visible after it
+        let src = r#"
+kernel scope_test {
+    zero: f64 = const 0.0
+    init_i: u32 = const 0
+    while carry(val: f64 = zero, i: u32 = init_i) {
+        done: bool = ge i 5
+        cont: bool = not done
+        cond cont
+        new_val: f64 = add val 1.0
+        new_i: u32 = add i 1
+        yield new_val new_i
+    }
+    # 'done' and 'cont' should NOT be in scope here
+    oops: bool = not done
+    pixel: u32 = pack_argb i i i
+    emit pixel
+}
+"#;
+        let err = parse(src).unwrap_err();
+        assert!(err.message.contains("undefined variable"), "got: {}", err.message);
     }
 }

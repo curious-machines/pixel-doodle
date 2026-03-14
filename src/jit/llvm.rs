@@ -177,7 +177,7 @@ fn build_tile_loop(
     let row_step = builder.build_float_mul(row_f, p_y_step, "row_step").unwrap();
     let cy = builder.build_float_add(p_y_min, row_step, "cy").unwrap();
 
-    let color = lower_kernel_body(context, module, &builder, kernel, cx, cy);
+    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy);
 
     // Store pixel
     let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
@@ -216,6 +216,7 @@ fn lower_kernel_body(
     context: &'static Context,
     module: &Module<'static>,
     builder: &inkwell::builder::Builder<'static>,
+    function: FunctionValue<'static>,
     kernel: &Kernel,
     cx: inkwell::values::FloatValue<'static>,
     cy: inkwell::values::FloatValue<'static>,
@@ -226,12 +227,105 @@ fn lower_kernel_body(
     val_map.insert(Var(0), cx.into());
     val_map.insert(Var(1), cy.into());
 
-    for stmt in &kernel.body {
-        let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, &val_map);
+    lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map);
+
+    val_map[&kernel.emit].into_int_value()
+}
+
+fn lower_body_items(
+    context: &'static Context,
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    function: FunctionValue<'static>,
+    kernel: &Kernel,
+    body: &[BodyItem],
+    val_map: &mut std::collections::HashMap<Var, BasicValueEnum<'static>>,
+) {
+    for item in body {
+        match item {
+            BodyItem::Stmt(stmt) => {
+                let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
+                val_map.insert(stmt.binding.var, v);
+            }
+            BodyItem::While(w) => {
+                lower_while(context, module, builder, function, kernel, w, val_map);
+            }
+        }
+    }
+}
+
+fn lower_while(
+    context: &'static Context,
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    function: FunctionValue<'static>,
+    kernel: &Kernel,
+    w: &While,
+    val_map: &mut std::collections::HashMap<Var, BasicValueEnum<'static>>,
+) {
+    let i32_type = context.i32_type();
+    let f64_type = context.f64_type();
+    let i1_type = context.bool_type();
+
+    // Create blocks
+    let pre_block = builder.get_insert_block().unwrap();
+    let loop_header = context.append_basic_block(function, "while_header");
+    let loop_body = context.append_basic_block(function, "while_body");
+    let loop_exit = context.append_basic_block(function, "while_exit");
+
+    // Branch from current block to loop header
+    builder.build_unconditional_branch(loop_header).unwrap();
+
+    // -- Loop header: phi nodes for carry vars, then cond_body, then branch --
+    builder.position_at_end(loop_header);
+
+    // Create phi nodes for carry variables
+    let mut phi_nodes = Vec::new();
+    for cv in &w.carry {
+        let llvm_ty: inkwell::types::BasicTypeEnum = match cv.binding.ty {
+            ScalarType::F64 => f64_type.into(),
+            ScalarType::U32 => i32_type.into(),
+            ScalarType::Bool => i1_type.into(),
+        };
+        let phi = builder.build_phi(llvm_ty, &cv.binding.name).unwrap();
+        // Add incoming from pre-block (initial value)
+        let init_val = val_map[&cv.init];
+        phi.add_incoming(&[(&init_val, pre_block)]);
+        // Map carry var to phi value
+        val_map.insert(cv.binding.var, phi.as_basic_value());
+        phi_nodes.push(phi);
+    }
+
+    // Lower cond_body
+    for stmt in &w.cond_body {
+        let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
         val_map.insert(stmt.binding.var, v);
     }
 
-    val_map[&kernel.emit].into_int_value()
+    // Branch on cond
+    let cond_val = val_map[&w.cond].into_int_value();
+    builder.build_conditional_branch(cond_val, loop_body, loop_exit).unwrap();
+
+    // -- Loop body: compute next values, branch back to header --
+    builder.position_at_end(loop_body);
+
+    for stmt in &w.body {
+        let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
+        val_map.insert(stmt.binding.var, v);
+    }
+
+    // Add incoming edges to phi nodes from loop body (yield values)
+    let body_block = builder.get_insert_block().unwrap();
+    for (i, phi) in phi_nodes.iter().enumerate() {
+        let yield_val = val_map[&w.yields[i]];
+        phi.add_incoming(&[(&yield_val, body_block)]);
+    }
+
+    builder.build_unconditional_branch(loop_header).unwrap();
+
+    // -- Continue after loop --
+    builder.position_at_end(loop_exit);
+    // Carry vars already mapped to phi values (which are their final values on exit)
 }
 
 fn lower_inst(
@@ -338,12 +432,8 @@ fn lower_inst(
             let c = val_map[cond].into_int_value();
             let t = val_map[then_val];
             let e = val_map[else_val];
-            // Use build_select with IntValue for both int and float results.
-            // The inkwell API requires IMV: IntMathValue, but the result type
-            // is determined by BV. For floats we pass BasicValueEnum directly.
             match binding.ty {
                 ScalarType::F64 => {
-                    // LLVM select works on any type; use the raw call
                     builder.build_select(c, t.into_float_value(), e.into_float_value(), "sel").unwrap()
                 }
                 ScalarType::U32 | ScalarType::Bool => {

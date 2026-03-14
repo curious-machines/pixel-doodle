@@ -98,23 +98,47 @@ pub struct Statement {
     pub inst: Inst,
 }
 
-/// V1: body is Vec<Statement> (no loops).
-/// V2 will change body to Vec<BodyItem> to include While.
+/// A loop-carried variable: bound at loop entry, updated each iteration via yield.
+#[derive(Debug, Clone)]
+pub struct CarryVar {
+    pub binding: Binding,
+    pub init: Var,
+}
+
+/// Structured while loop with loop-carried values.
+///
+/// Semantics: on each iteration, execute `cond_body`, check `cond`.
+/// If true, execute `body`, update carry vars with `yields`, repeat.
+/// If false, exit; carry vars hold their current values.
+#[derive(Debug, Clone)]
+pub struct While {
+    pub carry: Vec<CarryVar>,
+    pub cond_body: Vec<Statement>,
+    pub cond: Var,
+    pub body: Vec<Statement>,
+    pub yields: Vec<Var>,
+}
+
+#[derive(Debug, Clone)]
+pub enum BodyItem {
+    Stmt(Statement),
+    While(While),
+}
+
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub name: String,
-    pub body: Vec<Statement>,
+    pub body: Vec<BodyItem>,
     pub emit: Var,
 }
 
 impl Kernel {
-    /// Look up a binding by Var index.
+    /// Look up a binding by Var index, searching all body items recursively.
     pub fn binding(&self, var: Var) -> Option<&Binding> {
-        // Check implicit vars
         if var.0 < 2 {
             return None; // x and y are implicit, no binding
         }
-        self.body.iter().find(|s| s.binding.var == var).map(|s| &s.binding)
+        find_binding_in_body(&self.body, var)
     }
 
     /// Get the type of a Var.
@@ -133,4 +157,34 @@ impl Kernel {
             _ => self.binding(var).map(|b| b.name.as_str()),
         }
     }
+}
+
+fn find_binding_in_stmts(stmts: &[Statement], var: Var) -> Option<&Binding> {
+    stmts.iter().find(|s| s.binding.var == var).map(|s| &s.binding)
+}
+
+fn find_binding_in_body(body: &[BodyItem], var: Var) -> Option<&Binding> {
+    for item in body {
+        match item {
+            BodyItem::Stmt(stmt) => {
+                if stmt.binding.var == var {
+                    return Some(&stmt.binding);
+                }
+            }
+            BodyItem::While(w) => {
+                for cv in &w.carry {
+                    if cv.binding.var == var {
+                        return Some(&cv.binding);
+                    }
+                }
+                if let Some(b) = find_binding_in_stmts(&w.cond_body, var) {
+                    return Some(b);
+                }
+                if let Some(b) = find_binding_in_stmts(&w.body, var) {
+                    return Some(b);
+                }
+            }
+        }
+    }
+    None
 }

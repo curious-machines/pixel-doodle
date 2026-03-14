@@ -6,25 +6,101 @@ pub fn print(kernel: &Kernel) -> String {
     let mut out = String::new();
     out.push_str(&format!("kernel {} {{\n", kernel.name));
 
-    for stmt in &kernel.body {
-        // Skip implicit literal bindings (those starting with __lit_)
-        // They get inlined back into the instruction that uses them.
-        if stmt.binding.name.starts_with("__lit_") {
-            continue;
-        }
-        out.push_str("    ");
-        out.push_str(&stmt.binding.name);
-        out.push_str(": ");
-        out.push_str(&format!("{}", stmt.binding.ty));
-        out.push_str(" = ");
-        print_inst(&mut out, &stmt.inst, kernel);
-        out.push('\n');
-    }
+    print_body(&mut out, &kernel.body, kernel, 1);
 
     out.push_str("    emit ");
     out.push_str(kernel.var_name(kernel.emit).unwrap_or("?"));
     out.push_str("\n}\n");
     out
+}
+
+fn print_body(out: &mut String, body: &[BodyItem], kernel: &Kernel, indent: usize) {
+    let prefix = "    ".repeat(indent);
+    for item in body {
+        match item {
+            BodyItem::Stmt(stmt) => {
+                // Skip implicit literal bindings
+                if stmt.binding.name.starts_with("__lit_") {
+                    continue;
+                }
+                out.push_str(&prefix);
+                out.push_str(&stmt.binding.name);
+                out.push_str(": ");
+                out.push_str(&format!("{}", stmt.binding.ty));
+                out.push_str(" = ");
+                print_inst(out, &stmt.inst, kernel);
+                out.push('\n');
+            }
+            BodyItem::While(w) => {
+                print_while(out, w, kernel, indent);
+            }
+        }
+    }
+}
+
+fn print_while(out: &mut String, w: &While, kernel: &Kernel, indent: usize) {
+    let prefix = "    ".repeat(indent);
+    let inner_prefix = "    ".repeat(indent + 1);
+
+    out.push_str(&prefix);
+    out.push_str("while carry(");
+    for (i, cv) in w.carry.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&cv.binding.name);
+        out.push_str(": ");
+        out.push_str(&format!("{}", cv.binding.ty));
+        out.push_str(" = ");
+        print_operand(out, cv.init, kernel);
+    }
+    out.push_str(") {\n");
+
+    // Print cond_body statements
+    for stmt in &w.cond_body {
+        if stmt.binding.name.starts_with("__lit_") {
+            continue;
+        }
+        out.push_str(&inner_prefix);
+        out.push_str(&stmt.binding.name);
+        out.push_str(": ");
+        out.push_str(&format!("{}", stmt.binding.ty));
+        out.push_str(" = ");
+        print_inst(out, &stmt.inst, kernel);
+        out.push('\n');
+    }
+
+    // Print cond
+    out.push_str(&inner_prefix);
+    out.push_str("cond ");
+    out.push_str(kernel.var_name(w.cond).unwrap_or("?"));
+    out.push('\n');
+
+    // Print body statements
+    for stmt in &w.body {
+        if stmt.binding.name.starts_with("__lit_") {
+            continue;
+        }
+        out.push_str(&inner_prefix);
+        out.push_str(&stmt.binding.name);
+        out.push_str(": ");
+        out.push_str(&format!("{}", stmt.binding.ty));
+        out.push_str(" = ");
+        print_inst(out, &stmt.inst, kernel);
+        out.push('\n');
+    }
+
+    // Print yield
+    out.push_str(&inner_prefix);
+    out.push_str("yield");
+    for yv in &w.yields {
+        out.push(' ');
+        print_operand(out, *yv, kernel);
+    }
+    out.push('\n');
+
+    out.push_str(&prefix);
+    out.push_str("}\n");
 }
 
 fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
@@ -89,9 +165,10 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
 
 fn print_operand(out: &mut String, var: Var, kernel: &Kernel) {
     // Check if this is an implicit literal binding — if so, inline the value
-    if let Some(stmt) = kernel.body.iter().find(|s| s.binding.var == var) {
-        if stmt.binding.name.starts_with("__lit_") {
-            if let Inst::Const(c) = &stmt.inst {
+    if let Some(b) = kernel.binding(var) {
+        if b.name.starts_with("__lit_") {
+            // Find the statement to get the const value
+            if let Some(c) = find_const_in_body(&kernel.body, var) {
                 match c {
                     Const::F64(v) => {
                         let s = format!("{v}");
@@ -106,7 +183,7 @@ fn print_operand(out: &mut String, var: Var, kernel: &Kernel) {
                         return;
                     }
                     Const::Bool(v) => {
-                        out.push_str(if *v { "true" } else { "false" });
+                        out.push_str(if v { "true" } else { "false" });
                         return;
                     }
                 }
@@ -114,6 +191,38 @@ fn print_operand(out: &mut String, var: Var, kernel: &Kernel) {
         }
     }
     out.push_str(kernel.var_name(var).unwrap_or("?"));
+}
+
+/// Search body items recursively for a Const instruction bound to `var`.
+fn find_const_in_body(body: &[BodyItem], var: Var) -> Option<Const> {
+    for item in body {
+        match item {
+            BodyItem::Stmt(stmt) => {
+                if stmt.binding.var == var {
+                    if let Inst::Const(c) = &stmt.inst {
+                        return Some(*c);
+                    }
+                }
+            }
+            BodyItem::While(w) => {
+                for s in &w.cond_body {
+                    if s.binding.var == var {
+                        if let Inst::Const(c) = &s.inst {
+                            return Some(*c);
+                        }
+                    }
+                }
+                for s in &w.body {
+                    if s.binding.var == var {
+                        if let Inst::Const(c) = &s.inst {
+                            return Some(*c);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn binop_name(op: BinOp) -> &'static str {
