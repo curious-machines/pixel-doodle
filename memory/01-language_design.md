@@ -24,51 +24,45 @@ The custom language is designed to be easy for an AI to generate and verify, not
 
 ## Kernel Model
 
-A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math `cx = x_min + col * x_step`, pixel store). The kernel receives:
+A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math `cx = x_min + col * x_step`, pixel store). The kernel declares its inputs explicitly as parameters:
 
-- `x: f64` — view-space x coordinate (implicit, `Var(0)`)
-- `y: f64` — view-space y coordinate (implicit, `Var(1)`)
+```
+kernel gradient(x: f64, y: f64) { ... }
+kernel mandelbrot(x: f64, y: f64, max_iter: u32) { ... }
+```
 
-And produces a `u32` ARGB color via `emit`. User-defined variables start at `Var(2)`.
+Parameters are assigned `Var` indices in declaration order (`x` → `Var(0)`, `y` → `Var(1)`, etc.). User-defined variables start after the last parameter. The kernel produces a `u32` ARGB color via `emit`.
+
+Coordinate parameters (`x`, `y`) are view-space coordinates computed by the tile loop wrapper. Additional parameters (like `max_iter`) are user-defined values passed in from the host.
+
+> **Future alternative:** If parameter lists grow long, consider a `params { ... }` block:
+> ```
+> kernel mandelbrot {
+>     params { x: f64, y: f64, max_iter: u32 }
+>     ...
+> }
+> ```
+> This keeps the kernel header clean and allows grouping/commenting params. Decision deferred until we see real usage patterns.
 
 ## IR Data Structures
 
-Replace `src/kernel_ir.rs` entirely.
+Defined in `src/kernel_ir.rs`.
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType { F64, U32, Bool }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
-
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub var: Var,
-    pub name: String,
-    pub ty: ScalarType,
-}
-
-#[derive(Debug, Clone, Copy)]
+pub struct Binding { var: Var, name: String, ty: ScalarType }
 pub enum Const { F64(f64), U32(u32), Bool(bool) }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add, Sub, Mul, Div, Rem,           // arithmetic (f64 or u32)
     BitAnd, BitOr, BitXor, Shl, Shr,  // bitwise (u32 only)
     And, Or,                           // logical (bool only)
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp { Eq, Ne, Lt, Le, Gt, Ge }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp { Neg, Not, Abs, Sqrt, Floor, Ceil }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvOp { F64ToU32, U32ToF64 }
 
-#[derive(Debug, Clone)]
 pub enum Inst {
     Const(Const),
     Binary { op: BinOp, lhs: Var, rhs: Var },
@@ -79,41 +73,30 @@ pub enum Inst {
     PackArgb { r: Var, g: Var, b: Var },
 }
 
-#[derive(Debug, Clone)]
-pub struct Statement {
-    pub binding: Binding,
-    pub inst: Inst,
+pub struct Statement { binding: Binding, inst: Inst }
+
+pub struct CarryVar {
+    binding: Binding,  // name and type for use inside loop
+    init: Var,         // initial value (defined before the while)
 }
 
-// V1: body is Vec<Statement>
-// V2: body becomes Vec<BodyItem> to include While
-#[derive(Debug, Clone)]
-pub struct Kernel {
-    pub name: String,
-    pub body: Vec<Statement>,
-    pub emit: Var,
+pub struct While {
+    carry: Vec<CarryVar>,
+    cond_body: Vec<Statement>,  // computes condition from carry vars
+    cond: Var,                  // Bool — loop continues while true
+    body: Vec<Statement>,       // computes next values
+    yields: Vec<Var>,           // new values for carry vars
 }
-```
 
-### V2 Additions for Control Flow
-
-```rust
-#[derive(Debug, Clone)]
 pub enum BodyItem {
     Stmt(Statement),
-    While {
-        carry: Vec<CarryVar>,
-        cond_body: Vec<Statement>,  // computes condition from carry vars
-        cond: Var,                  // Bool — loop continues while true
-        body: Vec<Statement>,       // main body
-        yields: Vec<Var>,           // new values for carry vars
-    },
+    While(While),
 }
 
-#[derive(Debug, Clone)]
-pub struct CarryVar {
-    pub binding: Binding,  // name and type for use inside loop
-    pub init: Var,         // initial value (defined before the while)
+pub struct Kernel {
+    name: String,
+    body: Vec<BodyItem>,
+    emit: Var,
 }
 ```
 
@@ -123,9 +106,9 @@ Carry variable names are live after the loop with their final values.
 
 ### Examples
 
-**V1 — gradient (per-pixel, no loops):**
+**Gradient (per-pixel, no loops):**
 ```
-kernel gradient {
+kernel gradient(x: f64, y: f64) {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0
@@ -136,36 +119,34 @@ kernel gradient {
 }
 ```
 
-**V2 — Mandelbrot (with while loop):**
+**Mandelbrot (with while loop):**
 ```
-kernel mandelbrot {
+kernel mandelbrot(x: f64, y: f64, max_iter: u32) {
+    zero: f64 = const 0.0
     four: f64 = const 4.0
-    max: u32 = const 256
-    z0: f64 = const 0.0
-    i0: u32 = const 0
+    i_zero: u32 = const 0
 
-    while carry(zx: f64 = z0, zy: f64 = z0, iter: u32 = i0) {
+    while carry(zx: f64 = zero, zy: f64 = zero, iter: u32 = i_zero) {
         zx2: f64 = mul zx zx
         zy2: f64 = mul zy zy
-        mag2: f64 = add zx2 zy2
-        not_esc: bool = le mag2 four
-        not_max: bool = lt iter max
-        cont: bool = and not_esc not_max
+        mag: f64 = add zx2 zy2
+        escaped: bool = gt mag four
+        too_many: bool = ge iter max_iter
+        done: bool = or escaped too_many
+        cont: bool = not done
         cond cont
 
-        diff: f64 = sub zx2 zy2
-        new_zx: f64 = add diff x
-        two: f64 = const 2.0
-        two_zx: f64 = mul two zx
-        prod: f64 = mul two_zx zy
-        new_zy: f64 = add prod y
-        one: u32 = const 1
-        new_iter: u32 = add iter one
-        yield new_zx new_zy new_iter
+        new_zx: f64 = sub zx2 zy2
+        new_zx2: f64 = add new_zx x
+        zxzy: f64 = mul zx zy
+        new_zy: f64 = mul zxzy 2.0
+        new_zy2: f64 = add new_zy y
+        new_iter: u32 = add iter 1
+        yield new_zx2 new_zy2 new_iter
     }
 
-    is_max: bool = eq iter max
-    # ... color computation ...
+    is_inside: bool = eq iter max_iter
+    # ... color computation using iter ...
     emit pixel
 }
 ```
@@ -174,7 +155,9 @@ kernel mandelbrot {
 
 ```
 program     = kernel
-kernel      = "kernel" IDENT "{" body_item* "emit" IDENT "}"
+kernel      = "kernel" IDENT "(" param_list? ")" "{" body_item* "emit" IDENT "}"
+param_list  = param ("," param)*
+param       = IDENT ":" type
 body_item   = statement | while_loop
 statement   = IDENT ":" type "=" instruction
 while_loop  = "while" "carry" "(" carry_list ")" "{"
@@ -188,12 +171,13 @@ ident_list  = IDENT (IDENT)*
 instruction = const_inst | binary_inst | unary_inst | cmp_inst
             | conv_inst | select_inst | pack_inst
 const_inst  = "const" literal
-binary_inst = binop IDENT IDENT
-unary_inst  = unaryop IDENT
-cmp_inst    = cmpop IDENT IDENT
-conv_inst   = convop IDENT
-select_inst = "select" IDENT IDENT IDENT
-pack_inst   = "pack_argb" IDENT IDENT IDENT
+binary_inst = binop operand operand
+unary_inst  = unaryop operand
+cmp_inst    = cmpop operand operand
+conv_inst   = convop operand
+select_inst = "select" operand operand operand
+pack_inst   = "pack_argb" operand operand operand
+operand     = IDENT | literal   (inline literals create implicit consts)
 
 type        = "f64" | "u32" | "bool"
 binop       = "add" | "sub" | "mul" | "div" | "rem"
@@ -217,7 +201,7 @@ comment     = "#" ... newline
 - **Operands are variable names** (resolved by parser) or inline literals (for `const`)
 - **`emit varname`** as the final line produces the pixel color
 - **`#` line comments**
-- **`x` and `y`** are predefined implicit inputs
+- **All inputs are explicit parameters** — no magic implicit variables
 - Every piece of information the codegen needs is visible in the source — no inference, no implicit context
 
 ## Type Checking Rules
@@ -229,7 +213,7 @@ comment     = "#" ... newline
 - `neg/abs`: f64 or u32, result same type
 - `not`: bool only
 - `sqrt/floor/ceil`: f64 only
-- `f64_to_u32`: f64 → u32 (truncation)
+- `f64_to_u32`: f64 → u32 (truncation toward zero)
 - `u32_to_f64`: u32 → f64
 - `select`: cond must be bool, then/else must be same type, result is that type
 - `pack_argb`: three u32 args (r, g, b in [0,255]), result is u32
@@ -240,16 +224,17 @@ comment     = "#" ... newline
 
 Both backends split into:
 
-1. **Tile loop scaffolding** (backend-specific, stays mostly unchanged):
+1. **Tile loop scaffolding** (backend-specific):
    - Function signature matching `TileKernelFn` (9 params)
    - Outer row loop: `row_start..row_end`
    - Inner col loop: `0..width`
    - Coordinate computation: `cx = x_min + col * x_step`, `cy = y_min + row * y_step`
    - Pixel store: `output[(row - row_start) * width + col] = color`
 
-2. **Body lowering** (new, walks `Kernel` IR):
-   - Maps `Var(0)` → cx, `Var(1)` → cy
-   - Walks statements, emits backend instructions for each `Inst`
+2. **Body lowering** (walks `Kernel` IR):
+   - Maps parameter `Var`s to their backend values (e.g., coordinates from tile loop, uniforms from host)
+   - Walks `BodyItem`s, emitting backend instructions for each `Inst`
+   - Handles `While` by creating loop blocks with carry variable management
    - Returns the backend value for the `emit` var
 
 ### Instruction Mapping
@@ -267,8 +252,8 @@ Both backends split into:
 
 ### While Loop Lowering
 
-- **Cranelift**: Carry vars become `Variable`s. Loop header block with defs from init/yield. Cond check branch to body or exit. Uses Cranelift's implicit phi via Variable.
-- **LLVM**: Carry vars become allocas (promoted to SSA by mem2reg in O3). Store init before loop, load in cond/body, store yields. Standard loop structure with br/cond_br.
+- **Cranelift**: Carry vars become `Variable`s (Cranelift's SSA construction handles phi insertion). Loop header block reads vars, runs cond_body, branches to body or exit. Body runs, updates vars with yield values, jumps back to header.
+- **LLVM**: Carry vars become explicit phi nodes in loop header block. Pre-block provides initial values, loop body provides yield values. Standard loop structure with conditional branch.
 
 ## Parser Implementation
 
@@ -279,14 +264,11 @@ Hand-written recursive descent in `src/lang/parser.rs`. No external dependencies
 - Parser resolves variable names to `Var` indices during parsing
 - Tracks `HashMap<String, Var>` for name resolution
 - Type-checks operands at parse time
+- Scoping: while body introduces carry vars + local vars; after while, only carry vars survive
 - Returns `Result<Kernel, ParseError>` with line:col positions
 
 ## Printer
 
 `src/lang/printer.rs` — converts `Kernel` back to text format.
 Roundtrip property: `parse(print(k))` produces an equivalent kernel.
-
-## V1 vs V2 Scope
-
-- **V1:** Per-pixel only (no loops). `Kernel.body` is `Vec<Statement>`. Enough for solid colors, gradients, checkerboards, distance fields.
-- **V2:** Add `while` with carry/cond/yield. `Kernel.body` becomes `Vec<BodyItem>`. Enough for Mandelbrot and iterative algorithms.
+Handles while loops with proper indentation and carry var formatting.

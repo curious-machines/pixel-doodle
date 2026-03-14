@@ -3,7 +3,32 @@
     "allow": [
       "Bash(cargo init:*)",
       "Bash(cargo build:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "WebSearch",
+      "Bash(timeout 3 cargo run --release 2>&1 || true)",
+      "Bash(timeout 3 cargo run --release -- --backend cranelift 2>&1 || true)",
+      "Bash(llvm-config --version 2>/dev/null || llvm-config-18 --version 2>/dev/null || echo \"no llvm found\")",
+      "Bash(dpkg -l)",
+      "Read(//usr/lib/**)",
+      "Bash(apt list:*)",
+      "Bash(sudo apt-get:*)",
+      "Bash(LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend 2>&1 | tail -20)",
+      "Bash(LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend 2>&1 | tail -5)",
+      "Bash(LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend 2>&1 | grep \"warning:\")",
+      "Bash(LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend 2>&1)",
+      "Bash(timeout 3 cargo run --release --features llvm-backend -- --backend llvm 2>&1)",
+      "Bash(grep -n \"pub fn run_passes\\\\|pub fn create\\\\|pub struct Pass\" /home/kevin/.cargo/registry/src/index.crates.io-*/inkwell-0.5.0/src/passes.rs 2>/dev/null)",
+      "Bash(grep -n \"pub fn run_passes\" /home/kevin/.cargo/registry/src/index.crates.io-*/inkwell-0.5.0/src/module.rs 2>/dev/null)",
+      "Bash(find /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle -maxdepth 2 -type f \\\\\\( -name \"*.md\" -o -name \"*.txt\" -o -name \"*.toml\" \\\\\\) 2>/dev/null | grep -v target)",
+      "Bash(timeout 5 cargo run 2>&1 || true)",
+      "Bash(timeout 5 cargo run -- --backend cranelift 2>&1 || true)",
+      "Bash(timeout 5 cargo run -- --backend native 2>&1 || true)",
+      "Bash(timeout 5 cargo run -- --backend gpu 2>&1 || true)",
+      "Bash(timeout 3 cargo run --release -- --backend native 2>&1 || true)",
+      "Bash(timeout 3 cargo run --release -- --backend gpu 2>&1 || true)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(timeout:*)"
     ]
   }
 }
