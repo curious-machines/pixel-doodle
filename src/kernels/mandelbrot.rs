@@ -4,7 +4,8 @@ use crate::kernel_ir::*;
 /// V1 simplified version — no loops, so we can't do Mandelbrot yet.
 /// Maps x to red, y to green, constant blue.
 pub fn gradient_kernel() -> Kernel {
-    let mut next = 2u32; // 0=x, 1=y
+    // Var(0) = x, Var(1) = y (declared as params)
+    let mut next = 2u32;
     let mut alloc = || { let v = Var(next); next += 1; v };
 
     let c255 = alloc(); // Var(2)
@@ -19,6 +20,10 @@ pub fn gradient_kernel() -> Kernel {
 
     Kernel {
         name: "gradient".to_string(),
+        params: vec![
+            Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
+            Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
+        ],
         body: vec![
             s(Statement {
                 binding: Binding { var: c255, name: "c255".into(), ty: ScalarType::F64 },
@@ -56,6 +61,7 @@ pub fn gradient_kernel() -> Kernel {
 /// Build a solid color kernel programmatically.
 #[allow(dead_code)]
 pub fn solid_color_kernel(r: u32, g: u32, b: u32) -> Kernel {
+    // solid_color doesn't use x/y but still declares them for ABI compatibility
     let rv = Var(2);
     let gv = Var(3);
     let bv = Var(4);
@@ -65,6 +71,10 @@ pub fn solid_color_kernel(r: u32, g: u32, b: u32) -> Kernel {
 
     Kernel {
         name: "solid".to_string(),
+        params: vec![
+            Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
+            Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
+        ],
         body: vec![
             s(Statement {
                 binding: Binding { var: rv, name: "r".into(), ty: ScalarType::U32 },

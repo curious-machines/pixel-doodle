@@ -1,5 +1,5 @@
 # Checkerboard pattern using floor + rem to create alternating squares.
-kernel checkerboard {
+kernel checkerboard(x: f64, y: f64) {
     scale: f64 = const 4.0
     sx: f64 = mul x scale
     sy: f64 = mul y scale

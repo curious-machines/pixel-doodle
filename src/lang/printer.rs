@@ -4,7 +4,16 @@ use crate::kernel_ir::*;
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn print(kernel: &Kernel) -> String {
     let mut out = String::new();
-    out.push_str(&format!("kernel {} {{\n", kernel.name));
+    out.push_str(&format!("kernel {}(", kernel.name));
+    for (i, p) in kernel.params.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&p.name);
+        out.push_str(": ");
+        out.push_str(&format!("{}", p.ty));
+    }
+    out.push_str(") {\n");
 
     print_body(&mut out, &kernel.body, kernel, 1);
 

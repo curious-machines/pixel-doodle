@@ -2,8 +2,9 @@
 ///
 /// A kernel body describes per-pixel computation. Backends wrap it in
 /// the tile loop (row/col iteration, coordinate math, pixel store).
-/// The kernel receives implicit `x: f64` (Var(0)) and `y: f64` (Var(1))
-/// and produces a `u32` ARGB color via `emit`.
+/// The kernel declares explicit parameters (e.g. `x: f64, y: f64`)
+/// which are assigned `Var` indices in declaration order, and produces
+/// a `u32` ARGB color via `emit`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
@@ -128,34 +129,28 @@ pub enum BodyItem {
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub name: String,
+    pub params: Vec<Binding>,
     pub body: Vec<BodyItem>,
     pub emit: Var,
 }
 
 impl Kernel {
-    /// Look up a binding by Var index, searching all body items recursively.
+    /// Look up a binding by Var index, searching params and body items.
     pub fn binding(&self, var: Var) -> Option<&Binding> {
-        if var.0 < 2 {
-            return None; // x and y are implicit, no binding
+        if let Some(b) = self.params.iter().find(|b| b.var == var) {
+            return Some(b);
         }
         find_binding_in_body(&self.body, var)
     }
 
     /// Get the type of a Var.
     pub fn var_type(&self, var: Var) -> Option<ScalarType> {
-        match var.0 {
-            0 | 1 => Some(ScalarType::F64), // x, y
-            _ => self.binding(var).map(|b| b.ty),
-        }
+        self.binding(var).map(|b| b.ty)
     }
 
     /// Get the name of a Var.
     pub fn var_name(&self, var: Var) -> Option<&str> {
-        match var.0 {
-            0 => Some("x"),
-            1 => Some("y"),
-            _ => self.binding(var).map(|b| b.name.as_str()),
-        }
+        self.binding(var).map(|b| b.name.as_str())
     }
 }
 

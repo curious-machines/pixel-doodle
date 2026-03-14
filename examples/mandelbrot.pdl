@@ -1,4 +1,4 @@
-kernel mandelbrot {
+kernel mandelbrot(x: f64, y: f64) {
     max_iter: u32 = const 256
     zero: f64 = const 0.0
     four: f64 = const 4.0
