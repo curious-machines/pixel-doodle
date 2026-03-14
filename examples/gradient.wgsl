@@ -25,10 +25,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = params.x_min + f32(col) * params.x_step;
     let y = params.y_min + f32(row) * params.y_step;
 
-    let r_u = u32(x * 255.0);
-    let g_u = u32(y * 255.0);
+    // Use signed conversion + bitcast to match CPU backends (fcvt_to_sint).
+    // u32(negative_float) clamps to 0 in WGSL, but the CPU JIT produces
+    // negative i32 bit patterns that wrap through pack_argb shifts.
+    let r_u = bitcast<u32>(i32(x * 255.0));
+    let g_u = bitcast<u32>(i32(y * 255.0));
     let b = 128u;
-    let color = 0xFF000000u | (min(r_u, 255u) << 16u) | (min(g_u, 255u) << 8u) | min(b, 255u);
+    // No clamping — match CPU pack_argb which lets values wrap via shift+or.
+    let color = 0xFF000000u | (r_u << 16u) | (g_u << 8u) | b;
 
     let idx = row * params.stride + col;
     output[idx] = color;

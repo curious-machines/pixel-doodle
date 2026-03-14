@@ -26,8 +26,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = params.y_min + f32(row) * params.y_step;
 
     let scale = 4.0;
-    let ix = u32(floor(x * scale));
-    let iy = u32(floor(y * scale));
+    // Use signed conversion to match CPU backends (which use fcvt_to_sint).
+    let ix = bitcast<u32>(i32(floor(x * scale)));
+    let iy = bitcast<u32>(i32(floor(y * scale)));
     let parity = (ix + iy) % 2u;
     var c: u32;
     if parity == 0u {
