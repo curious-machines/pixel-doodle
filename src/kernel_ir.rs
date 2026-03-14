@@ -130,6 +130,7 @@ pub enum BodyItem {
 pub struct Kernel {
     pub name: String,
     pub params: Vec<Binding>,
+    pub return_ty: ScalarType,
     pub body: Vec<BodyItem>,
     pub emit: Var,
 }

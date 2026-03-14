@@ -27,11 +27,11 @@ The custom language is designed to be easy for an AI to generate and verify, not
 A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math `cx = x_min + col * x_step`, pixel store). The kernel declares its inputs explicitly as parameters:
 
 ```
-kernel gradient(x: f64, y: f64) { ... }
-kernel mandelbrot(x: f64, y: f64, max_iter: u32) { ... }
+kernel gradient(x: f64, y: f64) -> u32 { ... }
+kernel mandelbrot(x: f64, y: f64, max_iter: u32) -> u32 { ... }
 ```
 
-Parameters are assigned `Var` indices in declaration order (`x` → `Var(0)`, `y` → `Var(1)`, etc.). User-defined variables start after the last parameter. The kernel produces a `u32` ARGB color via `emit`.
+Parameters are assigned `Var` indices in declaration order (`x` → `Var(0)`, `y` → `Var(1)`, etc.). User-defined variables start after the last parameter. The return type (declared with `->`) specifies the type of the `emit` value — currently always `u32` (ARGB pixel color).
 
 Coordinate parameters (`x`, `y`) are view-space coordinates computed by the tile loop wrapper. Additional parameters (like `max_iter`) are user-defined values passed in from the host.
 
@@ -95,6 +95,8 @@ pub enum BodyItem {
 
 pub struct Kernel {
     name: String,
+    params: Vec<Binding>,
+    return_ty: ScalarType,
     body: Vec<BodyItem>,
     emit: Var,
 }
@@ -108,7 +110,7 @@ Carry variable names are live after the loop with their final values.
 
 **Gradient (per-pixel, no loops):**
 ```
-kernel gradient(x: f64, y: f64) {
+kernel gradient(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0
@@ -121,7 +123,7 @@ kernel gradient(x: f64, y: f64) {
 
 **Mandelbrot (with while loop):**
 ```
-kernel mandelbrot(x: f64, y: f64, max_iter: u32) {
+kernel mandelbrot(x: f64, y: f64, max_iter: u32) -> u32 {
     zero: f64 = const 0.0
     four: f64 = const 4.0
     i_zero: u32 = const 0
@@ -155,7 +157,7 @@ kernel mandelbrot(x: f64, y: f64, max_iter: u32) {
 
 ```
 program     = kernel
-kernel      = "kernel" IDENT "(" param_list? ")" "{" body_item* "emit" IDENT "}"
+kernel      = "kernel" IDENT "(" param_list? ")" "->" type "{" body_item* "emit" IDENT "}"
 param_list  = param ("," param)*
 param       = IDENT ":" type
 body_item   = statement | while_loop
@@ -199,7 +201,7 @@ comment     = "#" ... newline
 - **One statement per line**: `name: type = op args...`
 - **All op names are keywords**: non-contextual, no ambiguity
 - **Operands are variable names** (resolved by parser) or inline literals (for `const`)
-- **`emit varname`** as the final line produces the pixel color
+- **`emit varname`** as the final line produces the return value (must match declared return type)
 - **`#` line comments**
 - **All inputs are explicit parameters** — no magic implicit variables
 - Every piece of information the codegen needs is visible in the source — no inference, no implicit context
@@ -217,7 +219,7 @@ comment     = "#" ... newline
 - `u32_to_f64`: u32 → f64
 - `select`: cond must be bool, then/else must be same type, result is that type
 - `pack_argb`: three u32 args (r, g, b in [0,255]), result is u32
-- `emit`: must reference a u32 variable
+- `emit`: must reference a variable matching the declared return type
 - SSA: each name defined exactly once (carry vars scope to their while block and after)
 
 ## Backend Lowering Strategy

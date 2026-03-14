@@ -39,12 +39,12 @@ The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text f
 
 ### Kernel Model
 
-A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel receives implicit `x: f64`, `y: f64` (view-space coordinates) and produces a `u32` ARGB color via `emit`.
+A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel declares explicit parameters and a return type, and produces a value via `emit`.
 
 ### Text Format (.pdl)
 
 ```
-kernel gradient {
+kernel gradient(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0

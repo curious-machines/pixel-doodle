@@ -1,7 +1,7 @@
 # Gradient: maps x to red, y to green, constant blue.
 # x and y are view-space coordinates (typically -2..2 range).
 # We remap to [0, 255] for color channels.
-kernel gradient(x: f64, y: f64) {
+kernel gradient(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0

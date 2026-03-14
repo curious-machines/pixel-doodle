@@ -13,7 +13,7 @@ pub fn print(kernel: &Kernel) -> String {
         out.push_str(": ");
         out.push_str(&format!("{}", p.ty));
     }
-    out.push_str(") {\n");
+    out.push_str(&format!(") -> {} {{\n", kernel.return_ty));
 
     print_body(&mut out, &kernel.body, kernel, 1);
 

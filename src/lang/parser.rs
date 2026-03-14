@@ -55,6 +55,7 @@ enum Token {
     True,
     False,
     // Punctuation
+    Arrow, // ->
     LBrace,
     RBrace,
     LParen,
@@ -194,6 +195,11 @@ fn lex(input: &str) -> Result<Vec<Spanned>, ParseError> {
             '=' => {
                 tokens.push(Spanned { token: Token::Equals, line, col });
                 chars.next();
+            }
+            '-' if matches!(chars.clone().nth(1), Some((_, '>'))) => {
+                tokens.push(Spanned { token: Token::Arrow, line, col });
+                chars.next(); // consume '-'
+                chars.next(); // consume '>'
             }
             c if c.is_ascii_digit() || (c == '-' && matches!(chars.clone().nth(1), Some((_, d)) if d.is_ascii_digit())) => {
                 let start = pos;
@@ -841,6 +847,8 @@ impl Parser {
         self.expect_tok(&Token::Kernel)?;
         let (name, _line, _col) = self.expect_ident()?;
         let params = self.parse_params()?;
+        self.expect_tok(&Token::Arrow)?;
+        let return_ty = self.parse_type()?;
         self.expect_tok(&Token::LBrace)?;
 
         let mut body = Vec::new();
@@ -880,17 +888,18 @@ impl Parser {
         self.expect_tok(&Token::Emit)?;
         let (emit_name, emit_line, emit_col) = self.expect_ident()?;
         let emit_var = self.resolve_var(&emit_name, emit_line, emit_col)?;
-        if self.var_ty(emit_var) != ScalarType::U32 {
+        let emit_ty = self.var_ty(emit_var);
+        if emit_ty != return_ty {
             return Err(ParseError {
                 line: emit_line,
                 col: emit_col,
-                message: format!("emit must reference a u32 variable, got {}", self.var_ty(emit_var)),
+                message: format!("emit type mismatch: kernel returns {return_ty}, but '{emit_name}' is {emit_ty}"),
             });
         }
 
         self.expect_tok(&Token::RBrace)?;
 
-        Ok(Kernel { name, params, body, emit: emit_var })
+        Ok(Kernel { name, params, return_ty, body, emit: emit_var })
     }
 }
 
@@ -901,7 +910,7 @@ mod tests {
     #[test]
     fn test_parse_gradient() {
         let src = r#"
-kernel gradient(x: f64, y: f64) {
+kernel gradient(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0
@@ -925,7 +934,7 @@ kernel gradient(x: f64, y: f64) {
     #[test]
     fn test_parse_solid_color() {
         let src = r#"
-kernel solid(x: f64, y: f64) {
+kernel solid(x: f64, y: f64) -> u32 {
     r: u32 = const 255
     g: u32 = const 0
     b: u32 = const 128
@@ -940,7 +949,7 @@ kernel solid(x: f64, y: f64) {
     #[test]
     fn test_parse_error_undefined_var() {
         let src = r#"
-kernel bad(x: f64, y: f64) {
+kernel bad(x: f64, y: f64) -> u32 {
     r: u32 = const 255
     pixel: u32 = pack_argb r g b
     emit pixel
@@ -953,7 +962,7 @@ kernel bad(x: f64, y: f64) {
     #[test]
     fn test_parse_error_type_mismatch() {
         let src = r#"
-kernel bad(x: f64, y: f64) {
+kernel bad(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     pixel: u32 = pack_argb r r r
     emit pixel
@@ -966,7 +975,7 @@ kernel bad(x: f64, y: f64) {
     #[test]
     fn test_parse_error_duplicate_var() {
         let src = r#"
-kernel bad(x: f64, y: f64) {
+kernel bad(x: f64, y: f64) -> u32 {
     r: u32 = const 255
     r: u32 = const 0
     pixel: u32 = pack_argb r r r
@@ -979,7 +988,7 @@ kernel bad(x: f64, y: f64) {
 
     #[test]
     fn test_roundtrip() {
-        let src = r#"kernel gradient(x: f64, y: f64) {
+        let src = r#"kernel gradient(x: f64, y: f64) -> u32 {
     r: f64 = mul x 255.0
     r_u: u32 = f64_to_u32 r
     g: f64 = mul y 255.0
@@ -999,7 +1008,7 @@ kernel bad(x: f64, y: f64) {
     #[test]
     fn test_parse_while_basic() {
         let src = r#"
-kernel loop_test(x: f64, y: f64) {
+kernel loop_test(x: f64, y: f64) -> u32 {
     zero: f64 = const 0.0
     limit: f64 = const 10.0
     init_i: u32 = const 0
@@ -1027,7 +1036,7 @@ kernel loop_test(x: f64, y: f64) {
     fn test_parse_while_carry_vars_live_after() {
         // Carry vars (val, i) should be accessible after the while
         let src = r#"
-kernel carry_test(x: f64, y: f64) {
+kernel carry_test(x: f64, y: f64) -> u32 {
     zero: f64 = const 0.0
     init_i: u32 = const 0
     while carry(val: f64 = zero, i: u32 = init_i) {
@@ -1063,7 +1072,7 @@ kernel carry_test(x: f64, y: f64) {
     fn test_parse_while_inner_vars_not_visible_outside() {
         // Variables defined inside the while body should not be visible after it
         let src = r#"
-kernel scope_test(x: f64, y: f64) {
+kernel scope_test(x: f64, y: f64) -> u32 {
     zero: f64 = const 0.0
     init_i: u32 = const 0
     while carry(val: f64 = zero, i: u32 = init_i) {

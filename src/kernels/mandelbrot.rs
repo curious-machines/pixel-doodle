@@ -24,6 +24,7 @@ pub fn gradient_kernel() -> Kernel {
             Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
             Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
         ],
+        return_ty: ScalarType::U32,
         body: vec![
             s(Statement {
                 binding: Binding { var: c255, name: "c255".into(), ty: ScalarType::F64 },
@@ -75,6 +76,7 @@ pub fn solid_color_kernel(r: u32, g: u32, b: u32) -> Kernel {
             Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
             Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
         ],
+        return_ty: ScalarType::U32,
         body: vec![
             s(Statement {
                 binding: Binding { var: rv, name: "r".into(), ty: ScalarType::U32 },
