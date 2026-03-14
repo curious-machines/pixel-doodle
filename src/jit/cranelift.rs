@@ -398,6 +398,10 @@ fn lower_inst(
                 (BinOp::Shr, _) => builder.ins().ushr(l, r),
                 (BinOp::And, _) => builder.ins().band(l, r),
                 (BinOp::Or, _) => builder.ins().bor(l, r),
+                (BinOp::Min, ScalarType::F64) => builder.ins().fmin(l, r),
+                (BinOp::Max, ScalarType::F64) => builder.ins().fmax(l, r),
+                (BinOp::Min, ScalarType::U32) => builder.ins().umin(l, r),
+                (BinOp::Max, ScalarType::U32) => builder.ins().umax(l, r),
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }

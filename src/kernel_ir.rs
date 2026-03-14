@@ -54,6 +54,8 @@ pub enum BinOp {
     Shr,
     And,
     Or,
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

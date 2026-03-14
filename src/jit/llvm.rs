@@ -366,6 +366,10 @@ fn lower_inst(
                 (BinOp::BitXor, _) => builder.build_xor(l.into_int_value(), r.into_int_value(), "xor").unwrap().into(),
                 (BinOp::Shl, _) => builder.build_left_shift(l.into_int_value(), r.into_int_value(), "shl").unwrap().into(),
                 (BinOp::Shr, _) => builder.build_right_shift(l.into_int_value(), r.into_int_value(), false, "shr").unwrap().into(),
+                (BinOp::Min, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.minnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                (BinOp::Max, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.maxnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                (BinOp::Min, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umin.i32", l.into_int_value(), r.into_int_value(), i32_type),
+                (BinOp::Max, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umax.i32", l.into_int_value(), r.into_int_value(), i32_type),
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }
@@ -453,6 +457,42 @@ fn lower_inst(
             builder.build_or(color, bv, "argb").unwrap().into()
         }
     }
+}
+
+fn call_f64_binary_intrinsic(
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    name: &str,
+    lhs: inkwell::values::FloatValue<'static>,
+    rhs: inkwell::values::FloatValue<'static>,
+    f64_type: inkwell::types::FloatType<'static>,
+) -> BasicValueEnum<'static> {
+    let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
+        .unwrap_or_else(|| panic!("intrinsic {name} not found"));
+    let decl = intrinsic.get_declaration(module, &[f64_type.into()]).unwrap();
+    builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
+        .unwrap()
+        .try_as_basic_value()
+        .left()
+        .unwrap()
+}
+
+fn call_i32_binary_intrinsic(
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    name: &str,
+    lhs: inkwell::values::IntValue<'static>,
+    rhs: inkwell::values::IntValue<'static>,
+    i32_type: inkwell::types::IntType<'static>,
+) -> BasicValueEnum<'static> {
+    let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
+        .unwrap_or_else(|| panic!("intrinsic {name} not found"));
+    let decl = intrinsic.get_declaration(module, &[i32_type.into()]).unwrap();
+    builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
+        .unwrap()
+        .try_as_basic_value()
+        .left()
+        .unwrap()
 }
 
 fn call_f64_intrinsic(

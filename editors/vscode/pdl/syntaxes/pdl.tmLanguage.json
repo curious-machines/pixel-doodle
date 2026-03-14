@@ -57,7 +57,7 @@
     "operator": {
       "patterns": [
         {
-          "match": "(?<==\\s*)\\b(add|sub|mul|div|rem|neg|abs|sqrt|floor|ceil)\\b",
+          "match": "(?<==\\s*)\\b(add|sub|mul|div|rem|min|max|neg|abs|sqrt|floor|ceil)\\b",
           "name": "support.function.arithmetic.pdl"
         },
         {

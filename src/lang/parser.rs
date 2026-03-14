@@ -32,6 +32,8 @@ enum Token {
     Shr,
     And,
     Or,
+    Min,
+    Max,
     // Comparison ops
     Eq_,
     Ne,
@@ -121,6 +123,8 @@ fn keyword_lookup(word: &str) -> Token {
         "shr" => Token::Shr,
         "and" => Token::And,
         "or" => Token::Or,
+        "min" => Token::Min,
+        "max" => Token::Max,
         "eq" => Token::Eq_,
         "ne" => Token::Ne,
         "lt" => Token::Lt,
@@ -475,13 +479,15 @@ impl Parser {
                 self.advance();
                 self.parse_const_literal(declared_ty)
             }
-            Token::Add | Token::Sub | Token::Mul | Token::Div | Token::Rem => {
+            Token::Add | Token::Sub | Token::Mul | Token::Div | Token::Rem | Token::Min | Token::Max => {
                 let op = match sp.token {
                     Token::Add => BinOp::Add,
                     Token::Sub => BinOp::Sub,
                     Token::Mul => BinOp::Mul,
                     Token::Div => BinOp::Div,
                     Token::Rem => BinOp::Rem,
+                    Token::Min => BinOp::Min,
+                    Token::Max => BinOp::Max,
                     _ => unreachable!(),
                 };
                 self.advance();

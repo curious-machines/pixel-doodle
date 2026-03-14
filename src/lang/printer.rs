@@ -248,6 +248,8 @@ fn binop_name(op: BinOp) -> &'static str {
         BinOp::Shr => "shr",
         BinOp::And => "and",
         BinOp::Or => "or",
+        BinOp::Min => "min",
+        BinOp::Max => "max",
     }
 }
 
