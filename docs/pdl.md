@@ -229,6 +229,50 @@ while carry(var1: type = init1, var2: type = init2) {
 - After the loop, carry variables remain in scope with their final values.
 - Variables defined inside the loop body are **not** visible after the loop.
 
+## Inline functions
+
+Inline functions define reusable blocks of computation that are expanded at each call site during parsing. The IR remains completely flat — backends never see function calls.
+
+### Syntax
+
+```
+inline smin(a: f64, b: f64, k: f64) -> f64 {
+    ka: f64 = mul k a
+    neg_ka: f64 = neg ka
+    kb: f64 = mul k b
+    neg_kb: f64 = neg kb
+    ea: f64 = exp neg_ka
+    eb: f64 = exp neg_kb
+    esum: f64 = add ea eb
+    log_sum: f64 = log esum
+    neg_log: f64 = neg log_sum
+    result: f64 = div neg_log k
+    return result
+}
+
+kernel my_kernel(x: f64, y: f64) -> u32 {
+    # ... compute d_a and d_b ...
+    d: f64 = smin d_a d_b 12.0
+    # ... rest ...
+    emit pixel
+}
+```
+
+### Rules
+
+- **`inline`** keyword introduces a definition. Inline functions must appear before the kernel.
+- **`return`** names the variable whose value becomes the result (distinct from `emit` in kernels).
+- Call syntax uses the function name as the instruction: `d: f64 = smin a b k`.
+- Arguments can be variable names or inline literals, matching the declared parameter types.
+- Inline functions have **isolated scope** — they can only reference their own parameters and locally defined variables, not outer kernel variables.
+- `while` loops are allowed inside inline function bodies.
+- Each call site generates uniquely prefixed variables (e.g., `__smin_0_ka`, `__smin_1_ka`) to avoid collisions.
+
+### Restrictions (V1)
+
+- Inline functions **cannot call other inline functions** (no nesting). This is planned for a future version.
+- Inline functions containing `while` loops cannot be called from within another `while` loop body (the IR's while body is flat statements only).
+
 ## Complete example
 
 ```

@@ -1,3 +1,18 @@
+# Exponential smooth minimum: smin(a,b) = -ln(e^{-ka} + e^{-kb}) / k
+inline smin(a: f64, b: f64, k: f64) -> f64 {
+    ka: f64 = mul k a
+    neg_ka: f64 = neg ka
+    kb: f64 = mul k b
+    neg_kb: f64 = neg kb
+    ea: f64 = exp neg_ka
+    eb: f64 = exp neg_kb
+    esum: f64 = add ea eb
+    log_sum: f64 = log esum
+    neg_log: f64 = neg log_sum
+    result: f64 = div neg_log k
+    return result
+}
+
 # SDF scene: six-petal flower + concentric ring, blended with smooth min.
 # Uses polar coords (atan2, sqrt), sinusoidal modulation (sin, cos),
 # exponential smooth min (exp, log), glow falloff (exp), gamma (pow).
@@ -21,19 +36,8 @@ kernel sdf_flower(x: f64, y: f64) -> u32 {
     ring_abs: f64 = abs ring_d
     d_ring: f64 = sub ring_abs 0.04
 
-    # ── Smooth min (exponential, k=12) ──
-    # smin(a,b) = -ln(e^{-ka} + e^{-kb}) / k
-    k: f64 = const 12.0
-    ka: f64 = mul k d_flower
-    neg_ka: f64 = neg ka
-    kb: f64 = mul k d_ring
-    neg_kb: f64 = neg kb
-    ea: f64 = exp neg_ka
-    eb: f64 = exp neg_kb
-    esum: f64 = add ea eb
-    log_sum: f64 = log esum
-    neg_log: f64 = neg log_sum
-    d: f64 = div neg_log k
+    # ── Smooth min ──
+    d: f64 = smin d_flower d_ring 12.0
 
     # ── Brightness: sharp fill + soft glow halo ──
     # fill = clamp(-d * 40, 0, 1)  — hard edge for inside
