@@ -1,4 +1,4 @@
-use crate::kernel_ir::KernelIr;
+use crate::kernel_ir::Kernel;
 
 /// JIT'd function: writes ARGB pixels for rows [row_start, row_end).
 /// `output` points to the start of this tile's chunk, not the full buffer.
@@ -15,7 +15,7 @@ pub type TileKernelFn = unsafe extern "C" fn(
 );
 
 pub trait JitBackend {
-    fn compile(&self, ir: &KernelIr) -> Box<dyn CompiledKernel>;
+    fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel>;
 }
 
 /// A compiled kernel that can be called from multiple threads.

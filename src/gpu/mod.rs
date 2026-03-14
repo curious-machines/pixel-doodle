@@ -34,12 +34,21 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    pub fn new(display: &Display, width: u32, height: u32, max_iter: u32) -> Self {
+    pub fn new(
+        display: &Display,
+        width: u32,
+        height: u32,
+        max_iter: u32,
+        wgsl_source: Option<&str>,
+    ) -> Self {
         let device = &display.device;
 
+        let default_source = include_str!("mandelbrot.wgsl");
+        let source = wgsl_source.unwrap_or(default_source);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("mandelbrot compute"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("mandelbrot.wgsl").into()),
+            label: Some("compute kernel"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
 
         let bind_group_layout =

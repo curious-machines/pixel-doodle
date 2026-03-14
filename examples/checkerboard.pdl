@@ -1,0 +1,21 @@
+# Checkerboard pattern using floor + rem to create alternating squares.
+kernel checkerboard {
+    scale: f64 = const 4.0
+    sx: f64 = mul x scale
+    sy: f64 = mul y scale
+    fx: f64 = floor sx
+    fy: f64 = floor sy
+    ix: u32 = f64_to_u32 fx
+    iy: u32 = f64_to_u32 fy
+    sum: u32 = add ix iy
+    two: u32 = const 2
+    parity: u32 = rem sum two
+    is_white: bool = eq parity 0
+    white: u32 = const 255
+    black: u32 = const 0
+    r: u32 = select is_white white black
+    g: u32 = select is_white white black
+    b: u32 = select is_white white black
+    pixel: u32 = pack_argb r g b
+    emit pixel
+}

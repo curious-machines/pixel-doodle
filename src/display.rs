@@ -7,6 +7,7 @@ pub struct Display {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
+    #[allow(dead_code)]
     surface_config: wgpu::SurfaceConfiguration,
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
@@ -286,6 +287,7 @@ impl Display {
         &self.texture
     }
 
+    #[allow(dead_code)]
     pub fn resize(&mut self, new_width: u32, new_height: u32) {
         if new_width > 0 && new_height > 0 {
             self.surface_config.width = new_width;

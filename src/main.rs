@@ -1,14 +1,18 @@
 mod display;
 mod gpu;
 mod jit;
+#[allow(dead_code)]
 mod kernel_ir;
+mod kernels;
+#[allow(dead_code)]
+mod lang;
 mod native_kernel;
 mod render;
 
 use display::Display;
 use gpu::GpuBackend;
 use jit::TileKernelFn;
-use kernel_ir::KernelIr;
+use kernel_ir::Kernel;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -19,16 +23,83 @@ use winit::window::{Window, WindowId};
 
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 900;
-const MAX_ITER: u32 = 256;
 
-fn parse_backend() -> String {
+struct CliArgs {
+    backend: String,
+    kernel_path: Option<String>,
+}
+
+fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
-    for i in 0..args.len() - 1 {
-        if args[i] == "--backend" {
-            return args[i + 1].clone();
+    let mut backend = "native".to_string();
+    let mut kernel_path = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--backend" => {
+                i += 1;
+                if i < args.len() {
+                    backend = args[i].clone();
+                }
+            }
+            "--kernel" => {
+                i += 1;
+                if i < args.len() {
+                    kernel_path = Some(args[i].clone());
+                }
+            }
+            _ => {
+                eprintln!("Unknown argument: {}", args[i]);
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+    CliArgs { backend, kernel_path }
+}
+
+/// What kind of kernel file was provided (or none).
+enum KernelSource {
+    /// A .pdl file parsed into IR (used by CPU backends).
+    Pdl(Kernel),
+    /// A .wgsl file loaded as source text (used by GPU backend).
+    Wgsl(String),
+}
+
+fn load_kernel(kernel_path: &Option<String>, backend: &str) -> KernelSource {
+    match kernel_path {
+        Some(path) => {
+            let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Failed to read kernel file '{}': {}", path, e);
+                std::process::exit(1);
+            });
+            if path.ends_with(".wgsl") {
+                if backend != "gpu" {
+                    eprintln!(".wgsl kernels require --backend gpu");
+                    std::process::exit(1);
+                }
+                KernelSource::Wgsl(src)
+            } else {
+                if backend == "gpu" {
+                    eprintln!("GPU backend requires a .wgsl kernel, got '{}'", path);
+                    std::process::exit(1);
+                }
+                let kernel = lang::parser::parse(&src).unwrap_or_else(|e| {
+                    eprintln!("Parse error in '{}': {}", path, e);
+                    std::process::exit(1);
+                });
+                KernelSource::Pdl(kernel)
+            }
+        }
+        None => {
+            if backend == "gpu" {
+                // No kernel specified — GPU uses built-in mandelbrot.wgsl
+                KernelSource::Wgsl(String::new()) // empty signals "use default"
+            } else {
+                KernelSource::Pdl(kernels::gradient_kernel())
+            }
         }
     }
-    "native".to_string()
 }
 
 enum Backend {
@@ -41,26 +112,24 @@ enum Backend {
     },
 }
 
-fn compile_cpu_kernel(backend_name: &str) -> (TileKernelFn, &'static str) {
+fn compile_cpu_kernel(backend_name: &str, kernel: &Kernel) -> (TileKernelFn, &'static str) {
     match backend_name {
         "native" => (native_kernel::native_mandelbrot_kernel, "native"),
 
         #[cfg(feature = "cranelift-backend")]
         "cranelift" => {
             let backend = jit::cranelift::CraneliftBackend;
-            let ir = KernelIr::Mandelbrot { max_iter: MAX_ITER };
-            let compiled = jit::JitBackend::compile(&backend, &ir);
-            let kernel: &'static dyn jit::CompiledKernel = Box::leak(compiled);
-            (kernel.function_ptr(), "cranelift")
+            let compiled = jit::JitBackend::compile(&backend, kernel);
+            let compiled: &'static dyn jit::CompiledKernel = Box::leak(compiled);
+            (compiled.function_ptr(), "cranelift")
         }
 
         #[cfg(feature = "llvm-backend")]
         "llvm" => {
             let backend = jit::llvm::LlvmBackend;
-            let ir = KernelIr::Mandelbrot { max_iter: MAX_ITER };
-            let compiled = jit::JitBackend::compile(&backend, &ir);
-            let kernel: &'static dyn jit::CompiledKernel = Box::leak(compiled);
-            (kernel.function_ptr(), "llvm")
+            let compiled = jit::JitBackend::compile(&backend, kernel);
+            let compiled: &'static dyn jit::CompiledKernel = Box::leak(compiled);
+            (compiled.function_ptr(), "llvm")
         }
 
         other => {
@@ -83,6 +152,7 @@ struct App {
     backend: Backend,
     label: &'static str,
     compile_ms: f64,
+    wgsl_source: Option<String>,
     window: Option<Arc<Window>>,
     display: Option<Display>,
     center_x: f64,
@@ -93,11 +163,12 @@ struct App {
 }
 
 impl App {
-    fn new(backend: Backend, label: &'static str, compile_ms: f64) -> Self {
+    fn new(backend: Backend, label: &'static str, compile_ms: f64, wgsl_source: Option<String>) -> Self {
         Self {
             backend,
             label,
             compile_ms,
+            wgsl_source,
             window: None,
             display: None,
             center_x: -0.5,
@@ -158,9 +229,14 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let display = Display::new(window.clone(), WIDTH, HEIGHT);
 
-        // Initialize GPU backend now that we have a display (and thus a device)
         if let Backend::Gpu { gpu_backend } = &mut self.backend {
-            *gpu_backend = Some(GpuBackend::new(&display, WIDTH, HEIGHT, MAX_ITER));
+            let wgsl = self.wgsl_source.as_deref();
+            // Empty string means "use default", None also means default
+            let wgsl = match wgsl {
+                Some("") | None => None,
+                Some(s) => Some(s),
+            };
+            *gpu_backend = Some(GpuBackend::new(&display, WIDTH, HEIGHT, 256, wgsl));
         }
 
         self.display = Some(display);
@@ -237,7 +313,6 @@ impl ApplicationHandler for App {
 
                     self.needs_render = false;
                 } else {
-                    // No changes — still need to present the existing frame
                     match &self.backend {
                         Backend::Cpu { buffer, .. } => {
                             display.upload_and_present(buffer);
@@ -259,21 +334,33 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    let backend_name = parse_backend();
+    let args = parse_args();
+
+    let kernel_source = load_kernel(&args.kernel_path, &args.backend);
 
     let compile_start = Instant::now();
 
-    let (backend, label) = if backend_name == "gpu" {
-        (Backend::Gpu { gpu_backend: None }, "gpu")
-    } else {
-        let (kernel_fn, label) = compile_cpu_kernel(&backend_name);
-        (
-            Backend::Cpu {
-                kernel_fn,
-                buffer: vec![0u32; (WIDTH * HEIGHT) as usize],
-            },
-            label,
-        )
+    let (backend, label, wgsl_source) = match kernel_source {
+        KernelSource::Wgsl(src) => {
+            if src.is_empty() {
+                eprintln!("[kernel] using built-in mandelbrot.wgsl");
+            } else {
+                eprintln!("[kernel] loaded WGSL from '{}'", args.kernel_path.as_deref().unwrap());
+            }
+            (Backend::Gpu { gpu_backend: None }, "gpu", Some(src))
+        }
+        KernelSource::Pdl(kernel) => {
+            eprintln!("[kernel] loaded '{}' ({} statements)", kernel.name, kernel.body.len());
+            let (kernel_fn, label) = compile_cpu_kernel(&args.backend, &kernel);
+            (
+                Backend::Cpu {
+                    kernel_fn,
+                    buffer: vec![0u32; (WIDTH * HEIGHT) as usize],
+                },
+                label,
+                None,
+            )
+        }
     };
 
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
@@ -281,6 +368,6 @@ fn main() {
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(backend, label, compile_ms);
+    let mut app = App::new(backend, label, compile_ms, wgsl_source);
     event_loop.run_app(&mut app).unwrap();
 }
