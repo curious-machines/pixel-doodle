@@ -32,21 +32,6 @@ impl JitBackend for CraneliftBackend {
     }
 }
 
-/// Tracks next available Cranelift Variable index.
-struct VarAlloc {
-    next: u32,
-}
-
-impl VarAlloc {
-    fn new(start: u32) -> Self {
-        Self { next: start }
-    }
-    fn alloc(&mut self) -> Variable {
-        let v = Variable::from_u32(self.next);
-        self.next += 1;
-        v
-    }
-}
 
 fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let mut flag_builder = settings::builder();
@@ -81,31 +66,17 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let mut fb_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut func, &mut fb_ctx);
 
-    // -- Tile loop variables (indices 0-9) --
-    let v_output = Variable::from_u32(0);
-    let v_width = Variable::from_u32(1);
-    let v_x_min = Variable::from_u32(2);
-    let v_y_min = Variable::from_u32(3);
-    let v_x_step = Variable::from_u32(4);
-    let v_y_step = Variable::from_u32(5);
-    let v_row_start = Variable::from_u32(6);
-    let v_row_end = Variable::from_u32(7);
-    let v_row = Variable::from_u32(8);
-    let v_col = Variable::from_u32(9);
-
-    builder.declare_var(v_output, I64);
-    builder.declare_var(v_width, I32);
-    builder.declare_var(v_x_min, F64);
-    builder.declare_var(v_y_min, F64);
-    builder.declare_var(v_x_step, F64);
-    builder.declare_var(v_y_step, F64);
-    builder.declare_var(v_row_start, I32);
-    builder.declare_var(v_row_end, I32);
-    builder.declare_var(v_row, I32);
-    builder.declare_var(v_col, I32);
-
-    // Variable allocator starts after tile loop variables
-    let mut var_alloc = VarAlloc::new(10);
+    // -- Tile loop variables --
+    let v_output = builder.declare_var(I64);
+    let v_width = builder.declare_var(I32);
+    let v_x_min = builder.declare_var(F64);
+    let v_y_min = builder.declare_var(F64);
+    let v_x_step = builder.declare_var(F64);
+    let v_y_step = builder.declare_var(F64);
+    let v_row_start = builder.declare_var(I32);
+    let v_row_end = builder.declare_var(I32);
+    let v_row = builder.declare_var(I32);
+    let v_col = builder.declare_var(I32);
 
     // -- Blocks --
     let entry_block = builder.create_block();
@@ -176,7 +147,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let cy = builder.ins().fma(row_f64, y_step, y_min);
 
     // Lower kernel body
-    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, &mut var_alloc);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -246,7 +217,6 @@ fn lower_kernel_body(
     kernel: &Kernel,
     cx: cranelift_codegen::ir::Value,
     cy: cranelift_codegen::ir::Value,
-    var_alloc: &mut VarAlloc,
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
@@ -254,7 +224,7 @@ fn lower_kernel_body(
     val_map.insert(Var(0), cx);
     val_map.insert(Var(1), cy);
 
-    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map, var_alloc);
+    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map);
 
     val_map[&kernel.emit]
 }
@@ -265,7 +235,6 @@ fn lower_body_items(
     kernel: &Kernel,
     body: &[BodyItem],
     val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
-    var_alloc: &mut VarAlloc,
 ) {
     for item in body {
         match item {
@@ -274,7 +243,7 @@ fn lower_body_items(
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(module, builder, kernel, w, val_map, var_alloc);
+                lower_while(module, builder, kernel, w, val_map);
             }
         }
     }
@@ -286,10 +255,9 @@ fn lower_while(
     kernel: &Kernel,
     w: &While,
     val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
-    var_alloc: &mut VarAlloc,
 ) {
     // Cranelift uses Variables for SSA construction (like mutable locals).
-    // We allocate a Variable for each carry var, def it with the initial value,
+    // We declare a Variable for each carry var, def it with the initial value,
     // then update it each iteration.
 
     let loop_header = builder.create_block();
@@ -298,13 +266,12 @@ fn lower_while(
 
     // Declare Variables for carry vars and initialize them
     let carry_vars: Vec<Variable> = w.carry.iter().map(|cv| {
-        let cl_var = var_alloc.alloc();
         let cl_ty = match cv.binding.ty {
             ScalarType::F64 => F64,
             ScalarType::U32 => I32,
             ScalarType::Bool => I8,
         };
-        builder.declare_var(cl_var, cl_ty);
+        let cl_var = builder.declare_var(cl_ty);
         let init_val = val_map[&cv.init];
         builder.def_var(cl_var, init_val);
         cl_var
