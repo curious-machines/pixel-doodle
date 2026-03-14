@@ -370,7 +370,7 @@ fn lower_inst(
                 (BinOp::Max, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.maxnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 (BinOp::Min, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umin.i32", l.into_int_value(), r.into_int_value(), i32_type),
                 (BinOp::Max, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umax.i32", l.into_int_value(), r.into_int_value(), i32_type),
-                (BinOp::Atan2, ScalarType::F64) => call_libm_f64_binary(context, module, builder, "atan2", l.into_float_value(), r.into_float_value()),
+                (BinOp::Atan2, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.atan2.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 (BinOp::Pow, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.pow.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 _ => unreachable!("invalid binary op/type combination"),
             }
@@ -396,10 +396,10 @@ fn lower_inst(
                 }
                 (UnaryOp::Sin, _) => call_f64_intrinsic(module, builder, "llvm.sin.f64", a.into_float_value(), f64_type),
                 (UnaryOp::Cos, _) => call_f64_intrinsic(module, builder, "llvm.cos.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Tan, _) => call_libm_f64(context, module, builder, "tan", a.into_float_value()),
-                (UnaryOp::Asin, _) => call_libm_f64(context, module, builder, "asin", a.into_float_value()),
-                (UnaryOp::Acos, _) => call_libm_f64(context, module, builder, "acos", a.into_float_value()),
-                (UnaryOp::Atan, _) => call_libm_f64(context, module, builder, "atan", a.into_float_value()),
+                (UnaryOp::Tan, _) => call_f64_intrinsic(module, builder, "llvm.tan.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Asin, _) => call_f64_intrinsic(module, builder, "llvm.asin.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Acos, _) => call_f64_intrinsic(module, builder, "llvm.acos.f64", a.into_float_value(), f64_type),
+                (UnaryOp::Atan, _) => call_f64_intrinsic(module, builder, "llvm.atan.f64", a.into_float_value(), f64_type),
                 (UnaryOp::Exp, _) => call_f64_intrinsic(module, builder, "llvm.exp.f64", a.into_float_value(), f64_type),
                 (UnaryOp::Exp2, _) => call_f64_intrinsic(module, builder, "llvm.exp2.f64", a.into_float_value(), f64_type),
                 (UnaryOp::Log, _) => call_f64_intrinsic(module, builder, "llvm.log.f64", a.into_float_value(), f64_type),
@@ -478,43 +478,6 @@ fn lower_inst(
     }
 }
 
-fn call_libm_f64(
-    context: &'static Context,
-    module: &Module<'static>,
-    builder: &inkwell::builder::Builder<'static>,
-    name: &str,
-    arg: inkwell::values::FloatValue<'static>,
-) -> BasicValueEnum<'static> {
-    let f64_type = context.f64_type();
-    let fn_type = f64_type.fn_type(&[f64_type.into()], false);
-    let func = module.get_function(name)
-        .unwrap_or_else(|| module.add_function(name, fn_type, Some(inkwell::module::Linkage::External)));
-    builder.build_call(func, &[arg.into()], name)
-        .unwrap()
-        .try_as_basic_value()
-        .left()
-        .unwrap()
-}
-
-fn call_libm_f64_binary(
-    context: &'static Context,
-    module: &Module<'static>,
-    builder: &inkwell::builder::Builder<'static>,
-    name: &str,
-    lhs: inkwell::values::FloatValue<'static>,
-    rhs: inkwell::values::FloatValue<'static>,
-) -> BasicValueEnum<'static> {
-    let f64_type = context.f64_type();
-    let fn_type = f64_type.fn_type(&[f64_type.into(), f64_type.into()], false);
-    let func = module.get_function(name)
-        .unwrap_or_else(|| module.add_function(name, fn_type, Some(inkwell::module::Linkage::External)));
-    builder.build_call(func, &[lhs.into(), rhs.into()], name)
-        .unwrap()
-        .try_as_basic_value()
-        .left()
-        .unwrap()
-}
-
 fn call_f64_binary_intrinsic(
     module: &Module<'static>,
     builder: &inkwell::builder::Builder<'static>,
@@ -529,8 +492,7 @@ fn call_f64_binary_intrinsic(
     builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
         .unwrap()
         .try_as_basic_value()
-        .left()
-        .unwrap()
+        .unwrap_basic()
 }
 
 fn call_i32_binary_intrinsic(
@@ -547,8 +509,7 @@ fn call_i32_binary_intrinsic(
     builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
         .unwrap()
         .try_as_basic_value()
-        .left()
-        .unwrap()
+        .unwrap_basic()
 }
 
 fn call_f64_intrinsic(
@@ -564,6 +525,5 @@ fn call_f64_intrinsic(
     builder.build_call(decl, &[arg.into()], &name[5..name.len()-4])  // strip "llvm." and ".f64"
         .unwrap()
         .try_as_basic_value()
-        .left()
-        .unwrap()
+        .unwrap_basic()
 }
