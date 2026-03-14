@@ -28,7 +28,8 @@
       "Bash(timeout 3 cargo run --release -- --backend gpu 2>&1 || true)",
       "Bash(cargo check:*)",
       "Bash(cargo test:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(grep:*)"
     ]
   }
 }
