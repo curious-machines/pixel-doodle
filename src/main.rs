@@ -270,9 +270,17 @@ impl ApplicationHandler for App {
                             if !self.keys_down.contains(&code) {
                                 self.keys_down.push(code);
                             }
+                            // Switch to Poll for continuous rendering while keys are held
+                            event_loop.set_control_flow(ControlFlow::Poll);
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
                         }
                         ElementState::Released => {
                             self.keys_down.retain(|&k| k != code);
+                            if self.keys_down.is_empty() {
+                                event_loop.set_control_flow(ControlFlow::Wait);
+                            }
                         }
                     }
                 }
@@ -281,11 +289,10 @@ impl ApplicationHandler for App {
                 let moved = self.handle_input();
                 let display = self.display.as_ref().unwrap();
 
-                if moved || self.needs_render {
-                    let t0 = Instant::now();
-
-                    match &mut self.backend {
-                        Backend::Cpu { kernel_fn, buffer } => {
+                match &mut self.backend {
+                    Backend::Cpu { kernel_fn, buffer } => {
+                        if moved || self.needs_render {
+                            let t0 = Instant::now();
                             render::render(
                                 buffer,
                                 WIDTH as usize,
@@ -302,11 +309,14 @@ impl ApplicationHandler for App {
                                     self.label, self.zoom, self.compile_ms
                                 ));
                             }
-                            display.upload_and_present(buffer);
                         }
-                        Backend::Gpu { gpu_backend } => {
-                            let gpu = gpu_backend.as_ref().unwrap();
-                            gpu.render(display, self.center_x, self.center_y, self.zoom);
+                        display.upload_and_present(buffer);
+                    }
+                    Backend::Gpu { gpu_backend } => {
+                        let gpu = gpu_backend.as_ref().unwrap();
+                        let t0 = Instant::now();
+                        gpu.render(display, self.center_x, self.center_y, self.zoom);
+                        if moved || self.needs_render {
                             let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
                             if let Some(window) = &self.window {
                                 window.set_title(&format!(
@@ -316,22 +326,15 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-
-                    self.needs_render = false;
-                } else {
-                    match &self.backend {
-                        Backend::Cpu { buffer, .. } => {
-                            display.upload_and_present(buffer);
-                        }
-                        Backend::Gpu { gpu_backend } => {
-                            let gpu = gpu_backend.as_ref().unwrap();
-                            gpu.render(display, self.center_x, self.center_y, self.zoom);
-                        }
-                    }
                 }
 
-                if let Some(window) = &self.window {
-                    window.request_redraw();
+                self.needs_render = false;
+
+                // Keep requesting redraws while keys are held for continuous pan/zoom
+                if !self.keys_down.is_empty() {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
                 }
             }
             _ => {}
@@ -373,7 +376,7 @@ fn main() {
     eprintln!("[{label}] compile: {compile_ms:.1}ms");
 
     let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
+    event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(backend, label, compile_ms, wgsl_source);
     event_loop.run_app(&mut app).unwrap();
 }

@@ -37,4 +37,4 @@ if [[ ! -f "$kernel" ]]; then
     exit 1
 fi
 
-exec cargo run --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel"
+exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel"
