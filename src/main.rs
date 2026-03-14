@@ -7,6 +7,7 @@ mod kernels;
 #[allow(dead_code)]
 mod lang;
 mod native_kernel;
+mod progressive;
 mod render;
 
 use display::Display;
@@ -27,12 +28,14 @@ const HEIGHT: u32 = 900;
 struct CliArgs {
     backend: String,
     kernel_path: Option<String>,
+    samples: Option<u32>,
 }
 
 fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
     let mut backend = "native".to_string();
     let mut kernel_path = None;
+    let mut samples = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -48,6 +51,15 @@ fn parse_args() -> CliArgs {
                     kernel_path = Some(args[i].clone());
                 }
             }
+            "--samples" => {
+                i += 1;
+                if i < args.len() {
+                    samples = Some(args[i].parse::<u32>().unwrap_or_else(|_| {
+                        eprintln!("--samples requires a positive integer");
+                        std::process::exit(1);
+                    }));
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -55,7 +67,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path }
+    CliArgs { backend, kernel_path, samples }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -106,9 +118,14 @@ enum Backend {
     Cpu {
         kernel_fn: TileKernelFn,
         buffer: Vec<u32>,
+        /// Second buffer for resolved display output in progressive mode.
+        display_buffer: Option<Vec<u32>>,
+        accum: Option<progressive::AccumulationBuffer>,
     },
     Gpu {
         gpu_backend: Option<GpuBackend>,
+        sample_count: u32,
+        max_samples: Option<u32>,
     },
 }
 
@@ -235,7 +252,7 @@ impl ApplicationHandler for App {
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let display = Display::new(window.clone(), WIDTH, HEIGHT);
 
-        if let Backend::Gpu { gpu_backend } = &mut self.backend {
+        if let Backend::Gpu { gpu_backend, .. } = &mut self.backend {
             let wgsl = self.wgsl_source.as_deref();
             // Empty string means "use default", None also means default
             let wgsl = match wgsl {
@@ -290,39 +307,117 @@ impl ApplicationHandler for App {
                 let display = self.display.as_ref().unwrap();
 
                 match &mut self.backend {
-                    Backend::Cpu { kernel_fn, buffer } => {
-                        if moved || self.needs_render {
-                            let t0 = Instant::now();
-                            render::render(
-                                buffer,
-                                WIDTH as usize,
-                                HEIGHT as usize,
-                                self.center_x,
-                                self.center_y,
-                                self.zoom,
-                                *kernel_fn,
-                            );
-                            let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                            if let Some(window) = &self.window {
-                                window.set_title(&format!(
-                                    "{} | {render_ms:.1}ms | {:.1}x | compile {:.1}ms",
-                                    self.label, self.zoom, self.compile_ms
-                                ));
+                    Backend::Cpu { kernel_fn, buffer, display_buffer, accum } => {
+                        match accum {
+                            Some(accum) => {
+                                // Progressive mode
+                                if moved {
+                                    accum.reset();
+                                }
+                                if !accum.is_converged() {
+                                    let t0 = Instant::now();
+                                    render::render(
+                                        buffer,
+                                        WIDTH as usize,
+                                        HEIGHT as usize,
+                                        self.center_x,
+                                        self.center_y,
+                                        self.zoom,
+                                        *kernel_fn,
+                                        accum.sample_count,
+                                    );
+                                    accum.accumulate(buffer);
+                                    let disp = display_buffer.as_mut().unwrap();
+                                    accum.resolve(disp);
+                                    let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                                    if let Some(window) = &self.window {
+                                        window.set_title(&format!(
+                                            "{} | {render_ms:.1}ms | sample {}/{} | {:.1}x | compile {:.1}ms",
+                                            self.label, accum.sample_count, accum.max_samples,
+                                            self.zoom, self.compile_ms
+                                        ));
+                                    }
+                                    display.upload_and_present(disp);
+                                    // Request next sample
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                } else {
+                                    // Converged — just re-present
+                                    let disp = display_buffer.as_ref().unwrap();
+                                    display.upload_and_present(disp);
+                                }
+                            }
+                            None => {
+                                // Non-progressive mode (original behavior)
+                                if moved || self.needs_render {
+                                    let t0 = Instant::now();
+                                    render::render(
+                                        buffer,
+                                        WIDTH as usize,
+                                        HEIGHT as usize,
+                                        self.center_x,
+                                        self.center_y,
+                                        self.zoom,
+                                        *kernel_fn,
+                                        0xFFFFFFFF,
+                                    );
+                                    let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                                    if let Some(window) = &self.window {
+                                        window.set_title(&format!(
+                                            "{} | {render_ms:.1}ms | {:.1}x | compile {:.1}ms",
+                                            self.label, self.zoom, self.compile_ms
+                                        ));
+                                    }
+                                }
+                                display.upload_and_present(buffer);
                             }
                         }
-                        display.upload_and_present(buffer);
                     }
-                    Backend::Gpu { gpu_backend } => {
+                    Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
-                        let t0 = Instant::now();
-                        gpu.render(display, self.center_x, self.center_y, self.zoom);
-                        if moved || self.needs_render {
-                            let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
-                            if let Some(window) = &self.window {
-                                window.set_title(&format!(
-                                    "{} | {render_ms:.1}ms | {:.1}x",
-                                    self.label, self.zoom
-                                ));
+                        if moved {
+                            if max_samples.is_some() {
+                                gpu.reset_accumulation(&display.queue);
+                                *sample_count = 0;
+                            }
+                        }
+                        match *max_samples {
+                            Some(max) if *sample_count < max => {
+                                let t0 = Instant::now();
+                                gpu.render(
+                                    display, self.center_x, self.center_y, self.zoom,
+                                    *sample_count, *sample_count + 1,
+                                );
+                                *sample_count += 1;
+                                let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                                if let Some(window) = &self.window {
+                                    window.set_title(&format!(
+                                        "{} | {render_ms:.1}ms | sample {}/{} | {:.1}x",
+                                        self.label, sample_count, max, self.zoom
+                                    ));
+                                    window.request_redraw();
+                                }
+                            }
+                            Some(_) => {
+                                // Converged — no re-render needed
+                            }
+                            None => {
+                                // Non-progressive: single render
+                                if moved || self.needs_render {
+                                    let t0 = Instant::now();
+                                    gpu.render(
+                                        display, self.center_x, self.center_y, self.zoom,
+                                        0xFFFFFFFF, 0,
+                                    );
+                                    let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                                    if let Some(window) = &self.window {
+                                        window.set_title(&format!(
+                                            "{} | {render_ms:.1}ms | {:.1}x",
+                                            self.label, self.zoom
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -356,15 +451,39 @@ fn main() {
             } else {
                 eprintln!("[kernel] loaded WGSL from '{}'", args.kernel_path.as_deref().unwrap());
             }
-            (Backend::Gpu { gpu_backend: None }, "gpu", Some(src))
+            if let Some(n) = args.samples {
+                eprintln!("[progressive] {} samples", n);
+            }
+            (
+                Backend::Gpu {
+                    gpu_backend: None,
+                    sample_count: 0,
+                    max_samples: args.samples,
+                },
+                "gpu",
+                Some(src),
+            )
         }
         KernelSource::Pdl(kernel) => {
             eprintln!("[kernel] loaded '{}' ({} statements)", kernel.name, kernel.body.len());
             let (kernel_fn, label) = compile_cpu_kernel(&args.backend, &kernel);
+            let pixel_count = (WIDTH * HEIGHT) as usize;
+            let (display_buffer, accum) = match args.samples {
+                Some(n) => {
+                    eprintln!("[progressive] {} samples", n);
+                    (
+                        Some(vec![0u32; pixel_count]),
+                        Some(progressive::AccumulationBuffer::new(WIDTH as usize, HEIGHT as usize, n)),
+                    )
+                }
+                None => (None, None),
+            };
             (
                 Backend::Cpu {
                     kernel_fn,
-                    buffer: vec![0u32; (WIDTH * HEIGHT) as usize],
+                    buffer: vec![0u32; pixel_count],
+                    display_buffer,
+                    accum,
                 },
                 label,
                 None,

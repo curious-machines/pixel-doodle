@@ -45,9 +45,16 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
     let features_str = features.to_str().unwrap();
     let filtered_features: String = features_str
         .split(',')
-        .filter(|f| !f.contains("sve"))
+        .filter(|f| !f.contains("sve") && !f.contains("sme"))
         .collect::<Vec<_>>()
         .join(",");
+    // On AArch64, also explicitly disable SVE to prevent LLVM from generating
+    // scalable vector types even when the host doesn't report SVE features.
+    let filtered_features = if cfg!(target_arch = "aarch64") {
+        format!("{filtered_features},-sve,-sve2")
+    } else {
+        filtered_features
+    };
     let target = Target::from_triple(&triple).unwrap();
     let machine = target
         .create_target_machine(
@@ -78,6 +85,7 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
             f64_type.into(),
             i32_type.into(),
             i32_type.into(),
+            i32_type.into(), // sample_index
         ],
         false,
     );
@@ -96,7 +104,7 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
 
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32)>(
                 &kernel.name,
             )
             .unwrap()
@@ -140,6 +148,7 @@ fn build_tile_loop(
     let p_y_step = function.get_nth_param(6).unwrap().into_float_value();
     let p_row_start = function.get_nth_param(7).unwrap().into_int_value();
     let p_row_end = function.get_nth_param(8).unwrap().into_int_value();
+    let p_sample_index = function.get_nth_param(9).unwrap().into_int_value();
 
     let row_ptr = builder.build_alloca(i32_type, "row_ptr").unwrap();
     let col_ptr = builder.build_alloca(i32_type, "col_ptr").unwrap();
@@ -176,6 +185,46 @@ fn build_tile_loop(
     let row_f = builder.build_signed_int_to_float(row, f64_type, "row_f").unwrap();
     let row_step = builder.build_float_mul(row_f, p_y_step, "row_step").unwrap();
     let cy = builder.build_float_add(p_y_min, row_step, "cy").unwrap();
+
+    // Apply sub-pixel jitter when sample_index != 0xFFFFFFFF
+    let no_jitter = i32_type.const_int(0xFFFFFFFF, false);
+    let skip_jitter = builder.build_int_compare(IntPredicate::EQ, p_sample_index, no_jitter, "skip_jitter").unwrap();
+
+    // Hash: h = col * 0x45d9f3b + row
+    let col = builder.build_load(i32_type, col_ptr, "col_h").unwrap().into_int_value();
+    let row = builder.build_load(i32_type, row_ptr, "row_h").unwrap().into_int_value();
+    let hash_k = i32_type.const_int(0x45d9f3b, false);
+    let h = builder.build_int_mul(col, hash_k, "h1").unwrap();
+    let h = builder.build_int_add(h, row, "h2").unwrap();
+    let h = builder.build_int_mul(h, hash_k, "h3").unwrap();
+    let h = builder.build_int_add(h, p_sample_index, "h4").unwrap();
+    let sixteen = i32_type.const_int(16, false);
+    let h_shifted = builder.build_right_shift(h, sixteen, false, "h_shr1").unwrap();
+    let h = builder.build_xor(h, h_shifted, "h5").unwrap();
+    let h = builder.build_int_mul(h, hash_k, "h6").unwrap();
+    let h_shifted = builder.build_right_shift(h, sixteen, false, "h_shr2").unwrap();
+    let h = builder.build_xor(h, h_shifted, "h7").unwrap();
+
+    // Extract jitter values
+    let mask_16 = i32_type.const_int(0xFFFF, false);
+    let jx_bits = builder.build_and(h, mask_16, "jx_bits").unwrap();
+    let jy_bits = builder.build_right_shift(h, sixteen, false, "jy_bits").unwrap();
+    let recip = f64_type.const_float(1.0 / 65536.0);
+    let jx = builder.build_unsigned_int_to_float(jx_bits, f64_type, "jx_f").unwrap();
+    let jx = builder.build_float_mul(jx, recip, "jx").unwrap();
+    let jy = builder.build_unsigned_int_to_float(jy_bits, f64_type, "jy_f").unwrap();
+    let jy = builder.build_float_mul(jy, recip, "jy").unwrap();
+
+    // Conditional: if skip_jitter, use 0.0; otherwise use jitter
+    let zero_f64 = f64_type.const_float(0.0);
+    let jx = builder.build_select(skip_jitter, zero_f64, jx, "jx_sel").unwrap().into_float_value();
+    let jy = builder.build_select(skip_jitter, zero_f64, jy, "jy_sel").unwrap().into_float_value();
+
+    // Apply: cx += jx * x_step, cy += jy * y_step
+    let jx_step = builder.build_float_mul(jx, p_x_step, "jx_step").unwrap();
+    let cx = builder.build_float_add(cx, jx_step, "cx_j").unwrap();
+    let jy_step = builder.build_float_mul(jy, p_y_step, "jy_step").unwrap();
+    let cy = builder.build_float_add(cy, jy_step, "cy_j").unwrap();
 
     let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy);
 

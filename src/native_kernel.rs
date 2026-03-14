@@ -1,3 +1,15 @@
+/// Hash (col, row, sample_index) into sub-pixel jitter in [0, 1) per axis.
+fn pixel_jitter(col: u32, row: u32, sample_index: u32) -> (f64, f64) {
+    let mut h = col.wrapping_mul(0x45d9f3b).wrapping_add(row);
+    h = h.wrapping_mul(0x45d9f3b).wrapping_add(sample_index);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x45d9f3b);
+    h ^= h >> 16;
+    let jx = (h & 0xFFFF) as f64 / 65536.0;
+    let jy = (h >> 16) as f64 / 65536.0;
+    (jx, jy)
+}
+
 const MAX_ITER: u32 = 256;
 
 fn mandelbrot(cx: f64, cy: f64) -> u32 {
@@ -39,16 +51,22 @@ pub unsafe extern "C" fn native_mandelbrot_kernel(
     y_step: f64,
     row_start: u32,
     row_end: u32,
+    sample_index: u32,
 ) {
     let width = width as usize;
     for row in row_start..row_end {
-        let cy = y_min + row as f64 * y_step;
         let row_offset = (row - row_start) as usize * width;
-        for col in 0..width {
-            let cx = x_min + col as f64 * x_step;
+        for col in 0..width as u32 {
+            let (jx, jy) = if sample_index != 0xFFFFFFFF {
+                pixel_jitter(col, row, sample_index)
+            } else {
+                (0.0, 0.0)
+            };
+            let cx = x_min + (col as f64 + jx) * x_step;
+            let cy = y_min + (row as f64 + jy) * y_step;
             let iter = mandelbrot(cx, cy);
             let color = iter_to_color(iter);
-            unsafe { *output.add(row_offset + col) = color };
+            unsafe { *output.add(row_offset + col as usize) = color };
         }
     }
 }

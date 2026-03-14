@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: ./run <backend> <example>"
+    echo "Usage: ./run <backend> <example> [--samples N]"
     echo "  backend: cranelift, llvm, gpu"
     echo "  example: gradient, checkerboard, circle, etc."
     exit 1
@@ -12,6 +12,8 @@ usage() {
 
 backend="$1"
 example="$2"
+shift 2
+extra_args=("$@")
 
 case "$backend" in
     cranelift)
@@ -37,4 +39,4 @@ if [[ ! -f "$kernel" ]]; then
     exit 1
 fi
 
-exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel"
+exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel" "${extra_args[@]}"

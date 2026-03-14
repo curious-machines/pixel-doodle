@@ -57,6 +57,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     sig.params.push(AbiParam::new(F64)); // y_step: f64
     sig.params.push(AbiParam::new(I32)); // row_start: u32
     sig.params.push(AbiParam::new(I32)); // row_end: u32
+    sig.params.push(AbiParam::new(I32)); // sample_index: u32
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -75,6 +76,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let v_y_step = builder.declare_var(F64);
     let v_row_start = builder.declare_var(I32);
     let v_row_end = builder.declare_var(I32);
+    let v_sample_index = builder.declare_var(I32);
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
 
@@ -102,6 +104,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     builder.def_var(v_y_step, params[6]);
     builder.def_var(v_row_start, params[7]);
     builder.def_var(v_row_end, params[8]);
+    builder.def_var(v_sample_index, params[9]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -145,6 +148,51 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let y_step = builder.use_var(v_y_step);
     let row_f64 = builder.ins().fcvt_from_sint(F64, row);
     let cy = builder.ins().fma(row_f64, y_step, y_min);
+
+    // Apply sub-pixel jitter when sample_index != 0xFFFFFFFF
+    let sample_idx = builder.use_var(v_sample_index);
+    let no_jitter_sentinel = builder.ins().iconst(I32, 0xFFFFFFFFu32 as i64);
+    let skip_jitter = builder.ins().icmp(IntCC::Equal, sample_idx, no_jitter_sentinel);
+
+    // Hash: h = col * 0x45d9f3b + row
+    let col = builder.use_var(v_col);
+    let row = builder.use_var(v_row);
+    let hash_k = builder.ins().iconst(I32, 0x45d9f3bu32 as i64);
+    let h = builder.ins().imul(col, hash_k);
+    let h = builder.ins().iadd(h, row);
+    // h = h * 0x45d9f3b + sample_index
+    let h = builder.ins().imul(h, hash_k);
+    let h = builder.ins().iadd(h, sample_idx);
+    // h ^= h >> 16
+    let sixteen = builder.ins().iconst(I32, 16);
+    let h_shifted = builder.ins().ushr(h, sixteen);
+    let h = builder.ins().bxor(h, h_shifted);
+    // h *= 0x45d9f3b
+    let h = builder.ins().imul(h, hash_k);
+    // h ^= h >> 16
+    let h_shifted = builder.ins().ushr(h, sixteen);
+    let h = builder.ins().bxor(h, h_shifted);
+
+    // Extract jitter: jx = (h & 0xFFFF) / 65536.0, jy = (h >> 16) / 65536.0
+    let mask_16 = builder.ins().iconst(I32, 0xFFFF);
+    let jx_bits = builder.ins().band(h, mask_16);
+    let jy_bits = builder.ins().ushr(h, sixteen);
+    let recip = builder.ins().f64const(1.0 / 65536.0);
+    let jx = builder.ins().fcvt_from_uint(F64, jx_bits);
+    let jx = builder.ins().fmul(jx, recip);
+    let jy = builder.ins().fcvt_from_uint(F64, jy_bits);
+    let jy = builder.ins().fmul(jy, recip);
+
+    // Conditional: if skip_jitter, use 0.0; otherwise use jitter
+    let zero_f64 = builder.ins().f64const(0.0);
+    let jx = builder.ins().select(skip_jitter, zero_f64, jx);
+    let jy = builder.ins().select(skip_jitter, zero_f64, jy);
+
+    // Apply: cx += jx * x_step, cy += jy * y_step
+    let x_step = builder.use_var(v_x_step);
+    let y_step = builder.use_var(v_y_step);
+    let cx = builder.ins().fma(jx, x_step, cx);
+    let cy = builder.ins().fma(jy, y_step, cy);
 
     // Lower kernel body
     let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy);

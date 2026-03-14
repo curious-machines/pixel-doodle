@@ -2,6 +2,9 @@ use crate::kernel_ir::Kernel;
 
 /// JIT'd function: writes ARGB pixels for rows [row_start, row_end).
 /// `output` points to the start of this tile's chunk, not the full buffer.
+///
+/// `sample_index`: which sample pass this is (0, 1, 2, ...).
+/// When `0xFFFFFFFF`, no jitter is applied (non-progressive mode).
 pub type TileKernelFn = unsafe extern "C" fn(
     output: *mut u32,
     width: u32,
@@ -12,6 +15,7 @@ pub type TileKernelFn = unsafe extern "C" fn(
     y_step: f64,
     row_start: u32,
     row_end: u32,
+    sample_index: u32,
 );
 
 pub trait JitBackend {

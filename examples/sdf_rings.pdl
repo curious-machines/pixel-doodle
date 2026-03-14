@@ -1,0 +1,42 @@
+# Concentric thin rings — aliasing nightmare without progressive AA.
+# Hard inside/outside threshold makes anti-aliasing benefit clearly visible.
+
+kernel sdf_rings(x: f64, y: f64) -> u32 {
+    # Distance from center
+    x2: f64 = mul x x
+    y2: f64 = mul y y
+    sum: f64 = add x2 y2
+    r: f64 = sqrt sum
+
+    # Create concentric rings with spacing 0.1, thickness 0.005
+    spacing: f64 = const 0.1
+    thickness: f64 = const 0.005
+
+    # d = abs(fract(r / spacing) - 0.5) * spacing - thickness
+    r_scaled: f64 = div r spacing
+    fr: f64 = fract r_scaled
+    half: f64 = const 0.5
+    centered: f64 = sub fr half
+    abs_c: f64 = abs centered
+    ring_d: f64 = mul abs_c spacing
+    ring_sdf: f64 = sub ring_d thickness
+
+    # Hard threshold: inside ring = white, outside = dark gray
+    zero: f64 = const 0.0
+    inside: bool = le ring_sdf zero
+
+    # White ring on dark background
+    white_r: u32 = const 240
+    white_g: u32 = const 240
+    white_b: u32 = const 240
+    dark_r: u32 = const 30
+    dark_g: u32 = const 30
+    dark_b: u32 = const 40
+
+    out_r: u32 = select inside white_r dark_r
+    out_g: u32 = select inside white_g dark_g
+    out_b: u32 = select inside white_b dark_b
+
+    pixel: u32 = pack_argb out_r out_g out_b
+    emit pixel
+}

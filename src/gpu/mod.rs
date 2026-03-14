@@ -20,6 +20,9 @@ struct Params {
     y_min: f32,
     x_step: f32,
     y_step: f32,
+    sample_index: u32,
+    sample_count: u32,
+    _pad: [u32; 2],
 }
 
 pub struct GpuBackend {
@@ -27,6 +30,7 @@ pub struct GpuBackend {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     storage_buffer: wgpu::Buffer,
+    accum_buffer: wgpu::Buffer,
     width: u32,
     height: u32,
     max_iter: u32,
@@ -75,6 +79,16 @@ impl GpuBackend {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
@@ -110,16 +124,32 @@ impl GpuBackend {
             mapped_at_creation: false,
         });
 
+        // Accumulation buffer: vec4<f32> per pixel (16 bytes), stride-aligned rows
+        let accum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("accumulation"),
+            size: (stride * height) as u64 * 16, // 16 bytes per vec4<f32>
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             compute_pipeline,
             bind_group_layout,
             uniform_buffer,
             storage_buffer,
+            accum_buffer,
             width,
             height,
             max_iter,
             stride,
         }
+    }
+
+    /// Zero the accumulation buffer (call on pan/zoom reset).
+    pub fn reset_accumulation(&self, queue: &wgpu::Queue) {
+        let size = (self.stride * self.height) as u64 * 16;
+        let zeroes = vec![0u8; size as usize];
+        queue.write_buffer(&self.accum_buffer, 0, &zeroes);
     }
 
     /// Dispatch the compute shader and copy results to the display texture.
@@ -129,6 +159,8 @@ impl GpuBackend {
         center_x: f64,
         center_y: f64,
         zoom: f64,
+        sample_index: u32,
+        sample_count: u32,
     ) {
         let aspect = self.width as f64 / self.height as f64;
         let view_w = 3.5 / zoom;
@@ -147,6 +179,9 @@ impl GpuBackend {
             y_min: y_min as f32,
             x_step: x_step as f32,
             y_step: y_step as f32,
+            sample_index,
+            sample_count,
+            _pad: [0; 2],
         };
 
         display
@@ -166,6 +201,10 @@ impl GpuBackend {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: self.storage_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.accum_buffer.as_entire_binding(),
                     },
                 ],
             });
