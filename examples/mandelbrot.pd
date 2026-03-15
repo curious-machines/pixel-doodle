@@ -1,0 +1,26 @@
+kernel mandelbrot(x: f64, y: f64) -> u32 {
+    while zx = 0.0, zy = 0.0, iter: u32 = 0 {
+        break_if zx * zx + zy * zy > 4.0 || iter >= 256u32;
+        yield zx * zx - zy * zy + x,
+              2.0 * zx * zy + y,
+              iter + 1u32;
+    }
+
+    let is_inside = iter == 256u32;
+    let t = iter as f64 / 256.0;
+    let omt = 1.0 - t;
+
+    // Polynomial color mapping
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let omt2 = omt * omt;
+    let omt3 = omt2 * omt;
+
+    let color = rgb255(
+        9.0 * omt * t3 * 255.0,
+        15.0 * omt2 * t2 * 255.0,
+        8.5 * omt3 * t * 255.0,
+    );
+
+    emit if is_inside { 0u32 } else { color };
+}

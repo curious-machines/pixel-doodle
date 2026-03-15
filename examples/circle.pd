@@ -1,0 +1,5 @@
+kernel circle(x: f64, y: f64) -> u32 {
+    let inside = x * x + y * y <= 1.0;
+    let b = if inside { 200u32 } else { 0u32 };
+    emit pack_argb(0u32, 0u32, b);
+}

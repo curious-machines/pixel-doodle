@@ -1,0 +1,58 @@
+fn hash1(cx: f64, cy: f64) -> f64 {
+    return fract(sin(cx * 127.1 + cy * 311.7) * 43758.5453);
+}
+
+fn hash2(cx: f64, cy: f64) -> f64 {
+    return fract(sin(cx * 269.5 + cy * 183.3) * 43758.5453);
+}
+
+fn hash3(cx: f64, cy: f64) -> f64 {
+    return fract(sin(cx * 419.2 + cy * 371.9) * 43758.5453);
+}
+
+fn hash4(cx: f64, cy: f64) -> f64 {
+    return fract(sin(cx * 547.3 + cy * 251.7) * 43758.5453);
+}
+
+fn star_contrib(px: f64, py: f64, cx: f64, cy: f64) -> f64 {
+    let sx = hash1(cx, cy);
+    let sy = hash2(cx, cy);
+    let br = hash3(cx, cy);
+    let has = br > 0.7;
+    let bright = (br - 0.7) / 0.3;
+
+    let dist = length(px - (cx + sx), py - (cy + sy));
+    let star_r = 0.08 + bright * 0.12;
+    let glow = exp(-dist / star_r * 3.0) * bright;
+
+    return if has { glow } else { 0.0 };
+}
+
+kernel starfield(x: f64, y: f64) -> u32 {
+    let px = x * 10.0;
+    let py = y * 10.0;
+    let cx = floor(px);
+    let cy = floor(py);
+
+    // 3x3 neighborhood
+    let intensity =
+        star_contrib(px, py, cx - 1.0, cy - 1.0) +
+        star_contrib(px, py, cx,       cy - 1.0) +
+        star_contrib(px, py, cx + 1.0, cy - 1.0) +
+        star_contrib(px, py, cx - 1.0, cy)       +
+        star_contrib(px, py, cx,       cy)        +
+        star_contrib(px, py, cx + 1.0, cy)        +
+        star_contrib(px, py, cx - 1.0, cy + 1.0) +
+        star_contrib(px, py, cx,       cy + 1.0) +
+        star_contrib(px, py, cx + 1.0, cy + 1.0);
+
+    // Color temperature
+    let temp = hash4(cx, cy);
+    let star_r = mix(180.0, 255.0, temp);
+    let star_g = mix(200.0, 220.0, temp);
+    let star_b = mix(255.0, 170.0, temp);
+
+    emit rgb255(min(3.0 + star_r * intensity, 255.0),
+                min(3.0 + star_g * intensity, 255.0),
+                min(8.0 + star_b * intensity, 255.0));
+}

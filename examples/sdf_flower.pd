@@ -1,0 +1,33 @@
+// Exponential smooth minimum
+fn smin(a: f64, b: f64, k: f64) -> f64 {
+    return -log(exp(-k * a) + exp(-k * b)) / k;
+}
+
+kernel sdf_flower(x: f64, y: f64) -> u32 {
+    let r = length(x, y);
+    let angle = atan2(y, x);
+
+    // Flower SDF: circle modulated by sin(6θ)
+    let d_flower = r - (0.45 + sin(angle * 6.0) * 0.12);
+
+    // Ring SDF: |r - 0.85| - 0.04
+    let d_ring = abs(r - 0.85) - 0.04;
+
+    // Smooth min blend
+    let d = smin(d_flower, d_ring, 12.0);
+
+    // Brightness: sharp fill + soft glow
+    let fill = saturate(-d * 40.0);
+    let glow = exp(-abs(d) * 6.0) * 0.4;
+    let brightness = min(fill + glow, 1.0);
+
+    // Angular rainbow hue
+    let r_hue = 0.5 + 0.5 * cos(angle);
+    let g_hue = 0.5 + 0.5 * cos(angle + 2.094);
+    let b_hue = 0.5 + 0.5 * cos(angle + 4.189);
+
+    // Final: gamma-corrected hue × brightness
+    emit rgb(pow(r_hue, 0.8) * brightness,
+             pow(g_hue, 0.8) * brightness,
+             pow(b_hue, 0.8) * brightness);
+}

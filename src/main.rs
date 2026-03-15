@@ -29,6 +29,7 @@ struct CliArgs {
     backend: String,
     kernel_path: Option<String>,
     samples: Option<u32>,
+    dump_ir: bool,
 }
 
 fn parse_args() -> CliArgs {
@@ -36,6 +37,7 @@ fn parse_args() -> CliArgs {
     let mut backend = "native".to_string();
     let mut kernel_path = None;
     let mut samples = None;
+    let mut dump_ir = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -60,6 +62,9 @@ fn parse_args() -> CliArgs {
                     }));
                 }
             }
+            "--dump-ir" => {
+                dump_ir = true;
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -67,7 +72,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples }
+    CliArgs { backend, kernel_path, samples, dump_ir }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -91,6 +96,16 @@ fn load_kernel(kernel_path: &Option<String>, backend: &str) -> KernelSource {
                     std::process::exit(1);
                 }
                 KernelSource::Wgsl(src)
+            } else if path.ends_with(".pd") {
+                if backend == "gpu" {
+                    eprintln!("GPU backend requires a .wgsl kernel, got '{}'", path);
+                    std::process::exit(1);
+                }
+                let kernel = lang::pd::parse(&src).unwrap_or_else(|e| {
+                    eprintln!("Parse error in '{}': {}", path, e);
+                    std::process::exit(1);
+                });
+                KernelSource::Pdl(kernel)
             } else {
                 if backend == "gpu" {
                     eprintln!("GPU backend requires a .wgsl kernel, got '{}'", path);
@@ -441,6 +456,14 @@ fn main() {
     let args = parse_args();
 
     let kernel_source = load_kernel(&args.kernel_path, &args.backend);
+
+    if args.dump_ir {
+        if let KernelSource::Pdl(ref kernel) = kernel_source {
+            let pdl = lang::printer::print(kernel);
+            eprintln!("── Lowered IR (PDL) ──");
+            eprintln!("{}", pdl);
+        }
+    }
 
     let compile_start = Instant::now();
 

@@ -23,8 +23,8 @@ inline box_sdf(px: f64, py: f64) -> f64 {
 }
 
 inline light_sdf(px: f64, py: f64) -> f64 {
-    dx: f64 = sub px -0.3
-    dy: f64 = sub py -0.08
+    dx: f64 = sub px -0.7
+    dy: f64 = sub py -0.5
     dx2: f64 = mul dx dx
     dy2: f64 = mul dy dy
     d2: f64 = add dx2 dy2
