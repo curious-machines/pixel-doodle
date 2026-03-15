@@ -12,6 +12,6 @@ usage() {
 
 example="$1"
 
-./run cranelift "$example" &
-./run llvm "$example" &
-./run gpu "$example" &
+./run_pdl cranelift "$example" &
+./run_pdl llvm "$example" &
+./run_pdl gpu "$example" &

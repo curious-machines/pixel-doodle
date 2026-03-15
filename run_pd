@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: ./run <backend> <example> [--samples N]"
+    echo "  backend: cranelift, llvm, gpu"
+    echo "  example: gradient, checkerboard, circle, etc."
+    exit 1
+}
+
+[[ $# -lt 2 ]] && usage
+
+backend="$1"
+example="$2"
+shift 2
+extra_args=("$@")
+
+case "$backend" in
+    cranelift)
+        features="cranelift-backend"
+        kernel="examples/${example}.pd"
+        ;;
+    llvm)
+        features="llvm-backend"
+        kernel="examples/${example}.pd"
+        ;;
+    gpu)
+        features="cranelift-backend"  # need some default backend to compile
+        kernel="examples/${example}.wgsl"
+        ;;
+    *)
+        echo "Unknown backend: $backend"
+        usage
+        ;;
+esac
+
+if [[ ! -f "$kernel" ]]; then
+    echo "Kernel file not found: $kernel"
+    exit 1
+fi
+
+exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel" "${extra_args[@]}"

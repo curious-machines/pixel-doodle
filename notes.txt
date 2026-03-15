@@ -1,0 +1,5 @@
+  - Tantalum — 2D Light Transport - https://benedikt-bitterli.me/tantalum/tantalum.html
+  - The Secret Life of Photons - https://benedikt-bitterli.me/tantalum/
+  - Inigo Quilez — Ray Marching - https://iquilezles.org/articles/raymarchingdf/
+  - Jamie Wong — Ray Marching and SDFs - https://jamie-wong.com/2016/07/15/ray-marching-signed-distance-functions/
+  - Ryan Kaplan — 2D Soft Shadows - https://www.rykap.com/2020/09/23/distance-fields/
