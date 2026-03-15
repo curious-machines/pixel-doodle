@@ -58,6 +58,7 @@ pub enum BinOp {
     Max,
     Atan2,
     Pow,
+    Hash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +99,7 @@ pub enum UnaryOp {
 pub enum ConvOp {
     F64ToU32,
     U32ToF64,
+    U32ToF64Norm,
 }
 
 #[derive(Debug, Clone)]

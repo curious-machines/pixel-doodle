@@ -226,7 +226,9 @@ fn build_tile_loop(
     let jy_step = builder.build_float_mul(jy, p_y_step, "jy_step").unwrap();
     let cy = builder.build_float_add(cy, jy_step, "cy_j").unwrap();
 
-    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy);
+    let col = builder.build_load(i32_type, col_ptr, "col_k").unwrap().into_int_value();
+    let row = builder.build_load(i32_type, row_ptr, "row_k").unwrap().into_int_value();
+    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index);
 
     // Store pixel
     let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
@@ -269,12 +271,24 @@ fn lower_kernel_body(
     kernel: &Kernel,
     cx: inkwell::values::FloatValue<'static>,
     cy: inkwell::values::FloatValue<'static>,
+    col: inkwell::values::IntValue<'static>,
+    row: inkwell::values::IntValue<'static>,
+    sample_index: inkwell::values::IntValue<'static>,
 ) -> inkwell::values::IntValue<'static> {
     use std::collections::HashMap;
 
     let mut val_map: HashMap<Var, BasicValueEnum<'static>> = HashMap::new();
-    val_map.insert(Var(0), cx.into());
-    val_map.insert(Var(1), cy.into());
+    for param in &kernel.params {
+        let val: BasicValueEnum<'static> = match param.name.as_str() {
+            "x" => cx.into(),
+            "y" => cy.into(),
+            "px" => col.into(),
+            "py" => row.into(),
+            "sample_index" => sample_index.into(),
+            name => panic!("unknown kernel parameter name: '{name}'"),
+        };
+        val_map.insert(param.var, val);
+    }
 
     lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map);
 
@@ -421,6 +435,23 @@ fn lower_inst(
                 (BinOp::Max, ScalarType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umax.i32", l.into_int_value(), r.into_int_value(), i32_type),
                 (BinOp::Atan2, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.atan2.f64", l.into_float_value(), r.into_float_value(), f64_type),
                 (BinOp::Pow, ScalarType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.pow.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                (BinOp::Hash, ScalarType::U32) => {
+                    let l = l.into_int_value();
+                    let r = r.into_int_value();
+                    let hash_k = i32_type.const_int(0x45d9f3b, false);
+                    let sixteen = i32_type.const_int(16, false);
+                    // h = a * k + b
+                    let h = builder.build_int_mul(l, hash_k, "hash1").unwrap();
+                    let h = builder.build_int_add(h, r, "hash2").unwrap();
+                    // h ^= h >> 16
+                    let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr1").unwrap();
+                    let h = builder.build_xor(h, h_s, "hash3").unwrap();
+                    // h *= k
+                    let h = builder.build_int_mul(h, hash_k, "hash4").unwrap();
+                    // h ^= h >> 16
+                    let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr2").unwrap();
+                    builder.build_xor(h, h_s, "hash5").unwrap().into()
+                }
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }
@@ -498,6 +529,11 @@ fn lower_inst(
             match op {
                 ConvOp::F64ToU32 => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
                 ConvOp::U32ToF64 => builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
+                ConvOp::U32ToF64Norm => {
+                    let f = builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv_f").unwrap();
+                    let recip = f64_type.const_float(1.0 / 4294967296.0);
+                    builder.build_float_mul(f, recip, "norm").unwrap().into()
+                }
             }
         }
         Inst::Select { cond, then_val, else_val } => {

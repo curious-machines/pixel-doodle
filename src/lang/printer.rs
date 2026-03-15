@@ -252,6 +252,7 @@ fn binop_name(op: BinOp) -> &'static str {
         BinOp::Max => "max",
         BinOp::Atan2 => "atan2",
         BinOp::Pow => "pow",
+        BinOp::Hash => "hash",
     }
 }
 
@@ -295,5 +296,6 @@ fn convop_name(op: ConvOp) -> &'static str {
     match op {
         ConvOp::F64ToU32 => "f64_to_u32",
         ConvOp::U32ToF64 => "u32_to_f64",
+        ConvOp::U32ToF64Norm => "u32_to_f64_norm",
     }
 }

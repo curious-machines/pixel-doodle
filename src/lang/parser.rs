@@ -69,6 +69,9 @@ enum Token {
     // Conversion ops
     F64ToU32,
     U32ToF64,
+    U32ToF64Norm,
+    // Hash op (binary u32 -> u32)
+    Hash,
     // Literals
     FloatLit(f64),
     IntLit(u64),
@@ -175,6 +178,8 @@ fn keyword_lookup(word: &str) -> Token {
         "fract" => Token::Fract,
         "f64_to_u32" => Token::F64ToU32,
         "u32_to_f64" => Token::U32ToF64,
+        "u32_to_f64_norm" => Token::U32ToF64Norm,
+        "hash" => Token::Hash,
         "true" => Token::True,
         "false" => Token::False,
         _ => Token::Ident(word.to_string()),
@@ -711,6 +716,26 @@ impl Parser {
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(ScalarType::U32, self.var_ty(arg), "arg", line, col)?;
                 Ok(Inst::Conv { op: ConvOp::U32ToF64, arg })
+            }
+            Token::U32ToF64Norm => {
+                self.advance();
+                if declared_ty != ScalarType::F64 {
+                    return Err(ParseError { line, col, message: format!("u32_to_f64_norm produces f64, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ScalarType::U32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::U32ToF64Norm, arg })
+            }
+            Token::Hash => {
+                self.advance();
+                if declared_ty != ScalarType::U32 {
+                    return Err(ParseError { line, col, message: format!("hash produces u32, got {declared_ty}") });
+                }
+                let lhs = self.parse_operand(ScalarType::U32)?;
+                self.check_types_match(ScalarType::U32, self.var_ty(lhs), "lhs", line, col)?;
+                let rhs = self.parse_operand(ScalarType::U32)?;
+                self.check_types_match(ScalarType::U32, self.var_ty(rhs), "rhs", line, col)?;
+                Ok(Inst::Binary { op: BinOp::Hash, lhs, rhs })
             }
             Token::Select => {
                 self.advance();

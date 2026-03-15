@@ -195,7 +195,10 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let cy = builder.ins().fma(jy, y_step, cy);
 
     // Lower kernel body
-    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy);
+    let col = builder.use_var(v_col);
+    let row = builder.use_var(v_row);
+    let sample_idx_for_kernel = builder.use_var(v_sample_index);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -265,12 +268,24 @@ fn lower_kernel_body(
     kernel: &Kernel,
     cx: cranelift_codegen::ir::Value,
     cy: cranelift_codegen::ir::Value,
+    col: cranelift_codegen::ir::Value,
+    row: cranelift_codegen::ir::Value,
+    sample_index: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
     let mut val_map: HashMap<Var, cranelift_codegen::ir::Value> = HashMap::new();
-    val_map.insert(Var(0), cx);
-    val_map.insert(Var(1), cy);
+    for param in &kernel.params {
+        let val = match param.name.as_str() {
+            "x" => cx,
+            "y" => cy,
+            "px" => col,
+            "py" => row,
+            "sample_index" => sample_index,
+            name => panic!("unknown kernel parameter name: '{name}'"),
+        };
+        val_map.insert(param.var, val);
+    }
 
     lower_body_items(module, builder, kernel, &kernel.body, &mut val_map);
 
@@ -455,6 +470,21 @@ fn lower_inst(
                 (BinOp::Max, ScalarType::U32) => builder.ins().umax(l, r),
                 (BinOp::Atan2, ScalarType::F64) => call_libm_f64_binary(module, builder, "atan2", l, r),
                 (BinOp::Pow, ScalarType::F64) => call_libm_f64_binary(module, builder, "pow", l, r),
+                (BinOp::Hash, ScalarType::U32) => {
+                    // h = a * 0x45d9f3b + b
+                    let hash_k = builder.ins().iconst(I32, 0x45d9f3bu32 as i64);
+                    let h = builder.ins().imul(l, hash_k);
+                    let h = builder.ins().iadd(h, r);
+                    // h ^= h >> 16
+                    let sixteen = builder.ins().iconst(I32, 16);
+                    let h_shifted = builder.ins().ushr(h, sixteen);
+                    let h = builder.ins().bxor(h, h_shifted);
+                    // h *= 0x45d9f3b
+                    let h = builder.ins().imul(h, hash_k);
+                    // h ^= h >> 16
+                    let h_shifted = builder.ins().ushr(h, sixteen);
+                    builder.ins().bxor(h, h_shifted)
+                }
                 _ => unreachable!("invalid binary op/type combination"),
             }
         }
@@ -530,6 +560,11 @@ fn lower_inst(
             match op {
                 ConvOp::F64ToU32 => builder.ins().fcvt_to_sint(I32, a),
                 ConvOp::U32ToF64 => builder.ins().fcvt_from_uint(F64, a),
+                ConvOp::U32ToF64Norm => {
+                    let f = builder.ins().fcvt_from_uint(F64, a);
+                    let recip = builder.ins().f64const(1.0 / 4294967296.0);
+                    builder.ins().fmul(f, recip)
+                }
             }
         }
         Inst::Select { cond, then_val, else_val } => {
