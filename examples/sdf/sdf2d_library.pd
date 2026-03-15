@@ -1,0 +1,817 @@
+// ============================================================================
+// 2D SDF Library — ported from iquilezles.org/articles/distfunctions2d/
+// All functions take decomposed vec2 as (px, py) scalar pairs.
+// ============================================================================
+
+// --- Helpers ----------------------------------------------------------------
+
+fn sign(x: f64) -> f64 {
+    return if x > 0.0 { 1.0 } else { if x < 0.0 { -1.0 } else { 0.0 } };
+}
+
+// GLSL mod: x - y*floor(x/y)
+fn mod_f(x: f64, y: f64) -> f64 {
+    return x - y * floor(x / y);
+}
+
+// dot2(v) = dot(v,v) = length²
+fn dot2(x: f64, y: f64) -> f64 {
+    return x * x + y * y;
+}
+
+// --- Basic Shapes -----------------------------------------------------------
+
+fn sd_circle(px: f64, py: f64, r: f64) -> f64 {
+    return length(px, py) - r;
+}
+
+fn sd_box(px: f64, py: f64, bx: f64, by: f64) -> f64 {
+    let dx = abs(px) - bx;
+    let dy = abs(py) - by;
+    return length(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0);
+}
+
+// r_tr = top-right radius, r_br = bottom-right, r_tl = top-left, r_bl = bottom-left
+fn sd_rounded_box(px: f64, py: f64, bx: f64, by: f64,
+                  r_tl: f64, r_bl: f64, r_tr: f64, r_br: f64) -> f64 {
+    let rx = if px > 0.0 { r_tr } else { r_tl };
+    let ry = if px > 0.0 { r_br } else { r_bl };
+    let r = if py > 0.0 { rx } else { ry };
+    let qx = abs(px) - bx + r;
+    let qy = abs(py) - by + r;
+    return min(max(qx, qy), 0.0) + length(max(qx, 0.0), max(qy, 0.0)) - r;
+}
+
+fn sd_chamfer_box(px: f64, py: f64, bx: f64, by: f64, chamfer: f64) -> f64 {
+    let ax = abs(px) - bx;
+    let ay = abs(py) - by;
+    // swap so x >= y
+    let sx = if ay > ax { ay } else { ax };
+    let sy = if ay > ax { ax } else { ay };
+    let sy2 = sy + chamfer;
+    let k = 1.0 - sqrt(2.0);
+    return if sy2 < 0.0 && sy2 + sx * k < 0.0 { sx }
+           else { if sx < sy2 { (sx + sy2) * sqrt(0.5) }
+           else { length(sx, sy2) } };
+}
+
+fn sd_segment(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let pax = px - ax;
+    let pay = py - ay;
+    let bax = bx - ax;
+    let bay = by - ay;
+    let h = clamp((pax * bax + pay * bay) / (bax * bax + bay * bay), 0.0, 1.0);
+    return length(pax - bax * h, pay - bay * h);
+}
+
+fn sd_oriented_box(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64, th: f64) -> f64 {
+    let l = length(bx - ax, by - ay);
+    let dx = (bx - ax) / l;
+    let dy = (by - ay) / l;
+    // center and rotate: q = mat2(dx,-dy, dy,dx) * (p - center)
+    let cx = px - (ax + bx) * 0.5;
+    let cy = py - (ay + by) * 0.5;
+    // GLSL mat2(d.x,-d.y,d.y,d.x) columns: (dx,dy) and (-dy,dx)... wait
+    // mat2(d.x,-d.y, d.y,d.x) in GLSL = col0=(d.x,-d.y), col1=(d.y,d.x)
+    // so result = col0*cx + col1*cy
+    let qx = dx * cx + dy * cy;
+    let qy = -dy * cx + dx * cy;
+    let ex = abs(qx) - l * 0.5;
+    let ey = abs(qy) - th * 0.5;
+    return length(max(ex, 0.0), max(ey, 0.0)) + min(max(ex, ey), 0.0);
+}
+
+// --- Triangles --------------------------------------------------------------
+
+fn sd_equilateral_triangle(px: f64, py: f64, r: f64) -> f64 {
+    let k = sqrt(3.0);
+    let ax = abs(px) - r;
+    let ay = py + r / k;
+    // if ax + k*ay > 0, rotate: (ax - k*ay, -k*ax - ay) / 2
+    let bx = if ax + k * ay > 0.0 { (ax - k * ay) / 2.0 } else { ax };
+    let by = if ax + k * ay > 0.0 { (-k * ax - ay) / 2.0 } else { ay };
+    let cx = bx - clamp(bx, -2.0 * r, 0.0);
+    let cy = by;
+    return -length(cx, cy) * sign(cy);
+}
+
+fn sd_isosceles_triangle(px: f64, py: f64, qx: f64, qy: f64) -> f64 {
+    let apx = abs(px);
+    let h1 = clamp((apx * qx + py * qy) / (qx * qx + qy * qy), 0.0, 1.0);
+    let aax = apx - qx * h1;
+    let aay = py - qy * h1;
+    let h2 = clamp(apx / qx, 0.0, 1.0);
+    let bbx = apx - qx * h2;
+    let bby = py - qy;
+    let s = -sign(qy);
+    let d1 = dot2(aax, aay);
+    let s1 = s * (apx * qy - py * qx);
+    let d2 = dot2(bbx, bby);
+    let s2 = s * (py - qy);
+    let md = if d1 < d2 { d1 } else { d2 };
+    let ms = if d1 < d2 { s1 } else { s2 };
+    return -sqrt(md) * sign(ms);
+}
+
+fn sd_triangle(px: f64, py: f64,
+               p0x: f64, p0y: f64, p1x: f64, p1y: f64, p2x: f64, p2y: f64) -> f64 {
+    let e0x = p1x - p0x;
+    let e0y = p1y - p0y;
+    let e1x = p2x - p1x;
+    let e1y = p2y - p1y;
+    let e2x = p0x - p2x;
+    let e2y = p0y - p2y;
+    let v0x = px - p0x;
+    let v0y = py - p0y;
+    let v1x = px - p1x;
+    let v1y = py - p1y;
+    let v2x = px - p2x;
+    let v2y = py - p2y;
+    // edge 0 closest point
+    let h0 = clamp((v0x * e0x + v0y * e0y) / (e0x * e0x + e0y * e0y), 0.0, 1.0);
+    let pq0x = v0x - e0x * h0;
+    let pq0y = v0y - e0y * h0;
+    // edge 1 closest point
+    let h1 = clamp((v1x * e1x + v1y * e1y) / (e1x * e1x + e1y * e1y), 0.0, 1.0);
+    let pq1x = v1x - e1x * h1;
+    let pq1y = v1y - e1y * h1;
+    // edge 2 closest point
+    let h2 = clamp((v2x * e2x + v2y * e2y) / (e2x * e2x + e2y * e2y), 0.0, 1.0);
+    let pq2x = v2x - e2x * h2;
+    let pq2y = v2y - e2y * h2;
+    let s = sign(e0x * e2y - e0y * e2x);
+    // min distance² and winding
+    let d0 = dot2(pq0x, pq0y);
+    let w0 = s * (v0x * e0y - v0y * e0x);
+    let d1 = dot2(pq1x, pq1y);
+    let w1 = s * (v1x * e1y - v1y * e1x);
+    let d2 = dot2(pq2x, pq2y);
+    let w2 = s * (v2x * e2y - v2y * e2x);
+    let md01 = if d0 < d1 { d0 } else { d1 };
+    let mw01 = if d0 < d1 { w0 } else { w1 };
+    let md = if md01 < d2 { md01 } else { d2 };
+    let mw = if md01 < d2 { mw01 } else { w2 };
+    return -sqrt(md) * sign(mw);
+}
+
+// --- Quadrilaterals ---------------------------------------------------------
+
+fn sd_rhombus(px: f64, py: f64, bx: f64, by: f64) -> f64 {
+    let nby = -by;
+    let ax = abs(px);
+    let ay = abs(py);
+    let h = clamp((bx * ax + nby * ay + nby * nby) / (bx * bx + nby * nby), 0.0, 1.0);
+    let rx = ax - bx * h;
+    let ry = ay - nby * (h - 1.0);
+    return length(rx, ry) * sign(rx);
+}
+
+fn sd_trapezoid(px: f64, py: f64, r1: f64, r2: f64, he: f64) -> f64 {
+    let k1x = r2;
+    let k1y = he;
+    let k2x = r2 - r1;
+    let k2y = 2.0 * he;
+    let apx = abs(px);
+    // ca = closest on vertical edges
+    let cax = apx - min(apx, if py < 0.0 { r1 } else { r2 });
+    let cay = abs(py) - he;
+    // cb = closest on slanted edge
+    let dpx = apx - k1x;
+    let dpy = py - k1y;
+    let t = clamp((dpx * (-k2x) + dpy * (-k2y)) / dot2(k2x, k2y), 0.0, 1.0);
+    let cbx = apx - k1x + k2x * t;
+    let cby = py - k1y + k2y * t;
+    let s = if cbx < 0.0 && cay < 0.0 { -1.0 } else { 1.0 };
+    return s * sqrt(min(dot2(cax, cay), dot2(cbx, cby)));
+}
+
+fn sd_parallelogram(px: f64, py: f64, wi: f64, he: f64, sk: f64) -> f64 {
+    let ex = sk;
+    let ey = he;
+    // p = (p.y<0.0)?-p:p
+    let qx = if py < 0.0 { -px } else { px };
+    let qy = if py < 0.0 { -py } else { py };
+    // w = q - e; w.x -= clamp(w.x,-wi,wi)
+    let wx_raw = qx - ex;
+    let wy = qy - ey;
+    let wx = wx_raw - clamp(wx_raw, -wi, wi);
+    let d1 = dot2(wx, wy);
+    let d1s = -wy;
+    // s = p.x*e.y - p.y*e.x
+    let s = qx * ey - qy * ex;
+    // p = (s<0.0)?-p:p
+    let rx = if s < 0.0 { -qx } else { qx };
+    let ry = if s < 0.0 { -qy } else { qy };
+    // v = p - vec2(wi,0)
+    let vx = rx - wi;
+    let vy = ry;
+    // v -= e*clamp(dot(v,e)/dot(e,e),-1,1)
+    let t = clamp((vx * ex + vy * ey) / (ex * ex + ey * ey), -1.0, 1.0);
+    let vx2 = vx - ex * t;
+    let vy2 = vy - ey * t;
+    let d2 = dot2(vx2, vy2);
+    let d2s = wi * he - abs(s);
+    let md = if d1 < d2 { d1 } else { d2 };
+    let ms = if d1 < d2 { d1s } else { d2s };
+    return sqrt(md) * sign(-ms);
+}
+
+// --- Capsules / Segments ----------------------------------------------------
+
+fn sd_uneven_capsule(px: f64, py: f64, r1: f64, r2: f64, h: f64) -> f64 {
+    let apx = abs(px);
+    let b = (r1 - r2) / h;
+    let a = sqrt(1.0 - b * b);
+    let k = apx * (-b) + py * a;
+    return if k < 0.0 { length(apx, py) - r1 }
+           else { if k > a * h { length(apx, py - h) - r2 }
+           else { apx * a + py * b - r1 } };
+}
+
+// --- Regular Polygons -------------------------------------------------------
+
+fn sd_pentagon(px: f64, py: f64, r: f64) -> f64 {
+    let kx = 0.809016994;
+    let ky = 0.587785252;
+    let kz = 0.726542528;
+    let apx = abs(px);
+    // Reflect across first edge
+    let d1 = (-kx) * apx + ky * py;
+    let t1 = min(d1, 0.0);
+    let bx = apx - 2.0 * t1 * (-kx);
+    let by = py - 2.0 * t1 * ky;
+    // Reflect across second edge
+    let d2 = kx * bx + ky * by;
+    let t2 = min(d2, 0.0);
+    let cx = bx - 2.0 * t2 * kx;
+    let cy = by - 2.0 * t2 * ky;
+    // Clamp and offset
+    let dx = cx - clamp(cx, -r * kz, r * kz);
+    let dy = cy - r;
+    return length(dx, dy) * sign(dy);
+}
+
+fn sd_hexagon(px: f64, py: f64, r: f64) -> f64 {
+    let kx = -0.866025404;
+    let ky = 0.5;
+    let kz = 0.577350269;
+    let apx = abs(px);
+    let apy = abs(py);
+    // Reflect
+    let d1 = kx * apx + ky * apy;
+    let t1 = min(d1, 0.0);
+    let bx = apx - 2.0 * t1 * kx;
+    let by = apy - 2.0 * t1 * ky;
+    let cx = bx - clamp(bx, -kz * r, kz * r);
+    let cy = by - r;
+    return length(cx, cy) * sign(cy);
+}
+
+fn sd_octagon(px: f64, py: f64, r: f64) -> f64 {
+    let kx = -0.9238795325;
+    let ky = 0.3826834323;
+    let kz = 0.4142135623;
+    let apx = abs(px);
+    let apy = abs(py);
+    // First reflection
+    let d1 = kx * apx + ky * apy;
+    let t1 = min(d1, 0.0);
+    let bx = apx - 2.0 * t1 * kx;
+    let by = apy - 2.0 * t1 * ky;
+    // Second reflection
+    let d2 = (-kx) * bx + ky * by;
+    let t2 = min(d2, 0.0);
+    let cx = bx - 2.0 * t2 * (-kx);
+    let cy = by - 2.0 * t2 * ky;
+    let dx = cx - clamp(cx, -kz * r, kz * r);
+    let dy = cy - r;
+    return length(dx, dy) * sign(dy);
+}
+
+fn sd_hexagram(px: f64, py: f64, r: f64) -> f64 {
+    let kx = -0.5;
+    let ky = 0.8660254038;
+    let kz = 0.5773502692;
+    let kw = 1.7320508076;
+    let apx = abs(px);
+    let apy = abs(py);
+    // First reflection (k.xy)
+    let d1 = kx * apx + ky * apy;
+    let t1 = min(d1, 0.0);
+    let bx = apx - 2.0 * t1 * kx;
+    let by = apy - 2.0 * t1 * ky;
+    // Second reflection (k.yx)
+    let d2 = ky * bx + kx * by;
+    let t2 = min(d2, 0.0);
+    let cx = bx - 2.0 * t2 * ky;
+    let cy = by - 2.0 * t2 * kx;
+    let dx = cx - clamp(cx, r * kz, r * kw);
+    let dy = cy - r;
+    return length(dx, dy) * sign(dy);
+}
+
+fn sd_pentagram(px: f64, py: f64, r: f64) -> f64 {
+    let k1x = 0.809016994;
+    let k2x = 0.309016994;
+    let k1y = 0.587785252;
+    let k2y = 0.951056516;
+    let k1z = 0.726542528;
+    let apx = abs(px);
+    // Reflect across v1 = (k1x, -k1y)
+    let d1 = max(k1x * apx + (-k1y) * py, 0.0);
+    let bx = apx - 2.0 * d1 * k1x;
+    let by = py - 2.0 * d1 * (-k1y);
+    // Reflect across v2 = (-k1x, -k1y)
+    let d2 = max((-k1x) * bx + (-k1y) * by, 0.0);
+    let cx = bx - 2.0 * d2 * (-k1x);
+    let cy = by - 2.0 * d2 * (-k1y);
+    let dx = abs(cx);
+    let dy = cy - r;
+    // v3 = (k2x, -k2y)
+    let t = clamp((dx * k2x + dy * (-k2y)), 0.0, k1z * r);
+    let ex = dx - k2x * t;
+    let ey = dy - (-k2y) * t;
+    return length(ex, ey) * sign(dy * k2x - dx * (-k2y));
+}
+
+// --- Arcs / Pies / Rings ----------------------------------------------------
+
+fn sd_pie(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> f64 {
+    let apx = abs(px);
+    let l = length(apx, py) - r;
+    // closest point on pie edge
+    let t = clamp((apx * cx + py * cy), 0.0, r);
+    let m = length(apx - cx * t, py - cy * t);
+    return max(l, m * sign(cy * apx - cx * py));
+}
+
+fn sd_cut_disk(px: f64, py: f64, r: f64, h: f64) -> f64 {
+    let w = sqrt(r * r - h * h);
+    let apx = abs(px);
+    let s = max((h - r) * apx * apx + w * w * (h + r - 2.0 * py), h * apx - w * py);
+    return if s < 0.0 { length(apx, py) - r }
+           else { if apx < w { h - py }
+           else { length(apx - w, py - h) } };
+}
+
+fn sd_arc(px: f64, py: f64, scx: f64, scy: f64, ra: f64, rb: f64) -> f64 {
+    let apx = abs(px);
+    let inner = if scy * apx > scx * py { length(apx - scx * ra, py - scy * ra) }
+                else { abs(length(apx, py) - ra) };
+    return inner - rb;
+}
+
+fn sd_ring(px: f64, py: f64, nx: f64, ny: f64, r: f64, th: f64) -> f64 {
+    let apx = abs(px);
+    // Rotate: mat2(nx,ny,-ny,nx) * p  → col0=(nx,-ny), col1=(ny,nx)
+    let qx = nx * apx + ny * py;
+    let qy = -ny * apx + nx * py;
+    let d1 = abs(length(qx, qy) - r) - th * 0.5;
+    let inner_y = max(0.0, abs(r - qy) - th * 0.5);
+    let d2 = length(qx, inner_y) * sign(qx);
+    return max(d1, d2);
+}
+
+fn sd_horseshoe(px: f64, py: f64, cx: f64, cy: f64, r: f64, wx: f64, wy: f64) -> f64 {
+    let apx = abs(px);
+    let l = length(apx, py);
+    // Rotate: mat2(-cx, cy, cy, cx) → col0=(-cx,cy), col1=(cy,cx)
+    let qx = -cx * apx + cy * py;
+    let qy = cy * apx + cx * py;
+    let rx = if qy > 0.0 || qx > 0.0 { qx } else { l * sign(-cx) };
+    let ry = if qx > 0.0 { qy } else { l };
+    let sx = rx;
+    let sy = abs(ry - r) - wx;
+    let fx = sx - wy;  // wait, w is vec2(wx, wy) = (width, thickness)
+    // p = vec2(p.x, abs(p.y-r)) - w
+    let tx = rx - wy;
+    let ty = abs(ry - r) - wx;
+    return length(max(tx, 0.0), max(ty, 0.0)) + min(0.0, max(tx, ty));
+}
+
+// --- Moon / Vesica ----------------------------------------------------------
+
+fn sd_moon(px: f64, py: f64, d: f64, ra: f64, rb: f64) -> f64 {
+    let apy = abs(py);
+    let a = (ra * ra - rb * rb + d * d) / (2.0 * d);
+    let b = sqrt(max(ra * ra - a * a, 0.0));
+    return if d * (px * b - apy * a) > d * d * max(b - apy, 0.0) {
+        length(px - a, apy - b)
+    } else {
+        max(length(px, apy) - ra, -(length(px - d, apy) - rb))
+    };
+}
+
+fn sd_vesica(px: f64, py: f64, w: f64, h: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    let d = 0.5 * (w * w - h * h) / h;
+    // branch: w*apy < d*(apx - w)
+    let use_branch1 = w * apy < d * (apx - w);
+    let cx = if use_branch1 { 0.0 } else { -d };
+    let cy = if use_branch1 { w } else { 0.0 };
+    let cz = if use_branch1 { 0.0 } else { d + h };
+    // return length(p - c.yx) - c.z  (note: c.yx = (cy, cx))
+    return length(apx - cy, apy - cx) - cz;
+}
+
+fn sd_oriented_vesica(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64, w: f64) -> f64 {
+    let r = 0.5 * length(bx - ax, by - ay);
+    let d = 0.5 * (r * r - w * w) / w;
+    let vx = (bx - ax) / r;
+    let vy = (by - ay) / r;
+    let mx = (bx + ax) * 0.5;
+    let my = (by + ay) * 0.5;
+    // q = 0.5*abs(mat2(vy,vx,-vx,vy)*(p-c))
+    // mat2 col0=(vy,-vx) col1=(vx,vy)
+    let dpx = px - mx;
+    let dpy = py - my;
+    let qx = 0.5 * abs(vy * dpx + vx * dpy);
+    let qy = 0.5 * abs(-vx * dpx + vy * dpy);
+    let use_branch1 = r * qx < d * (qy - r);
+    let hx = if use_branch1 { 0.0 } else { -d };
+    let hy = if use_branch1 { r } else { 0.0 };
+    let hz = if use_branch1 { 0.0 } else { d + w };
+    return length(qx - hx, qy - hy) - hz;
+}
+
+// --- Egg / Heart ------------------------------------------------------------
+
+fn sd_egg(px: f64, py: f64, he: f64, ra: f64, rb: f64, bu: f64) -> f64 {
+    let r = 0.5 * (he + ra + rb) / bu;
+    let da = r - ra;
+    let db = r - rb;
+    let yc = (db * db - da * da - he * he) / (2.0 * he);
+    let xc = sqrt(da * da - yc * yc);
+    let apx = abs(px);
+    let k = py * xc - apx * yc;
+    return if k > 0.0 && k < he * (apx + xc) { length(apx + xc, py + yc) - r }
+           else { min(length(apx, py) - ra, length(apx, py - he) - rb) };
+}
+
+fn sd_heart(px: f64, py: f64) -> f64 {
+    let apx = abs(px);
+    let t = max(apx + py, 0.0);
+    return if py + apx > 1.0 {
+        sqrt(dot2(apx - 0.25, py - 0.75)) - sqrt(2.0) / 4.0
+    } else {
+        sqrt(min(dot2(apx, py - 1.0), dot2(apx - 0.5 * t, py - 0.5 * t))) * sign(apx - py)
+    };
+}
+
+// --- Crosses ----------------------------------------------------------------
+
+fn sd_cross(px: f64, py: f64, bx: f64, by: f64, r: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    // swap so x >= y
+    let sx = if apy > apx { apy } else { apx };
+    let sy = if apy > apx { apx } else { apy };
+    let qx = sx - bx;
+    let qy = sy - by;
+    let k = max(qy, qx);
+    let wx = if k > 0.0 { qx } else { by - sy };
+    let wy = if k > 0.0 { qy } else { -k };
+    return sign(k) * length(max(wx, 0.0), max(wy, 0.0)) + r;
+}
+
+fn sd_rounded_x(px: f64, py: f64, w: f64, r: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    let t = min(apx + apy, w) * 0.5;
+    return length(apx - t, apy - t) - r;
+}
+
+fn sd_rounded_cross(px: f64, py: f64, h: f64) -> f64 {
+    let k = 0.5 * (h + 1.0 / h);
+    let apx = abs(px);
+    let apy = abs(py);
+    return if apx < 1.0 && apy < apx * (k - h) + h {
+        k - sqrt(dot2(apx - 1.0, apy - k))
+    } else {
+        sqrt(min(dot2(apx, apy - h), dot2(apx - 1.0, apy)))
+    };
+}
+
+// --- Star -------------------------------------------------------------------
+
+fn sd_star(px: f64, py: f64, r: f64, n: u32, m: f64) -> f64 {
+    let an = 3.141593 / (n as f64);
+    let en = 3.141593 / m;
+    let acs_x = cos(an);
+    let acs_y = sin(an);
+    let ecs_x = cos(en);
+    let ecs_y = sin(en);
+    let bn = mod_f(atan2(px, py), 2.0 * an) - an;
+    let l = length(px, py);
+    let qx = l * cos(bn) - r * acs_x;
+    let qy = abs(l * sin(bn)) - r * acs_y;
+    let t = clamp(-(qx * ecs_x + qy * ecs_y), 0.0, r * acs_y / ecs_y);
+    let fx = qx + ecs_x * t;
+    let fy = qy + ecs_y * t;
+    return length(fx, fy) * sign(fx);
+}
+
+// --- Tunnel / Stairs --------------------------------------------------------
+
+fn sd_tunnel(px: f64, py: f64, wx: f64, wy: f64) -> f64 {
+    let apx = abs(px);
+    let npy = -py;
+    let qx = apx - wx;
+    let qy = npy - wy;
+    let d1 = dot2(max(qx, 0.0), qy);
+    let qx2 = if npy > 0.0 { qx } else { length(apx, npy) - wx };
+    let d2 = dot2(qx2, max(qy, 0.0));
+    let d = sqrt(min(d1, d2));
+    return if max(qx, qy) < 0.0 { -d } else { d };
+}
+
+// --- Ellipse (exact) --------------------------------------------------------
+
+fn sd_ellipse(px: f64, py: f64, abx: f64, aby: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    // Ensure ab.x < ab.y by swapping if needed
+    let swap = apx > apy;
+    let ex = if swap { apy } else { apx };
+    let ey = if swap { apx } else { apy };
+    let eax = if swap { aby } else { abx };
+    let eay = if swap { abx } else { aby };
+
+    let l = eay * eay - eax * eax;
+    let m = eax * ex / l;
+    let m2 = m * m;
+    let n = eay * ey / l;
+    let n2 = n * n;
+    let c = (m2 + n2 - 1.0) / 3.0;
+    let c3 = c * c * c;
+    let q = c3 + m2 * n2 * 2.0;
+    let dd = c3 + m2 * n2;
+    let g = m + m * n2;
+
+    // Branch 1: dd < 0
+    let h2a = acos(q / c3) / 3.0;
+    let sa = cos(h2a);
+    let ta = sin(h2a) * sqrt(3.0);
+    let rxa = sqrt(abs(-c * (sa + ta + 2.0) + m2));
+    let rya = sqrt(abs(-c * (sa - ta + 2.0) + m2));
+    let co_a = (rya + sign(l) * rxa + abs(g) / (rxa * rya + 0.0000001) - m) / 2.0;
+    // Branch 2: dd >= 0
+    let h2b = 2.0 * m * n * sqrt(abs(dd));
+    let sb = sign(q + h2b) * pow(abs(q + h2b), 1.0 / 3.0);
+    let ub = sign(q - h2b) * pow(abs(q - h2b), 1.0 / 3.0);
+    let rxb = -sb - ub - c * 4.0 + 2.0 * m2;
+    let ryb = (sb - ub) * sqrt(3.0);
+    let rmb = sqrt(rxb * rxb + ryb * ryb);
+    let co_b = (ryb / sqrt(abs(rmb - rxb) + 0.0000001) + 2.0 * g / (rmb + 0.0000001) - m) / 2.0;
+    let co = if dd < 0.0 { co_a } else { co_b };
+
+    let r_x = eax * co;
+    let r_y = eay * sqrt(1.0 - co * co);
+    return length(r_x - ex, r_y - ey) * sign(ey - r_y);
+}
+
+// --- Parabola ---------------------------------------------------------------
+
+fn sd_parabola(px: f64, py: f64, k: f64) -> f64 {
+    let apx = abs(px);
+    let ik = 1.0 / k;
+    let p = ik * (py - 0.5 * ik) / 3.0;
+    let q = 0.25 * ik * ik * apx;
+    let h = q * q - p * p * p;
+    let r_pos = pow(abs(q + sqrt(abs(h))), 1.0 / 3.0);
+    let x_pos = r_pos + p / (r_pos + 0.0000001);
+    let r_neg = sqrt(abs(p));
+    let x_neg = 2.0 * r_neg * cos(acos(q / (abs(p) * r_neg + 0.0000001)) / 3.0);
+    let x = if h > 0.0 { x_pos } else { x_neg };
+    return length(apx - x, py - k * x * x) * sign(apx - x);
+}
+
+fn sd_parabola_wh(px: f64, py: f64, wi: f64, he: f64) -> f64 {
+    let apx = abs(px);
+    let ik = wi * wi / he;
+    let p = ik * (he - py - 0.5 * ik) / 3.0;
+    let q = apx * ik * ik / 4.0;
+    let h = q * q - p * p * p;
+    let r_pos = pow(abs(q + sqrt(abs(h))), 1.0 / 3.0);
+    let x_pos = r_pos + p / (r_pos + 0.0000001);
+    let r_neg = sqrt(abs(p));
+    let x_neg = 2.0 * r_neg * cos(acos(q / (abs(p) * r_neg + 0.0000001)) / 3.0);
+    let x = if h > 0.0 { x_pos } else { x_neg };
+    let xc = min(x, wi);
+    return length(apx - xc, py - (he - xc * xc / ik)) * sign(ik * (py - he) + apx * apx);
+}
+
+// --- Bezier (quadratic) -----------------------------------------------------
+
+fn sd_bezier(px: f64, py: f64,
+             ax_: f64, ay_: f64, bx_: f64, by_: f64, cx_: f64, cy_: f64) -> f64 {
+    // a = B - A, b = A - 2B + C, c = a*2, d = A - pos
+    let aax = bx_ - ax_;
+    let aay = by_ - ay_;
+    let bbx = ax_ - 2.0 * bx_ + cx_;
+    let bby = ay_ - 2.0 * by_ + cy_;
+    let ccx = aax * 2.0;
+    let ccy = aay * 2.0;
+    let ddx = ax_ - px;
+    let ddy = ay_ - py;
+    let kk = 1.0 / (bbx * bbx + bby * bby);
+    let kx = kk * (aax * bbx + aay * bby);
+    let ky = kk * (2.0 * (aax * aax + aay * aay) + (ddx * bbx + ddy * bby)) / 3.0;
+    let kz = kk * (ddx * aax + ddy * aay);
+    let p = ky - kx * kx;
+    let p3 = p * p * p;
+    let q = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+    let h = q * q + 4.0 * p3;
+    // Branch 1: h >= 0
+    let sh = sqrt(abs(h));
+    let bz_ux = (sh - q) / 2.0;
+    let bz_uy = (-sh - q) / 2.0;
+    let bz_uvx = sign(bz_ux) * pow(abs(bz_ux), 1.0 / 3.0);
+    let bz_uvy = sign(bz_uy) * pow(abs(bz_uy), 1.0 / 3.0);
+    let bz_t = clamp(bz_uvx + bz_uvy - kx, 0.0, 1.0);
+    let bz_rx = ddx + (ccx + bbx * bz_t) * bz_t;
+    let bz_ry = ddy + (ccy + bby * bz_t) * bz_t;
+    let res_pos = bz_rx * bz_rx + bz_ry * bz_ry;
+    // Branch 2: h < 0
+    let bz_z = sqrt(abs(-p));
+    let bz_v = acos(q / (p * bz_z * 2.0 + 0.0000001)) / 3.0;
+    let bz_m = cos(bz_v);
+    let bz_n = sin(bz_v) * 1.732050808;
+    let bz_t1 = clamp((bz_m + bz_m) * bz_z - kx, 0.0, 1.0);
+    let bz_t2 = clamp((-bz_n - bz_m) * bz_z - kx, 0.0, 1.0);
+    let r1x = ddx + (ccx + bbx * bz_t1) * bz_t1;
+    let r1y = ddy + (ccy + bby * bz_t1) * bz_t1;
+    let r2x = ddx + (ccx + bbx * bz_t2) * bz_t2;
+    let r2y = ddy + (ccy + bby * bz_t2) * bz_t2;
+    let res_neg = min(r1x * r1x + r1y * r1y, r2x * r2x + r2y * r2y);
+    let res = if h >= 0.0 { res_pos } else { res_neg };
+    return sqrt(res);
+}
+
+// --- Blobby Cross -----------------------------------------------------------
+
+fn sd_blobby_cross(px: f64, py: f64, he: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    // Rotate 45°: (|x-y|, 1-x-y) / sqrt(2)
+    let rx = abs(apx - apy) / sqrt(2.0);
+    let ry = (1.0 - apx - apy) / sqrt(2.0);
+    let p = (he - ry - 0.25 / he) / (6.0 * he);
+    let q = rx / (he * he * 16.0);
+    let h = q * q - p * p * p;
+    let bc_r_pos = sqrt(abs(h));
+    let x_pos = pow(abs(q + bc_r_pos), 1.0 / 3.0) - pow(abs(q - bc_r_pos), 1.0 / 3.0) * sign(bc_r_pos - q);
+    let bc_r_neg = sqrt(abs(p));
+    let x_neg = 2.0 * bc_r_neg * cos(acos(q / (abs(p) * bc_r_neg + 0.0000001)) / 3.0);
+    let x = if h > 0.0 { x_pos } else { x_neg };
+    let xc = min(x, sqrt(2.0) / 2.0);
+    let zx = xc - rx;
+    let zy = he * (1.0 - 2.0 * xc * xc) - ry;
+    return length(zx, zy) * sign(zy);
+}
+
+// --- Cool S -----------------------------------------------------------------
+
+fn sd_cool_s(px: f64, py: f64) -> f64 {
+    let six = if py < 0.0 { -px } else { px };
+    let apx = abs(px);
+    let apy = abs(py) - 0.2;
+    let rex = apx - min(round(apx / 0.4), 0.4);
+    let aby = abs(apy - 0.2) - 0.6;
+    // d1
+    let u1x = six;
+    let u1y = -apy;
+    let t1 = clamp(0.5 * (six - apy), 0.0, 0.2);
+    let d1 = dot2(u1x - t1, u1y - t1);
+    // d2
+    let u2x = apx;
+    let u2y = -aby;
+    let t2 = clamp(0.5 * (apx - aby), 0.0, 0.4);
+    let d2 = dot2(u2x - t2, u2y - t2);
+    // d3
+    let d3 = dot2(rex, apy - clamp(apy, 0.0, 0.4));
+
+    let d = min(d1, min(d2, d3));
+    let s = 2.0 * apx + aby + abs(aby + 0.4) - 0.4;
+    return sqrt(d) * sign(s);
+}
+
+// --- Circle Wave ------------------------------------------------------------
+
+fn sd_circle_wave(px: f64, py: f64, tb: f64, ra: f64) -> f64 {
+    let tb2 = 3.1415927 * 5.0 / 6.0 * max(tb, 0.0001);
+    let cox = ra * sin(tb2);
+    let coy = ra * cos(tb2);
+    let mx = abs(mod_f(px, cox * 4.0) - cox * 2.0);
+    let p1x = mx;
+    let p1y = py;
+    let p2x = abs(mx - 2.0 * cox);
+    let p2y = -py + 2.0 * coy;
+    let d1 = if coy * p1x > cox * p1y { length(p1x - cox, p1y - coy) }
+             else { abs(length(p1x, p1y) - ra) };
+    let d2 = if coy * p2x > cox * p2y { length(p2x - cox, p2y - coy) }
+             else { abs(length(p2x, p2y) - ra) };
+    return min(d1, d2);
+}
+
+// --- Hyperbola --------------------------------------------------------------
+
+fn sd_hyperbola(px: f64, py: f64, k: f64, he: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    // Rotate 45°
+    let rx = (apx - apy) / sqrt(2.0);
+    let ry = (apx + apy) / sqrt(2.0);
+    let x2 = rx * rx / 16.0;
+    let y2 = ry * ry / 16.0;
+    let r = k * (4.0 * k - rx * ry) / 12.0;
+    let q = (x2 - y2) * k * k;
+    let h = q * q + r * r * r;
+    let hyp_m_neg = sqrt(abs(-r));
+    let u_neg = hyp_m_neg * cos(acos(q / (r * hyp_m_neg + 0.0000001)) / 3.0);
+    let hyp_m_pos = pow(abs(sqrt(abs(h)) - q), 1.0 / 3.0);
+    let u_pos = (hyp_m_pos - r / (hyp_m_pos + 0.0000001)) / 2.0;
+    let u = if h < 0.0 { u_neg } else { u_pos };
+    let w = sqrt(u + x2);
+    let b = k * ry - x2 * rx * 2.0;
+    let t_raw = rx / 4.0 - w + sqrt(2.0 * x2 - u + b / w / 4.0);
+    let t = max(t_raw, sqrt(he * he * 0.5 + k) - he / sqrt(2.0));
+    let d = length(rx - t, ry - k / t);
+    return if rx * ry < k { d } else { -d };
+}
+
+// --- Quadratic Circle -------------------------------------------------------
+
+fn sd_quadratic_circle(px: f64, py: f64) -> f64 {
+    let apx = abs(px);
+    let apy = abs(py);
+    let ex = if apy > apx { apy } else { apx };
+    let ey = if apy > apx { apx } else { apy };
+    let a = ex - ey;
+    let b = ex + ey;
+    let c = (2.0 * b - 1.0) / 3.0;
+    let h = a * a + c * c * c;
+    let qc_sh = sqrt(abs(h));
+    let t_pos = sign(qc_sh - a) * pow(abs(qc_sh - a), 1.0 / 3.0) - pow(qc_sh + a, 1.0 / 3.0);
+    let qc_z = sqrt(abs(-c));
+    let qc_v = acos(a / (c * qc_z + 0.0000001)) / 3.0;
+    let t_neg = -qc_z * (cos(qc_v) + sin(qc_v) * 1.732050808);
+    let t = if h >= 0.0 { t_pos } else { t_neg };
+    let t2 = t * 0.5;
+    let wx = -t2 + 0.75 - t2 * t2 - ex;
+    let wy = t2 + 0.75 - t2 * t2 - ey;
+    return length(wx, wy) * sign(a * a * 0.5 + b - 1.5);
+}
+
+// --- Stairs (simplified — no matrix rotation for clarity) -------------------
+
+fn sd_stairs(px: f64, py: f64, wh_x: f64, wh_y: f64, n: f64) -> f64 {
+    let bax = wh_x * n;
+    let bay = wh_y * n;
+    // Distance to bottom and right edges
+    let cx = clamp(px, 0.0, bax);
+    let cy = clamp(py, 0.0, bay);
+    let d_init = min(dot2(px - cx, py), dot2(px - bax, py - cy));
+    let s = sign(max(-py, px - bax));
+    let dia = length(wh_x, wh_y);
+    // Rotate p by step angle
+    let rpx = (wh_x * px + wh_y * py) / dia;
+    let rpy = (-wh_y * px + wh_x * py) / dia;
+    let id = clamp(round(rpx / dia), 0.0, n - 1.0);
+    let spx = rpx - id * dia;
+    let spy = rpy;
+    // Rotate back
+    let npx = (wh_x * spx - wh_y * spy) / dia;
+    let npy = (wh_y * spx + wh_x * spy) / dia;
+    let hh = wh_y / 2.0;
+    let fy = npy - hh;
+    let s2 = if fy > hh * sign(npx) { 1.0 } else { s };
+    let ux = if id < 0.5 || npx > 0.0 { npx } else { -npx };
+    let uy = if id < 0.5 || npx > 0.0 { fy } else { -fy };
+    let d2 = dot2(ux, clamp(uy, -hh, hh) - uy);
+    let d3 = dot2(clamp(ux, 0.0, wh_x) - ux, uy - hh);
+    return sqrt(min(d_init, min(d2, d3))) * s2;
+}
+
+// ============================================================================
+// Demo kernel — uncomment one shape to visualize
+// ============================================================================
+kernel sdf2d_demo(x: f64, y: f64) -> u32 {
+    let d = sd_heart(x, y * -1.0 + 0.5);
+    // let d = sd_hexagon(x, y, 0.5);
+    // let d = sd_star(x, y, 0.4, 5u32, 2.5);
+    // let d = sd_box(x, y, 0.5, 0.3);
+    // let d = sd_moon(x, y, 0.3, 0.5, 0.4);
+
+    // Shadertoy-style visualization
+    let out_r = if d > 0.0 { 0.9 } else { 0.65 };
+    let out_g = if d > 0.0 { 0.6 } else { 0.85 };
+    let out_b = if d > 0.0 { 0.3 } else { 1.0 };
+    let fade = 1.0 - exp(-6.0 * abs(d));
+    let ring = 0.8 + 0.2 * cos(150.0 * d);
+    let edge = 1.0 - smoothstep(0.0, 0.01, abs(d));
+    emit rgb(mix(out_r * fade * ring, 1.0, edge),
+             mix(out_g * fade * ring, 1.0, edge),
+             mix(out_b * fade * ring, 1.0, edge));
+}

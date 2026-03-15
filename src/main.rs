@@ -203,7 +203,7 @@ impl App {
             wgsl_source,
             window: None,
             display: None,
-            center_x: -0.5,
+            center_x: 0.0,
             center_y: 0.0,
             zoom: 1.0,
             needs_render: true,
@@ -243,7 +243,7 @@ impl App {
                     moved = true;
                 }
                 KeyCode::Digit0 | KeyCode::Numpad0 => {
-                    self.center_x = -0.5;
+                    self.center_x = 0.0;
                     self.center_y = 0.0;
                     self.zoom = 1.0;
                     moved = true;
