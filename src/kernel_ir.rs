@@ -134,9 +134,9 @@ pub struct CarryVar {
 #[derive(Debug, Clone)]
 pub struct While {
     pub carry: Vec<CarryVar>,
-    pub cond_body: Vec<Statement>,
+    pub cond_body: Vec<BodyItem>,
     pub cond: Var,
-    pub body: Vec<Statement>,
+    pub body: Vec<BodyItem>,
     pub yields: Vec<Var>,
 }
 
@@ -175,10 +175,6 @@ impl Kernel {
     }
 }
 
-fn find_binding_in_stmts(stmts: &[Statement], var: Var) -> Option<&Binding> {
-    stmts.iter().find(|s| s.binding.var == var).map(|s| &s.binding)
-}
-
 fn find_binding_in_body(body: &[BodyItem], var: Var) -> Option<&Binding> {
     for item in body {
         match item {
@@ -193,10 +189,10 @@ fn find_binding_in_body(body: &[BodyItem], var: Var) -> Option<&Binding> {
                         return Some(&cv.binding);
                     }
                 }
-                if let Some(b) = find_binding_in_stmts(&w.cond_body, var) {
+                if let Some(b) = find_binding_in_body(&w.cond_body, var) {
                     return Some(b);
                 }
-                if let Some(b) = find_binding_in_stmts(&w.body, var) {
+                if let Some(b) = find_binding_in_body(&w.body, var) {
                     return Some(b);
                 }
             }

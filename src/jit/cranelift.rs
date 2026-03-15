@@ -352,10 +352,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    for stmt in &w.cond_body {
-        let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
-        val_map.insert(stmt.binding.var, v);
-    }
+    lower_body_items(module, builder, kernel, &w.cond_body, val_map);
 
     // Branch on cond
     let cond_val = val_map[&w.cond];
@@ -365,10 +362,7 @@ fn lower_while(
     builder.switch_to_block(loop_body);
     builder.seal_block(loop_body);
 
-    for stmt in &w.body {
-        let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
-        val_map.insert(stmt.binding.var, v);
-    }
+    lower_body_items(module, builder, kernel, &w.body, val_map);
 
     // Update carry Variables with yield values
     for (i, yv) in w.yields.iter().enumerate() {

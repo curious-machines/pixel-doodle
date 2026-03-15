@@ -360,10 +360,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    for stmt in &w.cond_body {
-        let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
-        val_map.insert(stmt.binding.var, v);
-    }
+    lower_body_items(context, module, builder, function, kernel, &w.cond_body, val_map);
 
     // Branch on cond
     let cond_val = val_map[&w.cond].into_int_value();
@@ -372,10 +369,7 @@ fn lower_while(
     // -- Loop body: compute next values, branch back to header --
     builder.position_at_end(loop_body);
 
-    for stmt in &w.body {
-        let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
-        val_map.insert(stmt.binding.var, v);
-    }
+    lower_body_items(context, module, builder, function, kernel, &w.body, val_map);
 
     // Add incoming edges to phi nodes from loop body (yield values)
     let body_block = builder.get_insert_block().unwrap();

@@ -65,19 +65,8 @@ fn print_while(out: &mut String, w: &While, kernel: &Kernel, indent: usize) {
     }
     out.push_str(") {\n");
 
-    // Print cond_body statements
-    for stmt in &w.cond_body {
-        if stmt.binding.name.starts_with("__lit_") {
-            continue;
-        }
-        out.push_str(&inner_prefix);
-        out.push_str(&stmt.binding.name);
-        out.push_str(": ");
-        out.push_str(&format!("{}", stmt.binding.ty));
-        out.push_str(" = ");
-        print_inst(out, &stmt.inst, kernel);
-        out.push('\n');
-    }
+    // Print cond_body
+    print_body(out, &w.cond_body, kernel, indent + 1);
 
     // Print cond
     out.push_str(&inner_prefix);
@@ -85,19 +74,8 @@ fn print_while(out: &mut String, w: &While, kernel: &Kernel, indent: usize) {
     out.push_str(kernel.var_name(w.cond).unwrap_or("?"));
     out.push('\n');
 
-    // Print body statements
-    for stmt in &w.body {
-        if stmt.binding.name.starts_with("__lit_") {
-            continue;
-        }
-        out.push_str(&inner_prefix);
-        out.push_str(&stmt.binding.name);
-        out.push_str(": ");
-        out.push_str(&format!("{}", stmt.binding.ty));
-        out.push_str(" = ");
-        print_inst(out, &stmt.inst, kernel);
-        out.push('\n');
-    }
+    // Print body
+    print_body(out, &w.body, kernel, indent + 1);
 
     // Print yield
     out.push_str(&inner_prefix);
@@ -214,19 +192,11 @@ fn find_const_in_body(body: &[BodyItem], var: Var) -> Option<Const> {
                 }
             }
             BodyItem::While(w) => {
-                for s in &w.cond_body {
-                    if s.binding.var == var {
-                        if let Inst::Const(c) = &s.inst {
-                            return Some(*c);
-                        }
-                    }
+                if let Some(c) = find_const_in_body(&w.cond_body, var) {
+                    return Some(c);
                 }
-                for s in &w.body {
-                    if s.binding.var == var {
-                        if let Inst::Const(c) = &s.inst {
-                            return Some(*c);
-                        }
-                    }
+                if let Some(c) = find_const_in_body(&w.body, var) {
+                    return Some(c);
                 }
             }
         }

@@ -370,6 +370,40 @@ enum InlineBodyItem {
     },
 }
 
+/// Recursively collect names from body items (stmts + nested while carry/cond_body/body).
+fn collect_body_item_names(items: &[BodyItem]) -> Vec<String> {
+    let mut names = Vec::new();
+    for item in items {
+        match item {
+            BodyItem::Stmt(stmt) => names.push(stmt.binding.name.clone()),
+            BodyItem::While(w) => {
+                for cv in &w.carry {
+                    names.push(cv.binding.name.clone());
+                }
+                names.extend(collect_body_item_names(&w.cond_body));
+                names.extend(collect_body_item_names(&w.body));
+            }
+        }
+    }
+    names
+}
+
+/// Count the number of names that `collect_body_item_names` would produce.
+fn count_body_item_names(items: &[BodyItem]) -> usize {
+    let mut count = 0;
+    for item in items {
+        match item {
+            BodyItem::Stmt(_) => count += 1,
+            BodyItem::While(w) => {
+                count += w.carry.len();
+                count += count_body_item_names(&w.cond_body);
+                count += count_body_item_names(&w.body);
+            }
+        }
+    }
+    count
+}
+
 /// A parsed inline function definition, ready for expansion at call sites.
 #[derive(Debug, Clone)]
 struct InlineDef {
@@ -881,8 +915,8 @@ impl Parser {
 
         self.expect_tok(&Token::LBrace)?;
 
-        // Parse cond_body: statements until `cond`
-        let mut cond_body = Vec::new();
+        // Parse cond_body: statements/whiles until `cond`
+        let mut cond_body: Vec<BodyItem> = Vec::new();
         loop {
             let sp = self.peek().clone();
             match sp.token {
@@ -894,19 +928,17 @@ impl Parser {
                         message: "expected 'cond' in while body".to_string(),
                     });
                 }
+                Token::While => {
+                    let w = self.parse_while()?;
+                    cond_body.push(BodyItem::While(w));
+                }
                 _ => {
                     let (stmt, implicits, expanded) = self.parse_statement()?;
-                    if !expanded.is_empty() {
-                        return Err(ParseError {
-                            line: sp.line,
-                            col: sp.col,
-                            message: "inline functions containing while loops cannot be called from within a while loop".to_string(),
-                        });
-                    }
                     for imp in implicits {
-                        cond_body.push(imp);
+                        cond_body.push(BodyItem::Stmt(imp));
                     }
-                    cond_body.push(stmt);
+                    cond_body.extend(expanded);
+                    cond_body.push(BodyItem::Stmt(stmt));
                 }
             }
         }
@@ -917,8 +949,8 @@ impl Parser {
         let cond = self.resolve_var(&cond_name, cond_line, cond_col)?;
         self.check_types_match(ScalarType::Bool, self.var_ty(cond), "cond", cond_line, cond_col)?;
 
-        // Parse body: statements until `yield`
-        let mut body = Vec::new();
+        // Parse body: statements/whiles until `yield`
+        let mut body: Vec<BodyItem> = Vec::new();
         loop {
             let sp = self.peek().clone();
             match sp.token {
@@ -930,19 +962,17 @@ impl Parser {
                         message: "expected 'yield' in while body".to_string(),
                     });
                 }
+                Token::While => {
+                    let w = self.parse_while()?;
+                    body.push(BodyItem::While(w));
+                }
                 _ => {
                     let (stmt, implicits, expanded) = self.parse_statement()?;
-                    if !expanded.is_empty() {
-                        return Err(ParseError {
-                            line: sp.line,
-                            col: sp.col,
-                            message: "inline functions containing while loops cannot be called from within a while loop".to_string(),
-                        });
-                    }
                     for imp in implicits {
-                        body.push(imp);
+                        body.push(BodyItem::Stmt(imp));
                     }
-                    body.push(stmt);
+                    body.extend(expanded);
+                    body.push(BodyItem::Stmt(stmt));
                 }
             }
         }
@@ -1027,8 +1057,8 @@ impl Parser {
                 Token::While => {
                     let w = self.parse_while()?;
                     let carry_names = w.carry.iter().map(|cv| cv.binding.name.clone()).collect();
-                    let cond_body_names = w.cond_body.iter().map(|s| s.binding.name.clone()).collect();
-                    let body_names = w.body.iter().map(|s| s.binding.name.clone()).collect();
+                    let cond_body_names = collect_body_item_names(&w.cond_body);
+                    let body_names = collect_body_item_names(&w.body);
                     body.push(InlineBodyItem::While { w, carry_names, cond_body_names, body_names });
                 }
                 _ => {
@@ -1215,7 +1245,7 @@ impl Parser {
         }
     }
 
-    /// Remap a While struct, allocating fresh prefixed Vars for carry vars and inner statements.
+    /// Remap a While struct, allocating fresh prefixed Vars for carry vars and inner body items.
     fn remap_while(
         &mut self,
         w: &While,
@@ -1241,36 +1271,14 @@ impl Parser {
         }
 
         // Remap cond_body
-        let mut new_cond_body = Vec::new();
-        for (stmt, orig_name) in w.cond_body.iter().zip(cond_body_names) {
-            let new_name = format!("{prefix}{orig_name}");
-            let new_var = Var(self.next_var);
-            self.next_var += 1;
-            self.vars.insert(new_name.clone(), new_var);
-            self.var_types.insert(new_var, stmt.binding.ty);
-            var_map.insert(stmt.binding.var, new_var);
-            new_cond_body.push(Statement {
-                binding: Binding { var: new_var, name: new_name, ty: stmt.binding.ty },
-                inst: Self::remap_inst(&stmt.inst, var_map),
-            });
-        }
+        let mut name_iter = cond_body_names.iter();
+        let new_cond_body = self.remap_body_items(&w.cond_body, var_map, prefix, &mut name_iter);
 
         let new_cond = var_map.get(&w.cond).copied().unwrap_or(w.cond);
 
         // Remap body
-        let mut new_body = Vec::new();
-        for (stmt, orig_name) in w.body.iter().zip(body_names) {
-            let new_name = format!("{prefix}{orig_name}");
-            let new_var = Var(self.next_var);
-            self.next_var += 1;
-            self.vars.insert(new_name.clone(), new_var);
-            self.var_types.insert(new_var, stmt.binding.ty);
-            var_map.insert(stmt.binding.var, new_var);
-            new_body.push(Statement {
-                binding: Binding { var: new_var, name: new_name, ty: stmt.binding.ty },
-                inst: Self::remap_inst(&stmt.inst, var_map),
-            });
-        }
+        let mut name_iter = body_names.iter();
+        let new_body = self.remap_body_items(&w.body, var_map, prefix, &mut name_iter);
 
         let new_yields: Vec<Var> = w.yields.iter()
             .map(|v| var_map.get(v).copied().unwrap_or(*v))
@@ -1283,6 +1291,52 @@ impl Parser {
             body: new_body,
             yields: new_yields,
         }
+    }
+
+    /// Recursively remap body items, consuming names from the iterator.
+    fn remap_body_items<'a>(
+        &mut self,
+        items: &[BodyItem],
+        var_map: &mut HashMap<Var, Var>,
+        prefix: &str,
+        names: &mut impl Iterator<Item = &'a String>,
+    ) -> Vec<BodyItem> {
+        let mut result = Vec::new();
+        for item in items {
+            match item {
+                BodyItem::Stmt(stmt) => {
+                    let orig_name = names.next().expect("name iterator exhausted");
+                    let new_name = format!("{prefix}{orig_name}");
+                    let new_var = Var(self.next_var);
+                    self.next_var += 1;
+                    self.vars.insert(new_name.clone(), new_var);
+                    self.var_types.insert(new_var, stmt.binding.ty);
+                    var_map.insert(stmt.binding.var, new_var);
+                    result.push(BodyItem::Stmt(Statement {
+                        binding: Binding { var: new_var, name: new_name, ty: stmt.binding.ty },
+                        inst: Self::remap_inst(&stmt.inst, var_map),
+                    }));
+                }
+                BodyItem::While(inner_w) => {
+                    // Consume carry names, cond_body names, body names from the flat iterator
+                    let carry_names: Vec<String> = inner_w.carry.iter()
+                        .map(|_| names.next().expect("name iterator exhausted").clone())
+                        .collect();
+                    // Count body item names needed
+                    let cond_count = count_body_item_names(&inner_w.cond_body);
+                    let cond_names: Vec<String> = (0..cond_count)
+                        .map(|_| names.next().expect("name iterator exhausted").clone())
+                        .collect();
+                    let body_count = count_body_item_names(&inner_w.body);
+                    let body_names: Vec<String> = (0..body_count)
+                        .map(|_| names.next().expect("name iterator exhausted").clone())
+                        .collect();
+                    let remapped = self.remap_while(inner_w, var_map, prefix, &carry_names, &cond_names, &body_names);
+                    result.push(BodyItem::While(remapped));
+                }
+            }
+        }
+        result
     }
 
     fn parse_params(&mut self) -> Result<Vec<Binding>, ParseError> {
