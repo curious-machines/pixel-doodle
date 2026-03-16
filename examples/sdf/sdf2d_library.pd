@@ -6,7 +6,7 @@
 // --- Helpers ----------------------------------------------------------------
 
 fn sign(x: f64) -> f64 {
-    return if x > 0.0 { 1.0 } else { if x < 0.0 { -1.0 } else { 0.0 } };
+    return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
 }
 
 // GLSL mod: x - y*floor(x/y)
@@ -41,8 +41,8 @@ fn sd_chamfer_box(p: vec2, b: vec2, chamfer: f64) -> f64 {
     let sy2 = sy + chamfer;
     let k = 1.0 - sqrt(2.0);
     return if sy2 < 0.0 && sy2 + sx * k < 0.0 { sx }
-           else { if sx < sy2 { (sx + sy2) * sqrt(0.5) }
-           else { length(vec2(sx, sy2)) } };
+           else if sx < sy2 { (sx + sy2) * sqrt(0.5) }
+           else { length(vec2(sx, sy2)) };
 }
 
 fn sd_segment(p: vec2, a: vec2, b: vec2) -> f64 {
@@ -187,8 +187,8 @@ fn sd_uneven_capsule(p: vec2, r1: f64, r2: f64, h: f64) -> f64 {
     let a = sqrt(1.0 - b * b);
     let k = apx * (-b) + p.y * a;
     return if k < 0.0 { length(vec2(apx, p.y)) - r1 }
-           else { if k > a * h { length(vec2(apx, p.y - h)) - r2 }
-           else { apx * a + p.y * b - r1 } };
+           else if k > a * h { length(vec2(apx, p.y - h)) - r2 }
+           else { apx * a + p.y * b - r1 };
 }
 
 // --- Regular Polygons -------------------------------------------------------
@@ -302,8 +302,8 @@ fn sd_cut_disk(p: vec2, r: f64, h: f64) -> f64 {
     let apx = abs(p.x);
     let s = max((h - r) * apx * apx + w * w * (h + r - 2.0 * p.y), h * apx - w * p.y);
     return if s < 0.0 { length(vec2(apx, p.y)) - r }
-           else { if apx < w { h - p.y }
-           else { length(vec2(apx - w, p.y - h)) } };
+           else if apx < w { h - p.y }
+           else { length(vec2(apx - w, p.y - h)) };
 }
 
 fn sd_arc(p: vec2, sc: vec2, ra: f64, rb: f64) -> f64 {

@@ -69,9 +69,9 @@ kernel light_transport_2d(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -
     let in_g2_px = d_g2_px <= 0.0;
 
     // Copper / silver / gold albedos
-    let alb_r = if in_g2_px { 0.65 } else { if in_g1_px { 0.75 } else { 0.8 } };
-    let alb_g = if in_g2_px { 0.68 } else { if in_g1_px { 0.5 } else { 0.72 } };
-    let alb_b = if in_g2_px { 0.72 } else { if in_g1_px { 0.35 } else { 0.35 } };
+    let alb_r = if in_g2_px { 0.65 } else if in_g1_px { 0.75 } else { 0.8 };
+    let alb_g = if in_g2_px { 0.68 } else if in_g1_px { 0.5 } else { 0.72 };
+    let alb_b = if in_g2_px { 0.72 } else if in_g1_px { 0.35 } else { 0.35 };
 
     // Ambient base
     let amb_r = alb_r * 0.45;
@@ -100,11 +100,11 @@ kernel light_transport_2d(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -
 
         // Sky contribution
         let new_rad_r = if hit_light { rad_r + thr_r * 6.0 }
-                        else { if escaped { rad_r + thr_r * 0.5 } else { rad_r } };
+                        else if escaped { rad_r + thr_r * 0.5 } else { rad_r };
         let new_rad_g = if hit_light { rad_g + thr_g * 5.5 }
-                        else { if escaped { rad_g + thr_g * 0.5 } else { rad_g } };
+                        else if escaped { rad_g + thr_g * 0.5 } else { rad_g };
         let new_rad_b = if hit_light { rad_b + thr_b * 4.0 }
-                        else { if escaped { rad_b + thr_b * 0.55 } else { rad_b } };
+                        else if escaped { rad_b + thr_b * 0.55 } else { rad_b };
 
         let still_alive = !escaped && !hit_light;
 

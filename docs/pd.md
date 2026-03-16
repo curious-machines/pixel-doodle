@@ -152,7 +152,15 @@ let color = if is_inside { 0u32 } else { bright_color };
 emit if d < 0.0 { surface_color } else { background };
 ```
 
-Both branches must produce the same type. The braces `{}` around each branch are required.
+Chained conditions use `else if`:
+
+```
+let v = if x > 0.5 { 1.0 }
+        else if x > 0.0 { 0.5 }
+        else { 0.0 };
+```
+
+Both/all branches must produce the same type. The braces `{}` around each branch are required (except after `else if`, which starts a new if-expression).
 
 ## Vector types
 

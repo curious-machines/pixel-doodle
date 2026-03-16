@@ -3,7 +3,7 @@
 // Demonstrates vec3 math, raymarching, camera orbit, and lighting.
 
 fn sign(x: f64) -> f64 {
-    return if x > 0.0 { 1.0 } else { if x < 0.0 { -1.0 } else { 0.0 } };
+    return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
 }
 
 // Exact SDF for a cylinder between endpoints a and b with radius r

@@ -6,7 +6,7 @@
 // --- Helpers ----------------------------------------------------------------
 
 fn sign(x: f64) -> f64 {
-    return if x > 0.0 { 1.0 } else { if x < 0.0 { -1.0 } else { 0.0 } };
+    return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
 }
 
 // dot(v,v) convenience for vec2
@@ -199,7 +199,7 @@ fn sdCutSphere(p: vec3, r: f64, h: f64) -> f64 {
     let d_sphere = length(q) - r;
     let d_cap = h - q.y;
     let d_edge = length(q - vec2(w, h));
-    return if s < 0.0 { d_sphere } else { if q.x < w { d_cap } else { d_edge } };
+    return if s < 0.0 { d_sphere } else if q.x < w { d_cap } else { d_edge };
 }
 
 // Cut hollow sphere
@@ -227,8 +227,8 @@ fn sdRoundCone(p: vec3, r1: f64, r2: f64, h: f64) -> f64 {
     let q = vec2(length(vec2(p.x, p.z)), p.y);
     let k = dot(q, vec2(-b, a));
     return if k < 0.0 { length(q) - r1 }
-           else { if k > a * h { length(q - vec2(0.0, h)) - r2 }
-           else { dot(q, vec2(a, b)) - r1 } };
+           else if k > a * h { length(q - vec2(0.0, h)) - r2 }
+           else { dot(q, vec2(a, b)) - r1 };
 }
 
 // Round cone between arbitrary endpoints
@@ -247,8 +247,8 @@ fn sdRoundConeAB(p: vec3, a: vec3, b: vec3, r1: f64, r2: f64) -> f64 {
     let z2 = z * z * l2;
     let k = sign(rr) * rr * rr * x2;
     return if sign(z) * a2 * z2 > k { sqrt(x2 + z2) * il2 - r2 }
-           else { if sign(y) * a2 * y2 < k { sqrt(x2 + y2) * il2 - r1 }
-           else { (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1 } };
+           else if sign(y) * a2 * y2 < k { sqrt(x2 + y2) * il2 - r1 }
+           else { (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1 };
 }
 
 // Ellipsoid (approximate)
@@ -280,9 +280,9 @@ fn sdOctahedron(p: vec3, s: f64) -> f64 {
     let ap = abs(p);
     let m = ap.x + ap.y + ap.z - s;
     // Select face — reorder components so q.x is smallest
-    let qx = if 3.0 * ap.x < m { ap.x } else { if 3.0 * ap.y < m { ap.y } else { if 3.0 * ap.z < m { ap.z } else { 0.0 } } };
-    let qy = if 3.0 * ap.x < m { ap.y } else { if 3.0 * ap.y < m { ap.z } else { if 3.0 * ap.z < m { ap.x } else { 0.0 } } };
-    let qz = if 3.0 * ap.x < m { ap.z } else { if 3.0 * ap.y < m { ap.x } else { if 3.0 * ap.z < m { ap.y } else { 0.0 } } };
+    let qx = if 3.0 * ap.x < m { ap.x } else if 3.0 * ap.y < m { ap.y } else if 3.0 * ap.z < m { ap.z } else { 0.0 };
+    let qy = if 3.0 * ap.x < m { ap.y } else if 3.0 * ap.y < m { ap.z } else if 3.0 * ap.z < m { ap.x } else { 0.0 };
+    let qz = if 3.0 * ap.x < m { ap.z } else if 3.0 * ap.y < m { ap.x } else if 3.0 * ap.z < m { ap.y } else { 0.0 };
     let early = m * 0.57735027;
     let k = clamp(0.5 * (qz - qy + s), 0.0, s);
     let late = length(vec3(qx, qy - s + k, qz - k));

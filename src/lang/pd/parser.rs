@@ -462,9 +462,15 @@ impl Parser {
         let then_expr = self.parse_expr()?;
         self.expect(&Token::RBrace)?;
         self.expect(&Token::Else)?;
-        self.expect(&Token::LBrace)?;
-        let else_expr = self.parse_expr()?;
-        self.expect(&Token::RBrace)?;
+        let else_expr = if *self.peek() == Token::If {
+            // else if — parse as nested if-expr (no braces needed around it)
+            self.parse_if_expr()?
+        } else {
+            self.expect(&Token::LBrace)?;
+            let e = self.parse_expr()?;
+            self.expect(&Token::RBrace)?;
+            e
+        };
         Ok(Expr::IfElse {
             cond: Box::new(cond),
             then_expr: Box::new(then_expr),
