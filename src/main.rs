@@ -192,10 +192,12 @@ struct App {
     zoom: f64,
     needs_render: bool,
     keys_down: Vec<KeyCode>,
+    start_time: Instant,
+    animated: bool,
 }
 
 impl App {
-    fn new(backend: Backend, label: &'static str, compile_ms: f64, wgsl_source: Option<String>) -> Self {
+    fn new(backend: Backend, label: &'static str, compile_ms: f64, wgsl_source: Option<String>, animated: bool) -> Self {
         Self {
             backend,
             label,
@@ -208,6 +210,8 @@ impl App {
             zoom: 1.0,
             needs_render: true,
             keys_down: Vec::new(),
+            start_time: Instant::now(),
+            animated,
         }
     }
 
@@ -277,6 +281,10 @@ impl ApplicationHandler for App {
             *gpu_backend = Some(GpuBackend::new(&display, WIDTH, HEIGHT, 256, wgsl));
         }
 
+        if self.animated {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        }
+
         self.display = Some(display);
         self.window = Some(window);
     }
@@ -320,6 +328,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let moved = self.handle_input();
                 let display = self.display.as_ref().unwrap();
+                let time = self.start_time.elapsed().as_secs_f64();
 
                 match &mut self.backend {
                     Backend::Cpu { kernel_fn, buffer, display_buffer, accum } => {
@@ -340,6 +349,7 @@ impl ApplicationHandler for App {
                                         self.zoom,
                                         *kernel_fn,
                                         accum.sample_count,
+                                        time,
                                     );
                                     accum.accumulate(buffer);
                                     let disp = display_buffer.as_mut().unwrap();
@@ -365,7 +375,7 @@ impl ApplicationHandler for App {
                             }
                             None => {
                                 // Non-progressive mode (original behavior)
-                                if moved || self.needs_render {
+                                if moved || self.needs_render || self.animated {
                                     let t0 = Instant::now();
                                     render::render(
                                         buffer,
@@ -376,6 +386,7 @@ impl ApplicationHandler for App {
                                         self.zoom,
                                         *kernel_fn,
                                         0xFFFFFFFF,
+                                        time,
                                     );
                                     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
                                     if let Some(window) = &self.window {
@@ -402,7 +413,7 @@ impl ApplicationHandler for App {
                                 let t0 = Instant::now();
                                 gpu.render(
                                     display, self.center_x, self.center_y, self.zoom,
-                                    *sample_count, *sample_count + 1,
+                                    *sample_count, *sample_count + 1, time,
                                 );
                                 *sample_count += 1;
                                 let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -419,11 +430,11 @@ impl ApplicationHandler for App {
                             }
                             None => {
                                 // Non-progressive: single render
-                                if moved || self.needs_render {
+                                if moved || self.needs_render || self.animated {
                                     let t0 = Instant::now();
                                     gpu.render(
                                         display, self.center_x, self.center_y, self.zoom,
-                                        0xFFFFFFFF, 0,
+                                        0xFFFFFFFF, 0, time,
                                     );
                                     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
                                     if let Some(window) = &self.window {
@@ -440,8 +451,8 @@ impl ApplicationHandler for App {
 
                 self.needs_render = false;
 
-                // Keep requesting redraws while keys are held for continuous pan/zoom
-                if !self.keys_down.is_empty() {
+                // Keep requesting redraws for animation or while keys are held
+                if self.animated || !self.keys_down.is_empty() {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -466,6 +477,11 @@ fn main() {
     }
 
     let compile_start = Instant::now();
+
+    let animated = match &kernel_source {
+        KernelSource::Pdl(kernel) => kernel.params.iter().any(|p| p.name == "time"),
+        KernelSource::Wgsl(src) => src.contains("params.time"),
+    };
 
     let (backend, label, wgsl_source) = match kernel_source {
         KernelSource::Wgsl(src) => {
@@ -519,6 +535,6 @@ fn main() {
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(backend, label, compile_ms, wgsl_source);
+    let mut app = App::new(backend, label, compile_ms, wgsl_source, animated);
     event_loop.run_app(&mut app).unwrap();
 }

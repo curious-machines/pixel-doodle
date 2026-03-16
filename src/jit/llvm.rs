@@ -86,6 +86,7 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
             i32_type.into(),
             i32_type.into(),
             i32_type.into(), // sample_index
+            f64_type.into(), // time
         ],
         false,
     );
@@ -104,7 +105,7 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
 
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32, f64)>(
                 &kernel.name,
             )
             .unwrap()
@@ -149,6 +150,7 @@ fn build_tile_loop(
     let p_row_start = function.get_nth_param(7).unwrap().into_int_value();
     let p_row_end = function.get_nth_param(8).unwrap().into_int_value();
     let p_sample_index = function.get_nth_param(9).unwrap().into_int_value();
+    let p_time = function.get_nth_param(10).unwrap().into_float_value();
 
     let row_ptr = builder.build_alloca(i32_type, "row_ptr").unwrap();
     let col_ptr = builder.build_alloca(i32_type, "col_ptr").unwrap();
@@ -228,7 +230,7 @@ fn build_tile_loop(
 
     let col = builder.build_load(i32_type, col_ptr, "col_k").unwrap().into_int_value();
     let row = builder.build_load(i32_type, row_ptr, "row_k").unwrap().into_int_value();
-    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index);
+    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index, p_time);
 
     // Store pixel
     let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
@@ -274,6 +276,7 @@ fn lower_kernel_body(
     col: inkwell::values::IntValue<'static>,
     row: inkwell::values::IntValue<'static>,
     sample_index: inkwell::values::IntValue<'static>,
+    time: inkwell::values::FloatValue<'static>,
 ) -> inkwell::values::IntValue<'static> {
     use std::collections::HashMap;
 
@@ -285,6 +288,7 @@ fn lower_kernel_body(
             "px" => col.into(),
             "py" => row.into(),
             "sample_index" => sample_index.into(),
+            "time" => time.into(),
             name => panic!("unknown kernel parameter name: '{name}'"),
         };
         val_map.insert(param.var, val);

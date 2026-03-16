@@ -13,6 +13,7 @@ pub fn render(
     zoom: f64,
     kernel: TileKernelFn,
     sample_index: u32,
+    time: f64,
 ) {
     let aspect = width as f64 / height as f64;
     let view_w = 3.5 / zoom;
@@ -47,6 +48,7 @@ pub fn render(
                     row_start as u32,
                     row_end as u32,
                     sample_index,
+                    time,
                 );
             }
         });

@@ -16,6 +16,7 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 
 - **Parameters** `x` and `y` receive normalized pixel coordinates (typically mapped to a viewport range like -2.0 to 2.0).
 - Additional parameters `px: u32, py: u32, sample_index: u32` are available for pixel coordinates and progressive sampling.
+- `time: f64` provides elapsed time in seconds for animation. Kernels that declare this parameter automatically render continuously.
 - **Return type** is always `u32` (an ARGB pixel value).
 - **`emit`** evaluates an expression and uses the result as the pixel color.
 - Comments start with `//` and run to end of line.

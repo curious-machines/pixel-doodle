@@ -5,6 +5,9 @@ use crate::kernel_ir::Kernel;
 ///
 /// `sample_index`: which sample pass this is (0, 1, 2, ...).
 /// When `0xFFFFFFFF`, no jitter is applied (non-progressive mode).
+///
+/// `time`: elapsed time in seconds since the window opened. Kernels that
+/// declare a `time: f64` parameter receive this value for animation.
 pub type TileKernelFn = unsafe extern "C" fn(
     output: *mut u32,
     width: u32,
@@ -16,6 +19,7 @@ pub type TileKernelFn = unsafe extern "C" fn(
     row_start: u32,
     row_end: u32,
     sample_index: u32,
+    time: f64,
 );
 
 pub trait JitBackend {

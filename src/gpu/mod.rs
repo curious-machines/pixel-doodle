@@ -22,7 +22,8 @@ struct Params {
     y_step: f32,
     sample_index: u32,
     sample_count: u32,
-    _pad: [u32; 2],
+    time: f32,
+    _pad: [u32; 1],
 }
 
 pub struct GpuBackend {
@@ -161,6 +162,7 @@ impl GpuBackend {
         zoom: f64,
         sample_index: u32,
         sample_count: u32,
+        time: f64,
     ) {
         let aspect = self.width as f64 / self.height as f64;
         let view_w = 3.5 / zoom;
@@ -181,7 +183,8 @@ impl GpuBackend {
             y_step: y_step as f32,
             sample_index,
             sample_count,
-            _pad: [0; 2],
+            time: time as f32,
+            _pad: [0; 1],
         };
 
         display

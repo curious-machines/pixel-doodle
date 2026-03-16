@@ -58,6 +58,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     sig.params.push(AbiParam::new(I32)); // row_start: u32
     sig.params.push(AbiParam::new(I32)); // row_end: u32
     sig.params.push(AbiParam::new(I32)); // sample_index: u32
+    sig.params.push(AbiParam::new(F64)); // time: f64
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -77,6 +78,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let v_row_start = builder.declare_var(I32);
     let v_row_end = builder.declare_var(I32);
     let v_sample_index = builder.declare_var(I32);
+    let v_time = builder.declare_var(F64);
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
 
@@ -105,6 +107,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     builder.def_var(v_row_start, params[7]);
     builder.def_var(v_row_end, params[8]);
     builder.def_var(v_sample_index, params[9]);
+    builder.def_var(v_time, params[10]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -198,7 +201,8 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let col = builder.use_var(v_col);
     let row = builder.use_var(v_row);
     let sample_idx_for_kernel = builder.use_var(v_sample_index);
-    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel);
+    let time = builder.use_var(v_time);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel, time);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -271,6 +275,7 @@ fn lower_kernel_body(
     col: cranelift_codegen::ir::Value,
     row: cranelift_codegen::ir::Value,
     sample_index: cranelift_codegen::ir::Value,
+    time: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
@@ -282,6 +287,7 @@ fn lower_kernel_body(
             "px" => col,
             "py" => row,
             "sample_index" => sample_index,
+            "time" => time,
             name => panic!("unknown kernel parameter name: '{name}'"),
         };
         val_map.insert(param.var, val);

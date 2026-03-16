@@ -52,6 +52,7 @@ pub unsafe extern "C" fn native_mandelbrot_kernel(
     row_start: u32,
     row_end: u32,
     sample_index: u32,
+    _time: f64,
 ) {
     let width = width as usize;
     for row in row_start..row_end {

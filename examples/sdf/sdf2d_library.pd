@@ -797,12 +797,17 @@ fn sd_stairs(px: f64, py: f64, wh_x: f64, wh_y: f64, n: f64) -> f64 {
 // ============================================================================
 // Demo kernel — uncomment one shape to visualize
 // ============================================================================
+//kernel sdf2d_demo(x: f64, y: f64, time: f64) -> u32 {
 kernel sdf2d_demo(x: f64, y: f64) -> u32 {
     let d = sd_heart(x, y * -1.0 + 0.5);
     // let d = sd_hexagon(x, y, 0.5);
     // let d = sd_star(x, y, 0.4, 5u32, 2.5);
     // let d = sd_box(x, y, 0.5, 0.3);
     // let d = sd_moon(x, y, 0.3, 0.5, 0.4);
+    
+    // let height = 0.501 - 0.499 * cos(time * 1.1 + 0.0);
+    // let radius = 0.100 + 0.100 * sin(time * 1.7 + 2.0);
+    // let d = sd_rounded_cross(x, y, height) - radius;
 
     // Shadertoy-style visualization
     let out_r = if d > 0.0 { 0.9 } else { 0.65 };
