@@ -342,3 +342,20 @@ Hand-written recursive descent in `src/lang/parser.rs`. No external dependencies
 `src/lang/printer.rs` — converts `Kernel` back to text format.
 Roundtrip property: `parse(print(k))` produces an equivalent kernel.
 Handles while loops with proper indentation and carry var formatting.
+
+## Use Directive
+
+`use "path.pd";` imports function definitions from external PD files. Paths are relative to the current file's directory. Files are only processed once (dedup by canonical path). Nested includes are supported. Included files can contain `use` and `fn` but not `kernel`. Unused functions have no runtime cost — the lowerer only inlines functions that are actually called.
+
+## Future: Annotated IR Dump (not yet implemented)
+
+**Status:** Discussed, deferred for future implementation.
+
+A `--dump-ir --annotate` flag (or similar) would include original PD source lines as comments in the generated PDL output, making it easier for humans to understand the relationship between PD source and lowered IR.
+
+**Design considerations:**
+- Preferred approach: side-channel — pass original PD source text to the printer rather than adding annotations to the IR (keeps the IR syntax-independent).
+- The lowerer could tag each IR statement with a source line number during lowering. The printer would look up the line in the original source and emit it as a `# comment`.
+- A single PD `let` statement can produce multiple IR statements (e.g., `let d = length(p) - r;` → `vec_length` + `sub`). The comment should appear before the first statement in the group.
+- Also discussed: using PD variable names as a base for generated temp names (instead of `_pd_tmp_4`, something more descriptive). The lowerer already preserves user-given names from `let` bindings; only intermediates use generated names.
+- This is a human readability aid, not needed by the LLM.
