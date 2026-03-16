@@ -4,7 +4,9 @@
   "scopeName": "source.pdl",
   "patterns": [
     { "include": "#comment" },
+    { "include": "#use-directive" },
     { "include": "#kernel" },
+    { "include": "#inline-def" },
     { "include": "#while-carry" },
     { "include": "#control" },
     { "include": "#statement" }
@@ -13,6 +15,20 @@
     "comment": {
       "match": "#.*$",
       "name": "comment.line.number-sign.pdl"
+    },
+    "use-directive": {
+      "match": "\\b(use)\\s+(\"[^\"]*\")",
+      "captures": {
+        "1": { "name": "keyword.control.import.pdl" },
+        "2": { "name": "string.quoted.double.pdl" }
+      }
+    },
+    "inline-def": {
+      "match": "\\b(inline)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+      "captures": {
+        "1": { "name": "keyword.declaration.function.pdl" },
+        "2": { "name": "entity.name.function.pdl" }
+      }
     },
     "kernel": {
       "match": "\\b(kernel)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
@@ -31,7 +47,7 @@
     "control": {
       "patterns": [
         {
-          "match": "\\b(emit|cond|yield)\\b",
+          "match": "\\b(emit|cond|yield|return)\\b",
           "name": "keyword.control.pdl"
         },
         {
@@ -45,13 +61,14 @@
         { "include": "#type" },
         { "include": "#operator" },
         { "include": "#constant" },
+        { "include": "#string" },
         { "include": "#number" },
         { "include": "#boolean" },
         { "include": "#variable-def" }
       ]
     },
     "type": {
-      "match": "\\b(f64|u32|bool)\\b",
+      "match": "\\b(f64|u32|bool|vec2|vec3)\\b",
       "name": "storage.type.pdl"
     },
     "operator": {
@@ -79,8 +96,16 @@
         {
           "match": "(?<==\\s*)\\b(const|select|pack_argb)\\b",
           "name": "support.function.builtin.pdl"
+        },
+        {
+          "match": "(?<==\\s*)\\b(make_vec2|make_vec3|extract_x|extract_y|extract_z|vec_add|vec_sub|vec_mul|vec_div|vec_min|vec_max|vec_neg|vec_abs|vec_normalize|vec_scale|vec_dot|vec_length|vec_cross)\\b",
+          "name": "support.function.vector.pdl"
         }
       ]
+    },
+    "string": {
+      "match": "\"[^\"]*\"",
+      "name": "string.quoted.double.pdl"
     },
     "number": {
       "patterns": [
