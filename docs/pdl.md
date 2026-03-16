@@ -360,9 +360,9 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 - `while` loops are allowed inside inline function bodies.
 - Each call site generates uniquely prefixed variables (e.g., `__smin_0_ka`, `__smin_1_ka`) to avoid collisions.
 
-### Restrictions (V1)
+### Nesting
 
-- Inline functions **cannot call other inline functions** (no nesting). This is planned for a future version.
+- Inline functions **can call other inline functions**, as long as the callee is defined before the caller.
 - Inline functions containing `while` loops cannot be called from within another `while` loop body (the IR's while body is flat statements only).
 
 ## Complete example
