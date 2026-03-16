@@ -18,7 +18,7 @@ pub fn parse(source: &str) -> Result<Kernel, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel_ir::ScalarType;
+    use crate::kernel_ir::ValType;
 
     #[test]
     fn parse_gradient_pd() {
@@ -26,7 +26,7 @@ mod tests {
         let kernel = parse(&src).unwrap();
         assert_eq!(kernel.name, "gradient");
         assert_eq!(kernel.params.len(), 2);
-        assert_eq!(kernel.return_ty, ScalarType::U32);
+        assert_eq!(kernel.return_ty, ValType::U32);
     }
 
     #[test]
@@ -61,7 +61,7 @@ mod tests {
         let kernel = parse(&src).unwrap();
         // The emit var should exist and be u32
         let emit_ty = kernel.var_type(kernel.emit);
-        assert_eq!(emit_ty, Some(ScalarType::U32));
+        assert_eq!(emit_ty, Some(ValType::U32));
     }
 
     #[test]

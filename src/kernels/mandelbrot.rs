@@ -21,37 +21,37 @@ pub fn gradient_kernel() -> Kernel {
     Kernel {
         name: "gradient".to_string(),
         params: vec![
-            Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
-            Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
+            Binding { var: Var(0), name: "x".into(), ty: ValType::F64 },
+            Binding { var: Var(1), name: "y".into(), ty: ValType::F64 },
         ],
-        return_ty: ScalarType::U32,
+        return_ty: ValType::U32,
         body: vec![
             s(Statement {
-                binding: Binding { var: c255, name: "c255".into(), ty: ScalarType::F64 },
+                binding: Binding { var: c255, name: "c255".into(), ty: ValType::F64 },
                 inst: Inst::Const(Const::F64(255.0)),
             }),
             s(Statement {
-                binding: Binding { var: r_f, name: "r_f".into(), ty: ScalarType::F64 },
+                binding: Binding { var: r_f, name: "r_f".into(), ty: ValType::F64 },
                 inst: Inst::Binary { op: BinOp::Mul, lhs: Var(0), rhs: c255 },
             }),
             s(Statement {
-                binding: Binding { var: r_u, name: "r_u".into(), ty: ScalarType::U32 },
+                binding: Binding { var: r_u, name: "r_u".into(), ty: ValType::U32 },
                 inst: Inst::Conv { op: ConvOp::F64ToU32, arg: r_f },
             }),
             s(Statement {
-                binding: Binding { var: g_f, name: "g_f".into(), ty: ScalarType::F64 },
+                binding: Binding { var: g_f, name: "g_f".into(), ty: ValType::F64 },
                 inst: Inst::Binary { op: BinOp::Mul, lhs: Var(1), rhs: c255 },
             }),
             s(Statement {
-                binding: Binding { var: g_u, name: "g_u".into(), ty: ScalarType::U32 },
+                binding: Binding { var: g_u, name: "g_u".into(), ty: ValType::U32 },
                 inst: Inst::Conv { op: ConvOp::F64ToU32, arg: g_f },
             }),
             s(Statement {
-                binding: Binding { var: b, name: "b".into(), ty: ScalarType::U32 },
+                binding: Binding { var: b, name: "b".into(), ty: ValType::U32 },
                 inst: Inst::Const(Const::U32(128)),
             }),
             s(Statement {
-                binding: Binding { var: pixel, name: "pixel".into(), ty: ScalarType::U32 },
+                binding: Binding { var: pixel, name: "pixel".into(), ty: ValType::U32 },
                 inst: Inst::PackArgb { r: r_u, g: g_u, b },
             }),
         ],
@@ -73,25 +73,25 @@ pub fn solid_color_kernel(r: u32, g: u32, b: u32) -> Kernel {
     Kernel {
         name: "solid".to_string(),
         params: vec![
-            Binding { var: Var(0), name: "x".into(), ty: ScalarType::F64 },
-            Binding { var: Var(1), name: "y".into(), ty: ScalarType::F64 },
+            Binding { var: Var(0), name: "x".into(), ty: ValType::F64 },
+            Binding { var: Var(1), name: "y".into(), ty: ValType::F64 },
         ],
-        return_ty: ScalarType::U32,
+        return_ty: ValType::U32,
         body: vec![
             s(Statement {
-                binding: Binding { var: rv, name: "r".into(), ty: ScalarType::U32 },
+                binding: Binding { var: rv, name: "r".into(), ty: ValType::U32 },
                 inst: Inst::Const(Const::U32(r)),
             }),
             s(Statement {
-                binding: Binding { var: gv, name: "g".into(), ty: ScalarType::U32 },
+                binding: Binding { var: gv, name: "g".into(), ty: ValType::U32 },
                 inst: Inst::Const(Const::U32(g)),
             }),
             s(Statement {
-                binding: Binding { var: bv, name: "b".into(), ty: ScalarType::U32 },
+                binding: Binding { var: bv, name: "b".into(), ty: ValType::U32 },
                 inst: Inst::Const(Const::U32(b)),
             }),
             s(Statement {
-                binding: Binding { var: pixel, name: "pixel".into(), ty: ScalarType::U32 },
+                binding: Binding { var: pixel, name: "pixel".into(), ty: ValType::U32 },
                 inst: Inst::PackArgb { r: rv, g: gv, b: bv },
             }),
         ],

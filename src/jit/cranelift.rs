@@ -10,6 +10,34 @@ use cranelift_module::{Linkage, Module};
 use crate::jit::{CompiledKernel, JitBackend, TileKernelFn};
 use crate::kernel_ir::*;
 
+/// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
+enum VarValues {
+    Scalar(cranelift_codegen::ir::Value),
+    Vec2(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+    Vec3(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+}
+
+fn get_scalar(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> cranelift_codegen::ir::Value {
+    match &val_map[var] {
+        VarValues::Scalar(v) => *v,
+        _ => panic!("expected scalar value for {:?}", var),
+    }
+}
+
+fn get_vec2(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+    match &val_map[var] {
+        VarValues::Vec2(x, y) => (*x, *y),
+        _ => panic!("expected vec2 value for {:?}", var),
+    }
+}
+
+fn get_vec3(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+    match &val_map[var] {
+        VarValues::Vec3(x, y, z) => (*x, *y, *z),
+        _ => panic!("expected vec3 value for {:?}", var),
+    }
+}
+
 pub struct CraneliftBackend;
 
 struct CraneliftKernel {
@@ -279,7 +307,7 @@ fn lower_kernel_body(
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
-    let mut val_map: HashMap<Var, cranelift_codegen::ir::Value> = HashMap::new();
+    let mut val_map: HashMap<Var, VarValues> = HashMap::new();
     for param in &kernel.params {
         let val = match param.name.as_str() {
             "x" => cx,
@@ -290,12 +318,12 @@ fn lower_kernel_body(
             "time" => time,
             name => panic!("unknown kernel parameter name: '{name}'"),
         };
-        val_map.insert(param.var, val);
+        val_map.insert(param.var, VarValues::Scalar(val));
     }
 
     lower_body_items(module, builder, kernel, &kernel.body, &mut val_map);
 
-    val_map[&kernel.emit]
+    get_scalar(&val_map, &kernel.emit)
 }
 
 fn lower_body_items(
@@ -303,7 +331,7 @@ fn lower_body_items(
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     body: &[BodyItem],
-    val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
+    val_map: &mut std::collections::HashMap<Var, VarValues>,
 ) {
     for item in body {
         match item {
@@ -323,7 +351,7 @@ fn lower_while(
     builder: &mut FunctionBuilder,
     kernel: &Kernel,
     w: &While,
-    val_map: &mut std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
+    val_map: &mut std::collections::HashMap<Var, VarValues>,
 ) {
     // Cranelift uses Variables for SSA construction (like mutable locals).
     // We declare a Variable for each carry var, def it with the initial value,
@@ -333,17 +361,41 @@ fn lower_while(
     let loop_body = builder.create_block();
     let loop_exit = builder.create_block();
 
-    // Declare Variables for carry vars and initialize them
-    let carry_vars: Vec<Variable> = w.carry.iter().map(|cv| {
-        let cl_ty = match cv.binding.ty {
-            ScalarType::F64 => F64,
-            ScalarType::U32 => I32,
-            ScalarType::Bool => I8,
-        };
-        let cl_var = builder.declare_var(cl_ty);
-        let init_val = val_map[&cv.init];
-        builder.def_var(cl_var, init_val);
-        cl_var
+    // Declare Variables for carry vars and initialize them.
+    // Vec types expand to multiple Variables (one per component).
+    let carry_vars: Vec<Vec<Variable>> = w.carry.iter().map(|cv| {
+        match cv.binding.ty {
+            ValType::Vec2 => {
+                let vx = builder.declare_var(F64);
+                let vy = builder.declare_var(F64);
+                let (ix, iy) = get_vec2(val_map, &cv.init);
+                builder.def_var(vx, ix);
+                builder.def_var(vy, iy);
+                vec![vx, vy]
+            }
+            ValType::Vec3 => {
+                let vx = builder.declare_var(F64);
+                let vy = builder.declare_var(F64);
+                let vz = builder.declare_var(F64);
+                let (ix, iy, iz) = get_vec3(val_map, &cv.init);
+                builder.def_var(vx, ix);
+                builder.def_var(vy, iy);
+                builder.def_var(vz, iz);
+                vec![vx, vy, vz]
+            }
+            _ => {
+                let cl_ty = match cv.binding.ty {
+                    ValType::F64 => F64,
+                    ValType::U32 => I32,
+                    ValType::Bool => I8,
+                    _ => unreachable!(),
+                };
+                let cl_var = builder.declare_var(cl_ty);
+                let init_val = get_scalar(val_map, &cv.init);
+                builder.def_var(cl_var, init_val);
+                vec![cl_var]
+            }
+        }
     }).collect();
 
     builder.ins().jump(loop_header, &[]);
@@ -353,15 +405,30 @@ fn lower_while(
 
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
-        let val = builder.use_var(carry_vars[i]);
-        val_map.insert(cv.binding.var, val);
+        match cv.binding.ty {
+            ValType::Vec2 => {
+                let x = builder.use_var(carry_vars[i][0]);
+                let y = builder.use_var(carry_vars[i][1]);
+                val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
+            }
+            ValType::Vec3 => {
+                let x = builder.use_var(carry_vars[i][0]);
+                let y = builder.use_var(carry_vars[i][1]);
+                let z = builder.use_var(carry_vars[i][2]);
+                val_map.insert(cv.binding.var, VarValues::Vec3(x, y, z));
+            }
+            _ => {
+                let val = builder.use_var(carry_vars[i][0]);
+                val_map.insert(cv.binding.var, VarValues::Scalar(val));
+            }
+        }
     }
 
     // Lower cond_body
     lower_body_items(module, builder, kernel, &w.cond_body, val_map);
 
     // Branch on cond
-    let cond_val = val_map[&w.cond];
+    let cond_val = get_scalar(val_map, &w.cond);
     builder.ins().brif(cond_val, loop_body, &[], loop_exit, &[]);
 
     // -- Loop body --
@@ -372,8 +439,20 @@ fn lower_while(
 
     // Update carry Variables with yield values
     for (i, yv) in w.yields.iter().enumerate() {
-        let val = val_map[yv];
-        builder.def_var(carry_vars[i], val);
+        match &val_map[yv] {
+            VarValues::Scalar(v) => {
+                builder.def_var(carry_vars[i][0], *v);
+            }
+            VarValues::Vec2(x, y) => {
+                builder.def_var(carry_vars[i][0], *x);
+                builder.def_var(carry_vars[i][1], *y);
+            }
+            VarValues::Vec3(x, y, z) => {
+                builder.def_var(carry_vars[i][0], *x);
+                builder.def_var(carry_vars[i][1], *y);
+                builder.def_var(carry_vars[i][2], *z);
+            }
+        }
     }
 
     builder.ins().jump(loop_header, &[]);
@@ -387,8 +466,23 @@ fn lower_while(
 
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
-        let val = builder.use_var(carry_vars[i]);
-        val_map.insert(cv.binding.var, val);
+        match cv.binding.ty {
+            ValType::Vec2 => {
+                let x = builder.use_var(carry_vars[i][0]);
+                let y = builder.use_var(carry_vars[i][1]);
+                val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
+            }
+            ValType::Vec3 => {
+                let x = builder.use_var(carry_vars[i][0]);
+                let y = builder.use_var(carry_vars[i][1]);
+                let z = builder.use_var(carry_vars[i][2]);
+                val_map.insert(cv.binding.var, VarValues::Vec3(x, y, z));
+            }
+            _ => {
+                let val = builder.use_var(carry_vars[i][0]);
+                val_map.insert(cv.binding.var, VarValues::Scalar(val));
+            }
+        }
     }
 }
 
@@ -430,33 +524,33 @@ fn lower_inst(
     kernel: &Kernel,
     inst: &Inst,
     binding: &Binding,
-    val_map: &std::collections::HashMap<Var, cranelift_codegen::ir::Value>,
-) -> cranelift_codegen::ir::Value {
+    val_map: &std::collections::HashMap<Var, VarValues>,
+) -> VarValues {
     match inst {
-        Inst::Const(c) => match c {
+        Inst::Const(c) => VarValues::Scalar(match c {
             Const::F64(v) => builder.ins().f64const(*v),
             Const::U32(v) => builder.ins().iconst(I32, *v as i64),
             Const::Bool(v) => builder.ins().iconst(I8, if *v { 1 } else { 0 }),
-        },
+        }),
         Inst::Binary { op, lhs, rhs } => {
-            let l = val_map[lhs];
-            let r = val_map[rhs];
-            match (op, binding.ty) {
-                (BinOp::Add, ScalarType::F64) => builder.ins().fadd(l, r),
-                (BinOp::Sub, ScalarType::F64) => builder.ins().fsub(l, r),
-                (BinOp::Mul, ScalarType::F64) => builder.ins().fmul(l, r),
-                (BinOp::Div, ScalarType::F64) => builder.ins().fdiv(l, r),
-                (BinOp::Add, ScalarType::U32) => builder.ins().iadd(l, r),
-                (BinOp::Sub, ScalarType::U32) => builder.ins().isub(l, r),
-                (BinOp::Mul, ScalarType::U32) => builder.ins().imul(l, r),
-                (BinOp::Div, ScalarType::U32) => builder.ins().udiv(l, r),
-                (BinOp::Rem, ScalarType::F64) => {
+            let l = get_scalar(val_map, lhs);
+            let r = get_scalar(val_map, rhs);
+            VarValues::Scalar(match (op, binding.ty) {
+                (BinOp::Add, ValType::F64) => builder.ins().fadd(l, r),
+                (BinOp::Sub, ValType::F64) => builder.ins().fsub(l, r),
+                (BinOp::Mul, ValType::F64) => builder.ins().fmul(l, r),
+                (BinOp::Div, ValType::F64) => builder.ins().fdiv(l, r),
+                (BinOp::Add, ValType::U32) => builder.ins().iadd(l, r),
+                (BinOp::Sub, ValType::U32) => builder.ins().isub(l, r),
+                (BinOp::Mul, ValType::U32) => builder.ins().imul(l, r),
+                (BinOp::Div, ValType::U32) => builder.ins().udiv(l, r),
+                (BinOp::Rem, ValType::F64) => {
                     let q = builder.ins().fdiv(l, r);
                     let q_floor = builder.ins().floor(q);
                     let prod = builder.ins().fmul(q_floor, r);
                     builder.ins().fsub(l, prod)
                 }
-                (BinOp::Rem, ScalarType::U32) => builder.ins().urem(l, r),
+                (BinOp::Rem, ValType::U32) => builder.ins().urem(l, r),
                 (BinOp::BitAnd, _) => builder.ins().band(l, r),
                 (BinOp::BitOr, _) => builder.ins().bor(l, r),
                 (BinOp::BitXor, _) => builder.ins().bxor(l, r),
@@ -464,13 +558,13 @@ fn lower_inst(
                 (BinOp::Shr, _) => builder.ins().ushr(l, r),
                 (BinOp::And, _) => builder.ins().band(l, r),
                 (BinOp::Or, _) => builder.ins().bor(l, r),
-                (BinOp::Min, ScalarType::F64) => builder.ins().fmin(l, r),
-                (BinOp::Max, ScalarType::F64) => builder.ins().fmax(l, r),
-                (BinOp::Min, ScalarType::U32) => builder.ins().umin(l, r),
-                (BinOp::Max, ScalarType::U32) => builder.ins().umax(l, r),
-                (BinOp::Atan2, ScalarType::F64) => call_libm_f64_binary(module, builder, "atan2", l, r),
-                (BinOp::Pow, ScalarType::F64) => call_libm_f64_binary(module, builder, "pow", l, r),
-                (BinOp::Hash, ScalarType::U32) => {
+                (BinOp::Min, ValType::F64) => builder.ins().fmin(l, r),
+                (BinOp::Max, ValType::F64) => builder.ins().fmax(l, r),
+                (BinOp::Min, ValType::U32) => builder.ins().umin(l, r),
+                (BinOp::Max, ValType::U32) => builder.ins().umax(l, r),
+                (BinOp::Atan2, ValType::F64) => call_libm_f64_binary(module, builder, "atan2", l, r),
+                (BinOp::Pow, ValType::F64) => call_libm_f64_binary(module, builder, "pow", l, r),
+                (BinOp::Hash, ValType::U32) => {
                     // h = a * 0x45d9f3b + b
                     let hash_k = builder.ins().iconst(I32, 0x45d9f3bu32 as i64);
                     let h = builder.ins().imul(l, hash_k);
@@ -486,13 +580,13 @@ fn lower_inst(
                     builder.ins().bxor(h, h_shifted)
                 }
                 _ => unreachable!("invalid binary op/type combination"),
-            }
+            })
         }
         Inst::Unary { op, arg } => {
-            let a = val_map[arg];
-            match (op, binding.ty) {
-                (UnaryOp::Neg, ScalarType::F64) => builder.ins().fneg(a),
-                (UnaryOp::Neg, ScalarType::U32) => {
+            let a = get_scalar(val_map, arg);
+            VarValues::Scalar(match (op, binding.ty) {
+                (UnaryOp::Neg, ValType::F64) => builder.ins().fneg(a),
+                (UnaryOp::Neg, ValType::U32) => {
                     let zero = builder.ins().iconst(I32, 0);
                     builder.ins().isub(zero, a)
                 }
@@ -500,8 +594,8 @@ fn lower_inst(
                     let one = builder.ins().iconst(I8, 1);
                     builder.ins().bxor(a, one)
                 }
-                (UnaryOp::Abs, ScalarType::F64) => builder.ins().fabs(a),
-                (UnaryOp::Abs, ScalarType::U32) => a,
+                (UnaryOp::Abs, ValType::F64) => builder.ins().fabs(a),
+                (UnaryOp::Abs, ValType::U32) => a,
                 (UnaryOp::Sqrt, _) => builder.ins().sqrt(a),
                 (UnaryOp::Floor, _) => builder.ins().floor(a),
                 (UnaryOp::Ceil, _) => builder.ins().ceil(a),
@@ -523,14 +617,14 @@ fn lower_inst(
                     builder.ins().fsub(a, floored)
                 }
                 _ => unreachable!("invalid unary op/type combination"),
-            }
+            })
         }
         Inst::Cmp { op, lhs, rhs } => {
-            let l = val_map[lhs];
-            let r = val_map[rhs];
+            let l = get_scalar(val_map, lhs);
+            let r = get_scalar(val_map, rhs);
             let operand_ty = kernel.var_type(*lhs).unwrap();
-            match operand_ty {
-                ScalarType::F64 => {
+            VarValues::Scalar(match operand_ty {
+                ValType::F64 => {
                     let cc = match op {
                         CmpOp::Eq => FloatCC::Equal,
                         CmpOp::Ne => FloatCC::NotEqual,
@@ -541,7 +635,7 @@ fn lower_inst(
                     };
                     builder.ins().fcmp(cc, l, r)
                 }
-                ScalarType::U32 => {
+                ValType::U32 => {
                     let cc = match op {
                         CmpOp::Eq => IntCC::Equal,
                         CmpOp::Ne => IntCC::NotEqual,
@@ -553,11 +647,11 @@ fn lower_inst(
                     builder.ins().icmp(cc, l, r)
                 }
                 _ => unreachable!("cannot compare bools"),
-            }
+            })
         }
         Inst::Conv { op, arg } => {
-            let a = val_map[arg];
-            match op {
+            let a = get_scalar(val_map, arg);
+            VarValues::Scalar(match op {
                 ConvOp::F64ToU32 => builder.ins().fcvt_to_sint(I32, a),
                 ConvOp::U32ToF64 => builder.ins().fcvt_from_uint(F64, a),
                 ConvOp::U32ToF64Norm => {
@@ -565,18 +659,34 @@ fn lower_inst(
                     let recip = builder.ins().f64const(1.0 / 4294967296.0);
                     builder.ins().fmul(f, recip)
                 }
-            }
+            })
         }
         Inst::Select { cond, then_val, else_val } => {
-            let c = val_map[cond];
-            let t = val_map[then_val];
-            let e = val_map[else_val];
-            builder.ins().select(c, t, e)
+            let c = get_scalar(val_map, cond);
+            match (&val_map[then_val], &val_map[else_val]) {
+                (VarValues::Scalar(t), VarValues::Scalar(e)) => {
+                    VarValues::Scalar(builder.ins().select(c, *t, *e))
+                }
+                (VarValues::Vec2(tx, ty), VarValues::Vec2(ex, ey)) => {
+                    VarValues::Vec2(
+                        builder.ins().select(c, *tx, *ex),
+                        builder.ins().select(c, *ty, *ey),
+                    )
+                }
+                (VarValues::Vec3(tx, ty, tz), VarValues::Vec3(ex, ey, ez)) => {
+                    VarValues::Vec3(
+                        builder.ins().select(c, *tx, *ex),
+                        builder.ins().select(c, *ty, *ey),
+                        builder.ins().select(c, *tz, *ez),
+                    )
+                }
+                _ => panic!("select branches must have matching types"),
+            }
         }
         Inst::PackArgb { r, g, b } => {
-            let rv = val_map[r];
-            let gv = val_map[g];
-            let bv = val_map[b];
+            let rv = get_scalar(val_map, r);
+            let gv = get_scalar(val_map, g);
+            let bv = get_scalar(val_map, b);
             let alpha = builder.ins().iconst(I32, 0xFF000000u32 as i64);
             let sixteen = builder.ins().iconst(I32, 16);
             let eight = builder.ins().iconst(I32, 8);
@@ -584,7 +694,193 @@ fn lower_inst(
             let g_shifted = builder.ins().ishl(gv, eight);
             let color = builder.ins().bor(alpha, r_shifted);
             let color = builder.ins().bor(color, g_shifted);
-            builder.ins().bor(color, bv)
+            VarValues::Scalar(builder.ins().bor(color, bv))
+        }
+        Inst::MakeVec2 { x, y } => {
+            let xv = get_scalar(val_map, x);
+            let yv = get_scalar(val_map, y);
+            VarValues::Vec2(xv, yv)
+        }
+        Inst::MakeVec3 { x, y, z } => {
+            let xv = get_scalar(val_map, x);
+            let yv = get_scalar(val_map, y);
+            let zv = get_scalar(val_map, z);
+            VarValues::Vec3(xv, yv, zv)
+        }
+        Inst::VecExtract { vec, index } => {
+            let val = match (&val_map[vec], index) {
+                (VarValues::Vec2(x, _), 0) => *x,
+                (VarValues::Vec2(_, y), 1) => *y,
+                (VarValues::Vec3(x, _, _), 0) => *x,
+                (VarValues::Vec3(_, y, _), 1) => *y,
+                (VarValues::Vec3(_, _, z), 2) => *z,
+                _ => panic!("invalid vec extract index"),
+            };
+            VarValues::Scalar(val)
+        }
+        Inst::VecBinary { op, lhs, rhs } => {
+            match binding.ty {
+                ValType::Vec2 => {
+                    let (lx, ly) = get_vec2(val_map, lhs);
+                    let (rx, ry) = get_vec2(val_map, rhs);
+                    let apply = |builder: &mut FunctionBuilder, a, b| match op {
+                        VecBinOp::Add => builder.ins().fadd(a, b),
+                        VecBinOp::Sub => builder.ins().fsub(a, b),
+                        VecBinOp::Mul => builder.ins().fmul(a, b),
+                        VecBinOp::Div => builder.ins().fdiv(a, b),
+                        VecBinOp::Min => builder.ins().fmin(a, b),
+                        VecBinOp::Max => builder.ins().fmax(a, b),
+                    };
+                    VarValues::Vec2(apply(builder, lx, rx), apply(builder, ly, ry))
+                }
+                ValType::Vec3 => {
+                    let (lx, ly, lz) = get_vec3(val_map, lhs);
+                    let (rx, ry, rz) = get_vec3(val_map, rhs);
+                    let apply = |builder: &mut FunctionBuilder, a, b| match op {
+                        VecBinOp::Add => builder.ins().fadd(a, b),
+                        VecBinOp::Sub => builder.ins().fsub(a, b),
+                        VecBinOp::Mul => builder.ins().fmul(a, b),
+                        VecBinOp::Div => builder.ins().fdiv(a, b),
+                        VecBinOp::Min => builder.ins().fmin(a, b),
+                        VecBinOp::Max => builder.ins().fmax(a, b),
+                    };
+                    VarValues::Vec3(apply(builder, lx, rx), apply(builder, ly, ry), apply(builder, lz, rz))
+                }
+                _ => unreachable!("VecBinary result must be vec type"),
+            }
+        }
+        Inst::VecScale { scalar, vec } => {
+            let s = get_scalar(val_map, scalar);
+            match binding.ty {
+                ValType::Vec2 => {
+                    let (vx, vy) = get_vec2(val_map, vec);
+                    VarValues::Vec2(builder.ins().fmul(s, vx), builder.ins().fmul(s, vy))
+                }
+                ValType::Vec3 => {
+                    let (vx, vy, vz) = get_vec3(val_map, vec);
+                    VarValues::Vec3(
+                        builder.ins().fmul(s, vx),
+                        builder.ins().fmul(s, vy),
+                        builder.ins().fmul(s, vz),
+                    )
+                }
+                _ => unreachable!("VecScale result must be vec type"),
+            }
+        }
+        Inst::VecUnary { op: vec_op, arg } => {
+            match binding.ty {
+                ValType::Vec2 => {
+                    let (ax, ay) = get_vec2(val_map, arg);
+                    match vec_op {
+                        VecUnaryOp::Neg => VarValues::Vec2(
+                            builder.ins().fneg(ax),
+                            builder.ins().fneg(ay),
+                        ),
+                        VecUnaryOp::Abs => VarValues::Vec2(
+                            builder.ins().fabs(ax),
+                            builder.ins().fabs(ay),
+                        ),
+                        VecUnaryOp::Normalize => {
+                            let xx = builder.ins().fmul(ax, ax);
+                            let yy = builder.ins().fmul(ay, ay);
+                            let sum = builder.ins().fadd(xx, yy);
+                            let len = builder.ins().sqrt(sum);
+                            VarValues::Vec2(
+                                builder.ins().fdiv(ax, len),
+                                builder.ins().fdiv(ay, len),
+                            )
+                        }
+                    }
+                }
+                ValType::Vec3 => {
+                    let (ax, ay, az) = get_vec3(val_map, arg);
+                    match vec_op {
+                        VecUnaryOp::Neg => VarValues::Vec3(
+                            builder.ins().fneg(ax),
+                            builder.ins().fneg(ay),
+                            builder.ins().fneg(az),
+                        ),
+                        VecUnaryOp::Abs => VarValues::Vec3(
+                            builder.ins().fabs(ax),
+                            builder.ins().fabs(ay),
+                            builder.ins().fabs(az),
+                        ),
+                        VecUnaryOp::Normalize => {
+                            let xx = builder.ins().fmul(ax, ax);
+                            let yy = builder.ins().fmul(ay, ay);
+                            let zz = builder.ins().fmul(az, az);
+                            let sum = builder.ins().fadd(xx, yy);
+                            let sum = builder.ins().fadd(sum, zz);
+                            let len = builder.ins().sqrt(sum);
+                            VarValues::Vec3(
+                                builder.ins().fdiv(ax, len),
+                                builder.ins().fdiv(ay, len),
+                                builder.ins().fdiv(az, len),
+                            )
+                        }
+                    }
+                }
+                _ => unreachable!("VecUnary result must be vec type"),
+            }
+        }
+        Inst::VecDot { lhs, rhs } => {
+            let operand_ty = kernel.var_type(*lhs).unwrap();
+            VarValues::Scalar(match operand_ty {
+                ValType::Vec2 => {
+                    let (lx, ly) = get_vec2(val_map, lhs);
+                    let (rx, ry) = get_vec2(val_map, rhs);
+                    let xx = builder.ins().fmul(lx, rx);
+                    let yy = builder.ins().fmul(ly, ry);
+                    builder.ins().fadd(xx, yy)
+                }
+                ValType::Vec3 => {
+                    let (lx, ly, lz) = get_vec3(val_map, lhs);
+                    let (rx, ry, rz) = get_vec3(val_map, rhs);
+                    let xx = builder.ins().fmul(lx, rx);
+                    let yy = builder.ins().fmul(ly, ry);
+                    let zz = builder.ins().fmul(lz, rz);
+                    let sum = builder.ins().fadd(xx, yy);
+                    builder.ins().fadd(sum, zz)
+                }
+                _ => unreachable!("VecDot operands must be vec type"),
+            })
+        }
+        Inst::VecLength { arg } => {
+            let operand_ty = kernel.var_type(*arg).unwrap();
+            VarValues::Scalar(match operand_ty {
+                ValType::Vec2 => {
+                    let (ax, ay) = get_vec2(val_map, arg);
+                    let xx = builder.ins().fmul(ax, ax);
+                    let yy = builder.ins().fmul(ay, ay);
+                    let sum = builder.ins().fadd(xx, yy);
+                    builder.ins().sqrt(sum)
+                }
+                ValType::Vec3 => {
+                    let (ax, ay, az) = get_vec3(val_map, arg);
+                    let xx = builder.ins().fmul(ax, ax);
+                    let yy = builder.ins().fmul(ay, ay);
+                    let zz = builder.ins().fmul(az, az);
+                    let sum = builder.ins().fadd(xx, yy);
+                    let sum = builder.ins().fadd(sum, zz);
+                    builder.ins().sqrt(sum)
+                }
+                _ => unreachable!("VecLength operand must be vec type"),
+            })
+        }
+        Inst::VecCross { lhs, rhs } => {
+            let (lx, ly, lz) = get_vec3(val_map, lhs);
+            let (rx, ry, rz) = get_vec3(val_map, rhs);
+            // cross = (ly*rz - lz*ry, lz*rx - lx*rz, lx*ry - ly*rx)
+            let a = builder.ins().fmul(ly, rz);
+            let b = builder.ins().fmul(lz, ry);
+            let cx = builder.ins().fsub(a, b);
+            let a = builder.ins().fmul(lz, rx);
+            let b = builder.ins().fmul(lx, rz);
+            let cy = builder.ins().fsub(a, b);
+            let a = builder.ins().fmul(lx, ry);
+            let b = builder.ins().fmul(ly, rx);
+            let cz = builder.ins().fsub(a, b);
+            VarValues::Vec3(cx, cy, cz)
         }
     }
 }

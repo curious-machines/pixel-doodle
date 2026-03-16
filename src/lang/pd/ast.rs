@@ -1,4 +1,4 @@
-use crate::kernel_ir::ScalarType;
+use crate::kernel_ir::ValType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOpKind {
@@ -59,13 +59,18 @@ pub enum Expr {
     },
     Cast {
         expr: Box<Expr>,
-        ty: ScalarType,
+        ty: ValType,
         span: Span,
     },
     IfElse {
         cond: Box<Expr>,
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
+        span: Span,
+    },
+    FieldAccess {
+        expr: Box<Expr>,
+        field: String,
         span: Span,
     },
 }
@@ -83,6 +88,7 @@ impl Expr {
             Expr::Call { span, .. } => span,
             Expr::Cast { span, .. } => span,
             Expr::IfElse { span, .. } => span,
+            Expr::FieldAccess { span, .. } => span,
         }
     }
 }
@@ -90,7 +96,7 @@ impl Expr {
 #[derive(Debug, Clone)]
 pub struct CarryDef {
     pub name: String,
-    pub ty: Option<ScalarType>,
+    pub ty: Option<ValType>,
     pub init: Expr,
     pub span: Span,
 }
@@ -99,7 +105,7 @@ pub struct CarryDef {
 pub enum Stmt {
     Let {
         name: String,
-        ty: Option<ScalarType>,
+        ty: Option<ValType>,
         expr: Expr,
         span: Span,
     },
@@ -125,14 +131,14 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub ty: ScalarType,
+    pub ty: ValType,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
     pub params: Vec<Param>,
-    pub return_ty: ScalarType,
+    pub return_ty: ValType,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -141,7 +147,7 @@ pub struct FnDef {
 pub struct KernelDef {
     pub name: String,
     pub params: Vec<Param>,
-    pub return_ty: ScalarType,
+    pub return_ty: ValType,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

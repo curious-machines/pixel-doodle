@@ -147,6 +147,65 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *b, kernel);
         }
+        Inst::MakeVec2 { x, y } => {
+            out.push_str("make_vec2 ");
+            print_operand(out, *x, kernel);
+            out.push(' ');
+            print_operand(out, *y, kernel);
+        }
+        Inst::MakeVec3 { x, y, z } => {
+            out.push_str("make_vec3 ");
+            print_operand(out, *x, kernel);
+            out.push(' ');
+            print_operand(out, *y, kernel);
+            out.push(' ');
+            print_operand(out, *z, kernel);
+        }
+        Inst::VecExtract { vec, index } => {
+            let name = match index {
+                0 => "extract_x",
+                1 => "extract_y",
+                2 => "extract_z",
+                _ => "extract_?",
+            };
+            out.push_str(name);
+            out.push(' ');
+            print_operand(out, *vec, kernel);
+        }
+        Inst::VecBinary { op, lhs, rhs } => {
+            out.push_str(vecbinop_name(*op));
+            out.push(' ');
+            print_operand(out, *lhs, kernel);
+            out.push(' ');
+            print_operand(out, *rhs, kernel);
+        }
+        Inst::VecScale { scalar, vec } => {
+            out.push_str("vec_scale ");
+            print_operand(out, *scalar, kernel);
+            out.push(' ');
+            print_operand(out, *vec, kernel);
+        }
+        Inst::VecUnary { op, arg } => {
+            out.push_str(vecunaryop_name(*op));
+            out.push(' ');
+            print_operand(out, *arg, kernel);
+        }
+        Inst::VecDot { lhs, rhs } => {
+            out.push_str("vec_dot ");
+            print_operand(out, *lhs, kernel);
+            out.push(' ');
+            print_operand(out, *rhs, kernel);
+        }
+        Inst::VecLength { arg } => {
+            out.push_str("vec_length ");
+            print_operand(out, *arg, kernel);
+        }
+        Inst::VecCross { lhs, rhs } => {
+            out.push_str("vec_cross ");
+            print_operand(out, *lhs, kernel);
+            out.push(' ');
+            print_operand(out, *rhs, kernel);
+        }
     }
 }
 
@@ -267,5 +326,24 @@ fn convop_name(op: ConvOp) -> &'static str {
         ConvOp::F64ToU32 => "f64_to_u32",
         ConvOp::U32ToF64 => "u32_to_f64",
         ConvOp::U32ToF64Norm => "u32_to_f64_norm",
+    }
+}
+
+fn vecbinop_name(op: VecBinOp) -> &'static str {
+    match op {
+        VecBinOp::Add => "vec_add",
+        VecBinOp::Sub => "vec_sub",
+        VecBinOp::Mul => "vec_mul",
+        VecBinOp::Div => "vec_div",
+        VecBinOp::Min => "vec_min",
+        VecBinOp::Max => "vec_max",
+    }
+}
+
+fn vecunaryop_name(op: VecUnaryOp) -> &'static str {
+    match op {
+        VecUnaryOp::Neg => "vec_neg",
+        VecUnaryOp::Abs => "vec_abs",
+        VecUnaryOp::Normalize => "vec_normalize",
     }
 }

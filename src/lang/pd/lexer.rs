@@ -20,6 +20,8 @@ pub enum Token {
     TyF64,
     TyU32,
     TyBool,
+    TyVec2,
+    TyVec3,
     // Literals
     FloatLit(f64),
     IntLit(u64),
@@ -48,6 +50,7 @@ pub enum Token {
     Gt,
     Ge,
     // Punctuation
+    Dot,
     LParen,
     RParen,
     LBrace,
@@ -80,6 +83,8 @@ impl fmt::Display for Token {
             Token::TyF64 => write!(f, "f64"),
             Token::TyU32 => write!(f, "u32"),
             Token::TyBool => write!(f, "bool"),
+            Token::TyVec2 => write!(f, "vec2"),
+            Token::TyVec3 => write!(f, "vec3"),
             Token::FloatLit(v) => write!(f, "{}", v),
             Token::IntLit(v) => write!(f, "{}", v),
             Token::U32Lit(v) => write!(f, "{}u32", v),
@@ -104,6 +109,7 @@ impl fmt::Display for Token {
             Token::Le => write!(f, "<="),
             Token::Gt => write!(f, ">"),
             Token::Ge => write!(f, ">="),
+            Token::Dot => write!(f, "."),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LBrace => write!(f, "{{"),
@@ -222,6 +228,8 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "f64" => Token::TyF64,
                 "u32" => Token::TyU32,
                 "bool" => Token::TyBool,
+                "vec2" => Token::TyVec2,
+                "vec3" => Token::TyVec3,
                 _ => Token::Ident(text),
             };
             tokens.push(Spanned { token, line, col: start_col });
@@ -260,6 +268,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
             (',', _) => (Token::Comma, 1),
             (':', _) => (Token::Colon, 1),
             (';', _) => (Token::Semi, 1),
+            ('.', _) => (Token::Dot, 1),
             _ => return Err(format!("{}:{}: unexpected character '{}'", line, col, ch)),
         };
         tokens.push(Spanned { token, line, col: start_col });

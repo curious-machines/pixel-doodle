@@ -1,4 +1,4 @@
-use crate::kernel_ir::ScalarType;
+use crate::kernel_ir::ValType;
 use super::ast::*;
 use super::lexer::{Token, Spanned};
 
@@ -94,11 +94,13 @@ impl Parser {
         Ok(Program { fns, kernel })
     }
 
-    fn parse_type(&mut self) -> Result<ScalarType, ParseError> {
+    fn parse_type(&mut self) -> Result<ValType, ParseError> {
         match self.peek() {
-            Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
-            Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
-            Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
+            Token::TyF64 => { self.advance(); Ok(ValType::F64) }
+            Token::TyU32 => { self.advance(); Ok(ValType::U32) }
+            Token::TyBool => { self.advance(); Ok(ValType::Bool) }
+            Token::TyVec2 => { self.advance(); Ok(ValType::Vec2) }
+            Token::TyVec3 => { self.advance(); Ok(ValType::Vec3) }
             _ => Err(self.error(format!("expected type, got '{}'", self.peek()))),
         }
     }
@@ -347,7 +349,19 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
-        self.parse_primary()
+        let mut expr = self.parse_primary()?;
+        // Handle .x, .y, .z field access
+        while *self.peek() == Token::Dot {
+            let span = self.span();
+            self.advance(); // consume .
+            let (field, _) = self.expect_ident()?;
+            expr = Expr::FieldAccess {
+                expr: Box::new(expr),
+                field,
+                span,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
@@ -376,6 +390,32 @@ impl Parser {
                 let span = self.span();
                 self.advance();
                 Ok(Expr::BoolLit(false, span))
+            }
+            // vec2(...) and vec3(...) constructors — type keywords used as function calls
+            Token::TyVec2 | Token::TyVec3 => {
+                let name = match self.peek() {
+                    Token::TyVec2 => "vec2".to_string(),
+                    Token::TyVec3 => "vec3".to_string(),
+                    _ => unreachable!(),
+                };
+                let span = self.span();
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let mut args = Vec::new();
+                if *self.peek() != Token::RParen {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if *self.peek() != Token::Comma {
+                            break;
+                        }
+                        self.advance();
+                        if *self.peek() == Token::RParen {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                Ok(Expr::Call { name, args, span })
             }
             Token::Ident(name) => {
                 let span = self.span();
@@ -472,7 +512,7 @@ mod tests {
     #[test]
     fn cast_expr() {
         let expr = parse_expr_str("x as u32");
-        assert!(matches!(expr, Expr::Cast { ty: ScalarType::U32, .. }));
+        assert!(matches!(expr, Expr::Cast { ty: ValType::U32, .. }));
     }
 
     #[test]

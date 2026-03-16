@@ -49,9 +49,9 @@ Coordinate parameters (`x`, `y`) are view-space coordinates computed by the tile
 Defined in `src/kernel_ir.rs`.
 
 ```rust
-pub enum ScalarType { F64, U32, Bool }
+pub enum ValType { F64, U32, Bool, Vec2, Vec3 }  // Vec2/Vec3 are 2x/3x f64
 pub struct Var(pub u32);
-pub struct Binding { var: Var, name: String, ty: ScalarType }
+pub struct Binding { var: Var, name: String, ty: ValType }
 pub enum Const { F64(f64), U32(u32), Bool(bool) }
 
 pub enum BinOp {
@@ -63,6 +63,10 @@ pub enum CmpOp { Eq, Ne, Lt, Le, Gt, Ge }
 pub enum UnaryOp { Neg, Not, Abs, Sqrt, Floor, Ceil }
 pub enum ConvOp { F64ToU32, U32ToF64 }
 
+// Vector-specific operation enums
+pub enum VecBinOp { Add, Sub, Mul, Div, Min, Max }
+pub enum VecUnaryOp { Neg, Abs, Normalize }
+
 pub enum Inst {
     Const(Const),
     Binary { op: BinOp, lhs: Var, rhs: Var },
@@ -71,6 +75,17 @@ pub enum Inst {
     Conv { op: ConvOp, arg: Var },
     Select { cond: Var, then_val: Var, else_val: Var },
     PackArgb { r: Var, g: Var, b: Var },
+
+    // Vector instructions
+    MakeVec2 { x: Var, y: Var },                    // f64, f64 -> vec2
+    MakeVec3 { x: Var, y: Var, z: Var },            // f64, f64, f64 -> vec3
+    VecExtract { vec: Var, index: u8 },              // vec -> f64 (0=x, 1=y, 2=z)
+    VecBinary { op: VecBinOp, lhs: Var, rhs: Var },  // vec op vec -> vec
+    VecScale { scalar: Var, vec: Var },              // f64 * vec -> vec
+    VecUnary { op: VecUnaryOp, arg: Var },           // vec -> vec
+    VecDot { lhs: Var, rhs: Var },                   // vec, vec -> f64
+    VecLength { arg: Var },                          // vec -> f64
+    VecCross { lhs: Var, rhs: Var },                 // vec3, vec3 -> vec3
 }
 
 pub struct Statement { binding: Binding, inst: Inst }
@@ -96,7 +111,7 @@ pub enum BodyItem {
 pub struct Kernel {
     name: String,
     params: Vec<Binding>,
-    return_ty: ScalarType,
+    return_ty: ValType,
     body: Vec<BodyItem>,
     emit: Var,
 }
@@ -171,7 +186,7 @@ carry_var   = IDENT ":" type "=" IDENT
 ident_list  = IDENT (IDENT)*
 
 instruction = const_inst | binary_inst | unary_inst | cmp_inst
-            | conv_inst | select_inst | pack_inst
+            | conv_inst | select_inst | pack_inst | vec_inst
 const_inst  = "const" literal
 binary_inst = binop operand operand
 unary_inst  = unaryop operand
@@ -179,9 +194,19 @@ cmp_inst    = cmpop operand operand
 conv_inst   = convop operand
 select_inst = "select" operand operand operand
 pack_inst   = "pack_argb" operand operand operand
+vec_inst    = vec_make | vec_extract | vec_binop | vec_unaryop
+            | vec_scale | vec_dot | vec_length | vec_cross
+vec_make    = "make_vec2" operand operand | "make_vec3" operand operand operand
+vec_extract = ("extract_x" | "extract_y" | "extract_z") operand
+vec_binop   = ("vec_add"|"vec_sub"|"vec_mul"|"vec_div"|"vec_min"|"vec_max") operand operand
+vec_unaryop = ("vec_neg" | "vec_abs" | "vec_normalize") operand
+vec_scale   = "vec_scale" operand operand     (f64, vec -> vec)
+vec_dot     = "vec_dot" operand operand       (vec, vec -> f64)
+vec_length  = "vec_length" operand            (vec -> f64)
+vec_cross   = "vec_cross" operand operand     (vec3, vec3 -> vec3)
 operand     = IDENT | literal   (inline literals create implicit consts)
 
-type        = "f64" | "u32" | "bool"
+type        = "f64" | "u32" | "bool" | "vec2" | "vec3"
 binop       = "add" | "sub" | "mul" | "div" | "rem"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
             | "and" | "or"
@@ -208,6 +233,7 @@ comment     = "#" ... newline
 
 ## Type Checking Rules
 
+### Scalar operations
 - `add/sub/mul/div/rem`: both operands same type (f64 or u32), result same type
 - `bit_and/bit_or/bit_xor/shl/shr`: u32 only
 - `and/or`: bool only
@@ -217,10 +243,31 @@ comment     = "#" ... newline
 - `sqrt/floor/ceil`: f64 only
 - `f64_to_u32`: f64 → u32 (truncation toward zero)
 - `u32_to_f64`: u32 → f64
-- `select`: cond must be bool, then/else must be same type, result is that type
+- `select`: cond must be bool, then/else must be same type (including vec types), result is that type
 - `pack_argb`: three u32 args (r, g, b in [0,255]), result is u32
 - `emit`: must reference a variable matching the declared return type
 - SSA: each name defined exactly once (carry vars scope to their while block and after)
+
+### Vector operations
+- `make_vec2`: two f64 args → vec2
+- `make_vec3`: three f64 args → vec3
+- `extract_x/extract_y`: vec2 or vec3 → f64
+- `extract_z`: vec3 only → f64
+- `vec_add/vec_sub/vec_mul/vec_div/vec_min/vec_max`: both operands same vec type, result same vec type
+- `vec_scale`: f64 × vec → vec (same vec type)
+- `vec_neg/vec_abs`: vec → vec (same type)
+- `vec_normalize`: vec → vec (same type)
+- `vec_dot`: both operands same vec type → f64
+- `vec_length`: vec → f64
+- `vec_cross`: vec3 × vec3 → vec3
+
+### PD operator overloading for vec types
+In the PD higher-level language, standard operators work on vec types:
+- `vec + vec`, `vec - vec`, `vec * vec`, `vec / vec` → component-wise, same vec type
+- `f64 * vec`, `vec * f64` → scalar-vector multiply (lowers to `VecScale`)
+- `-vec` → component-wise negation
+- `vec.x`, `vec.y`, `vec.z` → field access, extracts f64 component
+- Built-in functions `dot()`, `length()`, `normalize()`, `cross()`, `distance()`, `mix()`, `min()`, `max()`, `abs()` are overloaded for vec types
 
 ## Backend Lowering Strategy
 
@@ -251,6 +298,27 @@ Both backends split into:
 | `Conv(F64ToU32)` | `fcvt_to_sint(I32)` | `build_float_to_signed_int` |
 | `PackArgb(r,g,b)` | shift+or sequence | shift+or sequence |
 | `Select(c,t,f)` | `select` | `build_select` |
+
+### Vector Decomposition in Backends
+
+Vec types are first-class in the IR but decomposed to scalars by the backends. Neither Cranelift nor LLVM has a native geometric vec3 type, so backends store each vec var as 2–3 scalar f64 values using a `VarValues` enum:
+
+```rust
+enum VarValues {
+    Scalar(Value),
+    Vec2(Value, Value),
+    Vec3(Value, Value, Value),
+}
+```
+
+- `MakeVec2/3` → store component values as `VarValues::Vec2/3`
+- `VecExtract` → read indexed component from VarValues
+- `VecBinary` → apply scalar op to each component pair
+- `VecDot` → multiply pairwise, sum
+- `VecLength` → dot(v,v), sqrt
+- `VecCross` → standard cross product formula on components
+- `VecNormalize` → divide each component by length
+- While loop carry vars with vec type expand to 2–3 individual `Variable`s (Cranelift) or phi nodes (LLVM)
 
 ### While Loop Lowering
 

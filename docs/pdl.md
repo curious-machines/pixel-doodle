@@ -26,6 +26,8 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 | `f64`  | 64-bit floating point          |
 | `u32`  | 32-bit unsigned integer        |
 | `bool` | Boolean (true/false)           |
+| `vec2` | 2-component vector (2× f64)   |
+| `vec3` | 3-component vector (3× f64)   |
 
 There are no implicit conversions. Use explicit conversion ops to move between types.
 
@@ -202,6 +204,96 @@ pixel: u32 = pack_argb r g b
 ```
 
 Equivalent to `0xFF000000 | (r << 16) | (g << 8) | b`.
+
+## Vector operations
+
+### Construction
+
+```
+pos: vec2 = make_vec2 x y
+color: vec3 = make_vec3 r g b
+```
+
+Both `make_vec2` and `make_vec3` take f64 components and produce a vec2 or vec3.
+
+### Component extraction
+
+```
+px: f64 = extract_x pos
+py: f64 = extract_y pos
+pz: f64 = extract_z color    # vec3 only
+```
+
+Extracts a single f64 component from a vector. `extract_z` is only valid for vec3.
+
+### Component-wise arithmetic (vec op vec -> vec)
+
+| Op         | Description              |
+|------------|--------------------------|
+| `vec_add`  | Component-wise addition  |
+| `vec_sub`  | Component-wise subtraction |
+| `vec_mul`  | Component-wise multiplication |
+| `vec_div`  | Component-wise division  |
+| `vec_min`  | Component-wise minimum   |
+| `vec_max`  | Component-wise maximum   |
+
+Both operands must be the same vec type. The result is the same vec type.
+
+```
+sum: vec2 = vec_add a b
+diff: vec3 = vec_sub position offset
+```
+
+### Scalar-vector multiply (f64 × vec -> vec)
+
+```
+scaled: vec2 = vec_scale factor pos
+```
+
+The first operand must be f64, the second must be vec2 or vec3. The result matches the vec type.
+
+### Unary vector operations (vec -> vec)
+
+| Op              | Description                        |
+|-----------------|------------------------------------|
+| `vec_neg`       | Negate each component              |
+| `vec_abs`       | Absolute value of each component   |
+| `vec_normalize` | Normalize to unit length           |
+
+```
+flipped: vec2 = vec_neg pos
+unit: vec3 = vec_normalize direction
+```
+
+### Reduction operations (vec -> f64)
+
+| Op           | Description                          |
+|--------------|--------------------------------------|
+| `vec_dot`    | Dot product of two vectors           |
+| `vec_length` | Length (magnitude) of a vector       |
+
+```
+d: f64 = vec_dot a b
+len: f64 = vec_length pos
+```
+
+Both operands of `vec_dot` must be the same vec type.
+
+### Cross product (vec3 × vec3 -> vec3)
+
+```
+normal: vec3 = vec_cross a b
+```
+
+Both operands must be vec3.
+
+### Select with vectors
+
+`select` works with vec types — both branches must be the same vec type:
+
+```
+chosen: vec2 = select cond pos_a pos_b
+```
 
 ## Control flow
 

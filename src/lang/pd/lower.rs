@@ -8,7 +8,7 @@ struct Lowerer {
     /// Maps names to Var indices.
     names: HashMap<String, Var>,
     /// Type cache.
-    var_types: HashMap<Var, ScalarType>,
+    var_types: HashMap<Var, ValType>,
     /// Inline function definitions.
     fn_defs: HashMap<String, TFnDef>,
     /// Call counter for unique SSA names in inline expansion.
@@ -26,7 +26,7 @@ impl Lowerer {
         }
     }
 
-    fn fresh_var(&mut self, name: &str, ty: ScalarType) -> Var {
+    fn fresh_var(&mut self, name: &str, ty: ValType) -> Var {
         let var = Var(self.next_var);
         self.next_var += 1;
         self.names.insert(name.to_string(), var);
@@ -34,7 +34,7 @@ impl Lowerer {
         var
     }
 
-    fn auto_var(&mut self, prefix: &str, ty: ScalarType) -> Var {
+    fn auto_var(&mut self, prefix: &str, ty: ValType) -> Var {
         let name = format!("_pd_{}_{}", prefix, self.next_var);
         self.fresh_var(&name, ty)
     }
@@ -43,7 +43,7 @@ impl Lowerer {
         self.names[name]
     }
 
-    fn emit_stmt(&self, var: Var, name: &str, ty: ScalarType, inst: Inst) -> Statement {
+    fn emit_stmt(&self, var: Var, name: &str, ty: ValType, inst: Inst) -> Statement {
         Statement {
             binding: Binding {
                 var,
@@ -59,42 +59,89 @@ impl Lowerer {
     fn lower_expr(&mut self, expr: &TExpr, out: &mut Vec<BodyItem>) -> Var {
         match expr {
             TExpr::FloatLit(v) => {
-                let var = self.auto_var("lit", ScalarType::F64);
+                let var = self.auto_var("lit", ValType::F64);
                 let name = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ScalarType::F64, Inst::Const(Const::F64(*v)))));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::F64, Inst::Const(Const::F64(*v)))));
                 var
             }
             TExpr::IntLit(v, ty) => {
                 let var = self.auto_var("lit", *ty);
                 let name = self.binding_name(var);
                 let c = match ty {
-                    ScalarType::F64 => Const::F64(*v as f64),
-                    ScalarType::U32 => Const::U32(*v as u32),
-                    ScalarType::Bool => unreachable!(),
+                    ValType::F64 => Const::F64(*v as f64),
+                    ValType::U32 => Const::U32(*v as u32),
+                    ValType::Bool | ValType::Vec2 | ValType::Vec3 => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
                 var
             }
             TExpr::U32Lit(v) => {
-                let var = self.auto_var("lit", ScalarType::U32);
+                let var = self.auto_var("lit", ValType::U32);
                 let name = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ScalarType::U32, Inst::Const(Const::U32(*v)))));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::U32, Inst::Const(Const::U32(*v)))));
                 var
             }
             TExpr::BoolLit(v) => {
-                let var = self.auto_var("lit", ScalarType::Bool);
+                let var = self.auto_var("lit", ValType::Bool);
                 let name = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ScalarType::Bool, Inst::Const(Const::Bool(*v)))));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::Bool, Inst::Const(Const::Bool(*v)))));
                 var
             }
             TExpr::Ident(name, _) => {
                 self.lookup(name)
+            }
+            TExpr::FieldAccess { expr, field, .. } => {
+                let vec_var = self.lower_expr(expr, out);
+                let index = match field.as_str() {
+                    "x" => 0u8,
+                    "y" => 1,
+                    "z" => 2,
+                    _ => unreachable!(),
+                };
+                let var = self.auto_var("tmp", ValType::F64);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                    Inst::VecExtract { vec: vec_var, index })));
+                var
             }
             TExpr::BinOp { op, lhs, rhs, ty } => {
                 let l = self.lower_expr(lhs, out);
                 let r = self.lower_expr(rhs, out);
                 let var = self.auto_var("tmp", *ty);
                 let name = self.binding_name(var);
+
+                // Handle vec operations
+                if ty.is_vec() {
+                    let inst = if *op == BinOpKind::Mul && lhs.ty() == ValType::F64 {
+                        // f64 * vec
+                        Inst::VecScale { scalar: l, vec: r }
+                    } else if *op == BinOpKind::Mul && rhs.ty() == ValType::F64 {
+                        // vec * f64
+                        Inst::VecScale { scalar: r, vec: l }
+                    } else if *op == BinOpKind::Div && rhs.ty() == ValType::F64 {
+                        // vec / f64 → vec * (1/f64)
+                        let one = self.auto_var("lit", ValType::F64);
+                        let one_name = self.binding_name(one);
+                        out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, ValType::F64, Inst::Const(Const::F64(1.0)))));
+                        let recip = self.auto_var("tmp", ValType::F64);
+                        let recip_name = self.binding_name(recip);
+                        out.push(BodyItem::Stmt(self.emit_stmt(recip, &recip_name, ValType::F64,
+                            Inst::Binary { op: BinOp::Div, lhs: one, rhs: r })));
+                        Inst::VecScale { scalar: recip, vec: l }
+                    } else {
+                        let vec_op = match op {
+                            BinOpKind::Add => VecBinOp::Add,
+                            BinOpKind::Sub => VecBinOp::Sub,
+                            BinOpKind::Mul => VecBinOp::Mul,
+                            BinOpKind::Div => VecBinOp::Div,
+                            _ => unreachable!("unsupported vec binop"),
+                        };
+                        Inst::VecBinary { op: vec_op, lhs: l, rhs: r }
+                    };
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                    return var;
+                }
+
                 let inst = match op {
                     // Comparisons → Cmp
                     BinOpKind::Eq => Inst::Cmp { op: CmpOp::Eq, lhs: l, rhs: r },
@@ -125,6 +172,11 @@ impl Lowerer {
                 let arg = self.lower_expr(expr, out);
                 let var = self.auto_var("tmp", *ty);
                 let name = self.binding_name(var);
+                if ty.is_vec() && *op == UnaryOpKind::Neg {
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                        Inst::VecUnary { op: VecUnaryOp::Neg, arg })));
+                    return var;
+                }
                 let inst = match op {
                     UnaryOpKind::Neg => Inst::Unary { op: UnaryOp::Neg, arg },
                     UnaryOpKind::Not => Inst::Unary { op: UnaryOp::Not, arg },
@@ -140,8 +192,8 @@ impl Lowerer {
                 let var = self.auto_var("conv", *to);
                 let vname = self.binding_name(var);
                 let conv_op = match (expr.ty(), to) {
-                    (ScalarType::F64, ScalarType::U32) => ConvOp::F64ToU32,
-                    (ScalarType::U32, ScalarType::F64) => ConvOp::U32ToF64,
+                    (ValType::F64, ValType::U32) => ConvOp::F64ToU32,
+                    (ValType::U32, ValType::F64) => ConvOp::U32ToF64,
                     _ => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, *to, Inst::Conv { op: conv_op, arg })));
@@ -151,6 +203,35 @@ impl Lowerer {
                 let c = self.lower_expr(cond, out);
                 let t = self.lower_expr(then_expr, out);
                 let e = self.lower_expr(else_expr, out);
+                // For vec types, decompose into per-component selects
+                if ty.is_vec() {
+                    let n = ty.component_count();
+                    let mut components = Vec::new();
+                    for i in 0..n {
+                        let t_comp = self.auto_var("tmp", ValType::F64);
+                        let t_comp_name = self.binding_name(t_comp);
+                        out.push(BodyItem::Stmt(self.emit_stmt(t_comp, &t_comp_name, ValType::F64,
+                            Inst::VecExtract { vec: t, index: i as u8 })));
+                        let e_comp = self.auto_var("tmp", ValType::F64);
+                        let e_comp_name = self.binding_name(e_comp);
+                        out.push(BodyItem::Stmt(self.emit_stmt(e_comp, &e_comp_name, ValType::F64,
+                            Inst::VecExtract { vec: e, index: i as u8 })));
+                        let selected = self.auto_var("sel", ValType::F64);
+                        let sel_name = self.binding_name(selected);
+                        out.push(BodyItem::Stmt(self.emit_stmt(selected, &sel_name, ValType::F64,
+                            Inst::Select { cond: c, then_val: t_comp, else_val: e_comp })));
+                        components.push(selected);
+                    }
+                    let var = self.auto_var("sel", *ty);
+                    let name = self.binding_name(var);
+                    let inst = if *ty == ValType::Vec2 {
+                        Inst::MakeVec2 { x: components[0], y: components[1] }
+                    } else {
+                        Inst::MakeVec3 { x: components[0], y: components[1], z: components[2] }
+                    };
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                    return var;
+                }
                 let var = self.auto_var("sel", *ty);
                 let name = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
@@ -160,7 +241,7 @@ impl Lowerer {
         }
     }
 
-    fn lower_call(&mut self, name: &str, args: &[TExpr], ret_ty: ScalarType, out: &mut Vec<BodyItem>) -> Var {
+    fn lower_call(&mut self, name: &str, args: &[TExpr], ret_ty: ValType, out: &mut Vec<BodyItem>) -> Var {
         // Check builtins first
         if let Some(var) = self.lower_builtin_call(name, args, ret_ty, out) {
             return var;
@@ -232,7 +313,136 @@ impl Lowerer {
         self.lower_expr(expr, out)
     }
 
-    fn lower_builtin_call(&mut self, name: &str, args: &[TExpr], ret_ty: ScalarType, out: &mut Vec<BodyItem>) -> Option<Var> {
+    fn lower_builtin_call(&mut self, name: &str, args: &[TExpr], ret_ty: ValType, out: &mut Vec<BodyItem>) -> Option<Var> {
+        // Vec-specific builtins (must come before scalar fallbacks)
+        match name {
+            "vec2" => {
+                let x = self.lower_expr(&args[0], out);
+                let y = self.lower_expr(&args[1], out);
+                let var = self.auto_var("tmp", ValType::Vec2);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec2,
+                    Inst::MakeVec2 { x, y })));
+                return Some(var);
+            }
+            "vec3" => {
+                let x = self.lower_expr(&args[0], out);
+                let y = self.lower_expr(&args[1], out);
+                let z = self.lower_expr(&args[2], out);
+                let var = self.auto_var("tmp", ValType::Vec3);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec3,
+                    Inst::MakeVec3 { x, y, z })));
+                return Some(var);
+            }
+            "dot" => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let var = self.auto_var("tmp", ValType::F64);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                    Inst::VecDot { lhs: a, rhs: b })));
+                return Some(var);
+            }
+            "normalize" => {
+                let a = self.lower_expr(&args[0], out);
+                let ty = args[0].ty();
+                let var = self.auto_var("tmp", ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                    Inst::VecUnary { op: VecUnaryOp::Normalize, arg: a })));
+                return Some(var);
+            }
+            "cross" => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let var = self.auto_var("tmp", ValType::Vec3);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec3,
+                    Inst::VecCross { lhs: a, rhs: b })));
+                return Some(var);
+            }
+            "length" if args.len() == 1 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let var = self.auto_var("tmp", ValType::F64);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                    Inst::VecLength { arg: a })));
+                return Some(var);
+            }
+            "distance" if args.len() == 2 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let vec_ty = args[0].ty();
+                let diff = self.auto_var("tmp", vec_ty);
+                let diff_name = self.binding_name(diff);
+                out.push(BodyItem::Stmt(self.emit_stmt(diff, &diff_name, vec_ty,
+                    Inst::VecBinary { op: VecBinOp::Sub, lhs: a, rhs: b })));
+                let var = self.auto_var("tmp", ValType::F64);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                    Inst::VecLength { arg: diff })));
+                return Some(var);
+            }
+            "mix" if args.len() >= 1 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let t = self.lower_expr(&args[2], out);
+                let vec_ty = args[0].ty();
+                // mix(a, b, t) = a*(1-t) + b*t
+                let one = self.auto_var("lit", ValType::F64);
+                let one_name = self.binding_name(one);
+                out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, ValType::F64, Inst::Const(Const::F64(1.0)))));
+                let one_minus_t = self.auto_var("tmp", ValType::F64);
+                let omt_name = self.binding_name(one_minus_t);
+                out.push(BodyItem::Stmt(self.emit_stmt(one_minus_t, &omt_name, ValType::F64,
+                    Inst::Binary { op: BinOp::Sub, lhs: one, rhs: t })));
+                let a_scaled = self.auto_var("tmp", vec_ty);
+                let as_name = self.binding_name(a_scaled);
+                out.push(BodyItem::Stmt(self.emit_stmt(a_scaled, &as_name, vec_ty,
+                    Inst::VecScale { scalar: one_minus_t, vec: a })));
+                let b_scaled = self.auto_var("tmp", vec_ty);
+                let bs_name = self.binding_name(b_scaled);
+                out.push(BodyItem::Stmt(self.emit_stmt(b_scaled, &bs_name, vec_ty,
+                    Inst::VecScale { scalar: t, vec: b })));
+                let var = self.auto_var("tmp", vec_ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, vec_ty,
+                    Inst::VecBinary { op: VecBinOp::Add, lhs: a_scaled, rhs: b_scaled })));
+                return Some(var);
+            }
+            "abs" if args.len() == 1 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let ty = args[0].ty();
+                let var = self.auto_var("tmp", ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                    Inst::VecUnary { op: VecUnaryOp::Abs, arg: a })));
+                return Some(var);
+            }
+            "min" if args.len() >= 1 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let ty = args[0].ty();
+                let var = self.auto_var("tmp", ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                    Inst::VecBinary { op: VecBinOp::Min, lhs: a, rhs: b })));
+                return Some(var);
+            }
+            "max" if args.len() >= 1 && args[0].ty().is_vec() => {
+                let a = self.lower_expr(&args[0], out);
+                let b = self.lower_expr(&args[1], out);
+                let ty = args[0].ty();
+                let var = self.auto_var("tmp", ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                    Inst::VecBinary { op: VecBinOp::Max, lhs: a, rhs: b })));
+                return Some(var);
+            }
+            _ => {}
+        }
+
         // Map unary f64 builtins to UnaryOp
         let unary_op = match name {
             "abs" => Some(UnaryOp::Abs),
@@ -287,25 +497,25 @@ impl Lowerer {
         match name {
             "f64_to_u32" => {
                 let arg = self.lower_expr(&args[0], out);
-                let var = self.auto_var("conv", ScalarType::U32);
+                let var = self.auto_var("conv", ValType::U32);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ScalarType::U32,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
                     Inst::Conv { op: ConvOp::F64ToU32, arg })));
                 return Some(var);
             }
             "u32_to_f64" => {
                 let arg = self.lower_expr(&args[0], out);
-                let var = self.auto_var("conv", ScalarType::F64);
+                let var = self.auto_var("conv", ValType::F64);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
                     Inst::Conv { op: ConvOp::U32ToF64, arg })));
                 return Some(var);
             }
             "norm" => {
                 let arg = self.lower_expr(&args[0], out);
-                let var = self.auto_var("conv", ScalarType::F64);
+                let var = self.auto_var("conv", ValType::F64);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
                     Inst::Conv { op: ConvOp::U32ToF64Norm, arg })));
                 return Some(var);
             }
@@ -329,9 +539,9 @@ impl Lowerer {
             let r = self.lower_expr(&args[0], out);
             let g = self.lower_expr(&args[1], out);
             let b = self.lower_expr(&args[2], out);
-            let var = self.auto_var("tmp", ScalarType::U32);
+            let var = self.auto_var("tmp", ValType::U32);
             let vname = self.binding_name(var);
-            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ScalarType::U32,
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
                 Inst::PackArgb { r, g, b })));
             return Some(var);
         }
@@ -343,32 +553,32 @@ impl Lowerer {
                 let x = self.lower_expr(&args[0], out);
                 let lo = self.lower_expr(&args[1], out);
                 let hi = self.lower_expr(&args[2], out);
-                let v1 = self.auto_var("tmp", ScalarType::F64);
+                let v1 = self.auto_var("tmp", ValType::F64);
                 let n1 = self.binding_name(v1);
-                out.push(BodyItem::Stmt(self.emit_stmt(v1, &n1, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(v1, &n1, ValType::F64,
                     Inst::Binary { op: BinOp::Max, lhs: x, rhs: lo })));
-                let v2 = self.auto_var("tmp", ScalarType::F64);
+                let v2 = self.auto_var("tmp", ValType::F64);
                 let n2 = self.binding_name(v2);
-                out.push(BodyItem::Stmt(self.emit_stmt(v2, &n2, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(v2, &n2, ValType::F64,
                     Inst::Binary { op: BinOp::Min, lhs: v1, rhs: hi })));
                 return Some(v2);
             }
             "saturate" => {
                 // saturate(x) = clamp(x, 0, 1)
                 let x = self.lower_expr(&args[0], out);
-                let z = self.auto_var("lit", ScalarType::F64);
+                let z = self.auto_var("lit", ValType::F64);
                 let zn = self.binding_name(z);
-                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ScalarType::F64, Inst::Const(Const::F64(0.0)))));
-                let o = self.auto_var("lit", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ValType::F64, Inst::Const(Const::F64(0.0)))));
+                let o = self.auto_var("lit", ValType::F64);
                 let on = self.binding_name(o);
-                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ScalarType::F64, Inst::Const(Const::F64(1.0)))));
-                let v1 = self.auto_var("tmp", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ValType::F64, Inst::Const(Const::F64(1.0)))));
+                let v1 = self.auto_var("tmp", ValType::F64);
                 let n1 = self.binding_name(v1);
-                out.push(BodyItem::Stmt(self.emit_stmt(v1, &n1, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(v1, &n1, ValType::F64,
                     Inst::Binary { op: BinOp::Max, lhs: x, rhs: z })));
-                let v2 = self.auto_var("tmp", ScalarType::F64);
+                let v2 = self.auto_var("tmp", ValType::F64);
                 let n2 = self.binding_name(v2);
-                out.push(BodyItem::Stmt(self.emit_stmt(v2, &n2, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(v2, &n2, ValType::F64,
                     Inst::Binary { op: BinOp::Min, lhs: v1, rhs: o })));
                 return Some(v2);
             }
@@ -376,21 +586,21 @@ impl Lowerer {
                 // length(x, y) = sqrt(x*x + y*y)
                 let x = self.lower_expr(&args[0], out);
                 let y = self.lower_expr(&args[1], out);
-                let xx = self.auto_var("tmp", ScalarType::F64);
+                let xx = self.auto_var("tmp", ValType::F64);
                 let xxn = self.binding_name(xx);
-                out.push(BodyItem::Stmt(self.emit_stmt(xx, &xxn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(xx, &xxn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: x, rhs: x })));
-                let yy = self.auto_var("tmp", ScalarType::F64);
+                let yy = self.auto_var("tmp", ValType::F64);
                 let yyn = self.binding_name(yy);
-                out.push(BodyItem::Stmt(self.emit_stmt(yy, &yyn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(yy, &yyn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: y, rhs: y })));
-                let sum = self.auto_var("tmp", ScalarType::F64);
+                let sum = self.auto_var("tmp", ValType::F64);
                 let sn = self.binding_name(sum);
-                out.push(BodyItem::Stmt(self.emit_stmt(sum, &sn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(sum, &sn, ValType::F64,
                     Inst::Binary { op: BinOp::Add, lhs: xx, rhs: yy })));
-                let r = self.auto_var("tmp", ScalarType::F64);
+                let r = self.auto_var("tmp", ValType::F64);
                 let rn = self.binding_name(r);
-                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ValType::F64,
                     Inst::Unary { op: UnaryOp::Sqrt, arg: sum })));
                 return Some(r);
             }
@@ -400,29 +610,29 @@ impl Lowerer {
                 let y1 = self.lower_expr(&args[1], out);
                 let x2 = self.lower_expr(&args[2], out);
                 let y2 = self.lower_expr(&args[3], out);
-                let dx = self.auto_var("tmp", ScalarType::F64);
+                let dx = self.auto_var("tmp", ValType::F64);
                 let dxn = self.binding_name(dx);
-                out.push(BodyItem::Stmt(self.emit_stmt(dx, &dxn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(dx, &dxn, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: x2, rhs: x1 })));
-                let dy = self.auto_var("tmp", ScalarType::F64);
+                let dy = self.auto_var("tmp", ValType::F64);
                 let dyn_ = self.binding_name(dy);
-                out.push(BodyItem::Stmt(self.emit_stmt(dy, &dyn_, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(dy, &dyn_, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: y2, rhs: y1 })));
-                let dxdx = self.auto_var("tmp", ScalarType::F64);
+                let dxdx = self.auto_var("tmp", ValType::F64);
                 let dxdxn = self.binding_name(dxdx);
-                out.push(BodyItem::Stmt(self.emit_stmt(dxdx, &dxdxn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(dxdx, &dxdxn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: dx, rhs: dx })));
-                let dydy = self.auto_var("tmp", ScalarType::F64);
+                let dydy = self.auto_var("tmp", ValType::F64);
                 let dydyn = self.binding_name(dydy);
-                out.push(BodyItem::Stmt(self.emit_stmt(dydy, &dydyn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(dydy, &dydyn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: dy, rhs: dy })));
-                let s = self.auto_var("tmp", ScalarType::F64);
+                let s = self.auto_var("tmp", ValType::F64);
                 let sn = self.binding_name(s);
-                out.push(BodyItem::Stmt(self.emit_stmt(s, &sn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(s, &sn, ValType::F64,
                     Inst::Binary { op: BinOp::Add, lhs: dxdx, rhs: dydy })));
-                let r = self.auto_var("tmp", ScalarType::F64);
+                let r = self.auto_var("tmp", ValType::F64);
                 let rn = self.binding_name(r);
-                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ValType::F64,
                     Inst::Unary { op: UnaryOp::Sqrt, arg: s })));
                 return Some(r);
             }
@@ -431,17 +641,17 @@ impl Lowerer {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
                 let t = self.lower_expr(&args[2], out);
-                let diff = self.auto_var("tmp", ScalarType::F64);
+                let diff = self.auto_var("tmp", ValType::F64);
                 let dn = self.binding_name(diff);
-                out.push(BodyItem::Stmt(self.emit_stmt(diff, &dn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(diff, &dn, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: b, rhs: a })));
-                let td = self.auto_var("tmp", ScalarType::F64);
+                let td = self.auto_var("tmp", ValType::F64);
                 let tdn = self.binding_name(td);
-                out.push(BodyItem::Stmt(self.emit_stmt(td, &tdn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(td, &tdn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: t, rhs: diff })));
-                let r = self.auto_var("tmp", ScalarType::F64);
+                let r = self.auto_var("tmp", ValType::F64);
                 let rn = self.binding_name(r);
-                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ValType::F64,
                     Inst::Binary { op: BinOp::Add, lhs: a, rhs: td })));
                 return Some(r);
             }
@@ -451,57 +661,57 @@ impl Lowerer {
                 let e1 = self.lower_expr(&args[1], out);
                 let x = self.lower_expr(&args[2], out);
 
-                let diff = self.auto_var("tmp", ScalarType::F64);
+                let diff = self.auto_var("tmp", ValType::F64);
                 let dn = self.binding_name(diff);
-                out.push(BodyItem::Stmt(self.emit_stmt(diff, &dn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(diff, &dn, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: x, rhs: e0 })));
-                let range = self.auto_var("tmp", ScalarType::F64);
+                let range = self.auto_var("tmp", ValType::F64);
                 let rn = self.binding_name(range);
-                out.push(BodyItem::Stmt(self.emit_stmt(range, &rn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(range, &rn, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: e1, rhs: e0 })));
-                let raw = self.auto_var("tmp", ScalarType::F64);
+                let raw = self.auto_var("tmp", ValType::F64);
                 let rwn = self.binding_name(raw);
-                out.push(BodyItem::Stmt(self.emit_stmt(raw, &rwn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(raw, &rwn, ValType::F64,
                     Inst::Binary { op: BinOp::Div, lhs: diff, rhs: range })));
 
                 // clamp to [0, 1]
-                let z = self.auto_var("lit", ScalarType::F64);
+                let z = self.auto_var("lit", ValType::F64);
                 let zn = self.binding_name(z);
-                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ScalarType::F64, Inst::Const(Const::F64(0.0)))));
-                let o = self.auto_var("lit", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ValType::F64, Inst::Const(Const::F64(0.0)))));
+                let o = self.auto_var("lit", ValType::F64);
                 let on = self.binding_name(o);
-                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ScalarType::F64, Inst::Const(Const::F64(1.0)))));
-                let clamped1 = self.auto_var("tmp", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ValType::F64, Inst::Const(Const::F64(1.0)))));
+                let clamped1 = self.auto_var("tmp", ValType::F64);
                 let c1n = self.binding_name(clamped1);
-                out.push(BodyItem::Stmt(self.emit_stmt(clamped1, &c1n, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(clamped1, &c1n, ValType::F64,
                     Inst::Binary { op: BinOp::Max, lhs: raw, rhs: z })));
-                let t = self.auto_var("tmp", ScalarType::F64);
+                let t = self.auto_var("tmp", ValType::F64);
                 let tn = self.binding_name(t);
-                out.push(BodyItem::Stmt(self.emit_stmt(t, &tn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(t, &tn, ValType::F64,
                     Inst::Binary { op: BinOp::Min, lhs: clamped1, rhs: o })));
 
                 // t * t * (3 - 2*t)
-                let tt = self.auto_var("tmp", ScalarType::F64);
+                let tt = self.auto_var("tmp", ValType::F64);
                 let ttn = self.binding_name(tt);
-                out.push(BodyItem::Stmt(self.emit_stmt(tt, &ttn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(tt, &ttn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: t, rhs: t })));
-                let two = self.auto_var("lit", ScalarType::F64);
+                let two = self.auto_var("lit", ValType::F64);
                 let twon = self.binding_name(two);
-                out.push(BodyItem::Stmt(self.emit_stmt(two, &twon, ScalarType::F64, Inst::Const(Const::F64(2.0)))));
-                let three = self.auto_var("lit", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(two, &twon, ValType::F64, Inst::Const(Const::F64(2.0)))));
+                let three = self.auto_var("lit", ValType::F64);
                 let threen = self.binding_name(three);
-                out.push(BodyItem::Stmt(self.emit_stmt(three, &threen, ScalarType::F64, Inst::Const(Const::F64(3.0)))));
-                let twot = self.auto_var("tmp", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(three, &threen, ValType::F64, Inst::Const(Const::F64(3.0)))));
+                let twot = self.auto_var("tmp", ValType::F64);
                 let twotn = self.binding_name(twot);
-                out.push(BodyItem::Stmt(self.emit_stmt(twot, &twotn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(twot, &twotn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: two, rhs: t })));
-                let three_minus = self.auto_var("tmp", ScalarType::F64);
+                let three_minus = self.auto_var("tmp", ValType::F64);
                 let tmn = self.binding_name(three_minus);
-                out.push(BodyItem::Stmt(self.emit_stmt(three_minus, &tmn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(three_minus, &tmn, ValType::F64,
                     Inst::Binary { op: BinOp::Sub, lhs: three, rhs: twot })));
-                let result = self.auto_var("tmp", ScalarType::F64);
+                let result = self.auto_var("tmp", ValType::F64);
                 let resn = self.binding_name(result);
-                out.push(BodyItem::Stmt(self.emit_stmt(result, &resn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(result, &resn, ValType::F64,
                     Inst::Binary { op: BinOp::Mul, lhs: tt, rhs: three_minus })));
                 return Some(result);
             }
@@ -509,19 +719,19 @@ impl Lowerer {
                 // step(edge, x) = if x < edge { 0.0 } else { 1.0 }
                 let edge = self.lower_expr(&args[0], out);
                 let x = self.lower_expr(&args[1], out);
-                let cond = self.auto_var("tmp", ScalarType::Bool);
+                let cond = self.auto_var("tmp", ValType::Bool);
                 let cn = self.binding_name(cond);
-                out.push(BodyItem::Stmt(self.emit_stmt(cond, &cn, ScalarType::Bool,
+                out.push(BodyItem::Stmt(self.emit_stmt(cond, &cn, ValType::Bool,
                     Inst::Cmp { op: CmpOp::Lt, lhs: x, rhs: edge })));
-                let z = self.auto_var("lit", ScalarType::F64);
+                let z = self.auto_var("lit", ValType::F64);
                 let zn = self.binding_name(z);
-                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ScalarType::F64, Inst::Const(Const::F64(0.0)))));
-                let o = self.auto_var("lit", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(z, &zn, ValType::F64, Inst::Const(Const::F64(0.0)))));
+                let o = self.auto_var("lit", ValType::F64);
                 let on = self.binding_name(o);
-                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ScalarType::F64, Inst::Const(Const::F64(1.0)))));
-                let r = self.auto_var("sel", ScalarType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(o, &on, ValType::F64, Inst::Const(Const::F64(1.0)))));
+                let r = self.auto_var("sel", ValType::F64);
                 let rn = self.binding_name(r);
-                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ScalarType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(r, &rn, ValType::F64,
                     Inst::Select { cond, then_val: z, else_val: o })));
                 return Some(r);
             }
@@ -551,39 +761,39 @@ impl Lowerer {
         let gv = self.lower_expr(g, out);
         let bv = self.lower_expr(b, out);
 
-        let s = self.auto_var("lit", ScalarType::F64);
+        let s = self.auto_var("lit", ValType::F64);
         let sn = self.binding_name(s);
-        out.push(BodyItem::Stmt(self.emit_stmt(s, &sn, ScalarType::F64, Inst::Const(Const::F64(scale)))));
+        out.push(BodyItem::Stmt(self.emit_stmt(s, &sn, ValType::F64, Inst::Const(Const::F64(scale)))));
 
-        let rs = self.auto_var("tmp", ScalarType::F64);
+        let rs = self.auto_var("tmp", ValType::F64);
         let rsn = self.binding_name(rs);
-        out.push(BodyItem::Stmt(self.emit_stmt(rs, &rsn, ScalarType::F64,
+        out.push(BodyItem::Stmt(self.emit_stmt(rs, &rsn, ValType::F64,
             Inst::Binary { op: BinOp::Mul, lhs: rv, rhs: s })));
-        let gs = self.auto_var("tmp", ScalarType::F64);
+        let gs = self.auto_var("tmp", ValType::F64);
         let gsn = self.binding_name(gs);
-        out.push(BodyItem::Stmt(self.emit_stmt(gs, &gsn, ScalarType::F64,
+        out.push(BodyItem::Stmt(self.emit_stmt(gs, &gsn, ValType::F64,
             Inst::Binary { op: BinOp::Mul, lhs: gv, rhs: s })));
-        let bs = self.auto_var("tmp", ScalarType::F64);
+        let bs = self.auto_var("tmp", ValType::F64);
         let bsn = self.binding_name(bs);
-        out.push(BodyItem::Stmt(self.emit_stmt(bs, &bsn, ScalarType::F64,
+        out.push(BodyItem::Stmt(self.emit_stmt(bs, &bsn, ValType::F64,
             Inst::Binary { op: BinOp::Mul, lhs: bv, rhs: s })));
 
-        let ru = self.auto_var("conv", ScalarType::U32);
+        let ru = self.auto_var("conv", ValType::U32);
         let run = self.binding_name(ru);
-        out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: rs })));
-        let gu = self.auto_var("conv", ScalarType::U32);
+        let gu = self.auto_var("conv", ValType::U32);
         let gun = self.binding_name(gu);
-        out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: gs })));
-        let bu = self.auto_var("conv", ScalarType::U32);
+        let bu = self.auto_var("conv", ValType::U32);
         let bun = self.binding_name(bu);
-        out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: bs })));
 
-        let packed = self.auto_var("tmp", ScalarType::U32);
+        let packed = self.auto_var("tmp", ValType::U32);
         let pn = self.binding_name(packed);
-        out.push(BodyItem::Stmt(self.emit_stmt(packed, &pn, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(packed, &pn, ValType::U32,
             Inst::PackArgb { r: ru, g: gu, b: bu })));
         packed
     }
@@ -593,22 +803,22 @@ impl Lowerer {
         let gv = self.lower_expr(g, out);
         let bv = self.lower_expr(b, out);
 
-        let ru = self.auto_var("conv", ScalarType::U32);
+        let ru = self.auto_var("conv", ValType::U32);
         let run = self.binding_name(ru);
-        out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: rv })));
-        let gu = self.auto_var("conv", ScalarType::U32);
+        let gu = self.auto_var("conv", ValType::U32);
         let gun = self.binding_name(gu);
-        out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: gv })));
-        let bu = self.auto_var("conv", ScalarType::U32);
+        let bu = self.auto_var("conv", ValType::U32);
         let bun = self.binding_name(bu);
-        out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ValType::U32,
             Inst::Conv { op: ConvOp::F64ToU32, arg: bv })));
 
-        let packed = self.auto_var("tmp", ScalarType::U32);
+        let packed = self.auto_var("tmp", ValType::U32);
         let pn = self.binding_name(packed);
-        out.push(BodyItem::Stmt(self.emit_stmt(packed, &pn, ScalarType::U32,
+        out.push(BodyItem::Stmt(self.emit_stmt(packed, &pn, ValType::U32,
             Inst::PackArgb { r: ru, g: gu, b: bu })));
         packed
     }
@@ -698,9 +908,9 @@ impl Lowerer {
             _ => unreachable!(),
         };
         let break_var = self.lower_expr(break_cond, &mut cond_body);
-        let cont_var = self.auto_var("cont", ScalarType::Bool);
+        let cont_var = self.auto_var("cont", ValType::Bool);
         let cont_name = self.binding_name(cont_var);
-        cond_body.push(BodyItem::Stmt(self.emit_stmt(cont_var, &cont_name, ScalarType::Bool,
+        cond_body.push(BodyItem::Stmt(self.emit_stmt(cont_var, &cont_name, ValType::Bool,
             Inst::Unary { op: UnaryOp::Not, arg: break_var })));
 
         // Loop body: statements after break_if (excluding yield)

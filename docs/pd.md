@@ -29,8 +29,10 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 | `f64`  | 64-bit floating point          |
 | `u32`  | 32-bit unsigned integer        |
 | `bool` | Boolean (true/false)           |
+| `vec2` | 2-component vector (2× f64)   |
+| `vec3` | 3-component vector (3× f64)   |
 
-There are no implicit conversions. Use `as` casts or conversion functions to move between types.
+There are no implicit conversions between scalar types. Use `as` casts or conversion functions to move between types. Vec types support arithmetic operators with automatic dispatch (see Vector types below).
 
 ## Variables
 
@@ -56,7 +58,7 @@ Bare integers (without suffix or decimal point) are resolved by context: they be
 
 ## Operators
 
-### Arithmetic (f64, u32)
+### Arithmetic (f64, u32, vec2, vec3)
 
 | Operator | Description     |
 |----------|-----------------|
@@ -64,14 +66,22 @@ Bare integers (without suffix or decimal point) are resolved by context: they be
 | `-`      | Subtraction     |
 | `*`      | Multiplication  |
 | `/`      | Division        |
-| `%`      | Remainder       |
+| `%`      | Remainder (f64, u32 only) |
+
+When both operands are the same vec type, `+`, `-`, `*`, `/` apply component-wise. Mixed scalar-vector multiply is also supported: `f64 * vec` or `vec * f64` scales each component. `vec / f64` divides each component by the scalar.
+
+```
+let sum = pos + offset;       // vec2 + vec2 -> vec2
+let scaled = 2.0 * direction; // f64 * vec3 -> vec3
+let half = pos / 2.0;         // vec2 / f64 -> vec2
+```
 
 ### Unary
 
-| Operator | Description   | Types      |
-|----------|---------------|------------|
-| `-`      | Negate        | f64, u32   |
-| `!`      | Logical NOT   | bool       |
+| Operator | Description   | Types            |
+|----------|---------------|------------------|
+| `-`      | Negate        | f64, u32, vec2, vec3 |
+| `!`      | Logical NOT   | bool             |
 
 ### Comparison (produces bool)
 
@@ -144,6 +154,48 @@ emit if d < 0.0 { surface_color } else { background };
 
 Both branches must produce the same type. The braces `{}` around each branch are required.
 
+## Vector types
+
+### Construction
+
+```
+let pos = vec2(x, y);
+let color = vec3(1.0, 0.5, 0.0);
+```
+
+`vec2()` takes two f64 arguments, `vec3()` takes three.
+
+### Component access
+
+Use `.x`, `.y`, `.z` to extract components as f64:
+
+```
+let px = pos.x;
+let py = pos.y;
+let blue = color.z;   // vec3 only
+```
+
+`vec2` has `.x` and `.y`. `vec3` has `.x`, `.y`, and `.z`. Accessing `.z` on a `vec2` is an error.
+
+### If-else with vectors
+
+Both branches must be the same vec type:
+
+```
+let chosen = if d < 0.0 { inside_color } else { outside_color };
+```
+
+### While loops with vectors
+
+Vec types work as loop-carried variables:
+
+```
+while pos: vec2 = vec2(0.0, 0.0), iter: u32 = 0 {
+    break_if iter >= 100u32;
+    yield pos + delta, iter + 1u32;
+}
+```
+
 ## Control flow
 
 ### While loops
@@ -189,7 +241,6 @@ fn circle_sdf(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> f64 {
 
 | Function | Description              |
 |----------|--------------------------|
-| `abs(x)` | Absolute value           |
 | `sqrt(x)` | Square root             |
 | `floor(x)` | Floor                  |
 | `ceil(x)` | Ceiling                 |
@@ -212,11 +263,45 @@ fn circle_sdf(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> f64 {
 
 | Function       | Description                |
 |----------------|----------------------------|
-| `min(a, b)`    | Minimum                    |
-| `max(a, b)`    | Maximum                    |
 | `atan2(y, x)`  | Arctangent of y/x          |
 | `pow(base, exp)` | Power                    |
 | `hash(a, b)`   | Pseudo-random (u32 x u32 -> u32) |
+
+### Overloaded functions (scalar and vector)
+
+These functions work on both scalar and vec types:
+
+| Function                    | Scalar form                            | Vector form                             |
+|-----------------------------|----------------------------------------|-----------------------------------------|
+| `abs(x)`                    | f64 -> f64                             | vec -> vec (component-wise)             |
+| `min(a, b)`                 | f64 x f64 -> f64, u32 x u32 -> u32    | vec x vec -> vec (component-wise)       |
+| `max(a, b)`                 | f64 x f64 -> f64, u32 x u32 -> u32    | vec x vec -> vec (component-wise)       |
+| `length(...)`               | f64 x f64 -> f64 (`sqrt(x*x+y*y)`)    | vec -> f64 (magnitude)                  |
+| `distance(...)`             | f64 x4 -> f64                          | vec x vec -> f64 (`length(a - b)`)      |
+| `mix(a, b, t)`              | f64 x f64 x f64 -> f64                | vec x vec x f64 -> vec                  |
+
+```
+let d = length(pos);                    // vec2 -> f64
+let n = normalize(direction);           // vec3 -> vec3
+let closest = min(pos_a, pos_b);        // vec2, vec2 -> vec2
+let blended = mix(color_a, color_b, t); // vec3, vec3, f64 -> vec3
+```
+
+### Vector-only functions
+
+| Function              | Description                          |
+|-----------------------|--------------------------------------|
+| `vec2(x, y)`          | Construct vec2 from two f64          |
+| `vec3(x, y, z)`       | Construct vec3 from three f64        |
+| `dot(a, b)`           | Dot product (vec x vec -> f64)       |
+| `normalize(v)`        | Normalize to unit length (vec -> vec)|
+| `cross(a, b)`         | Cross product (vec3 x vec3 -> vec3)  |
+
+```
+let pos = vec2(x, y);
+let d = dot(normal, light_dir);
+let n = cross(edge1, edge2);
+```
 
 ### Convenience math (f64)
 
@@ -224,9 +309,6 @@ fn circle_sdf(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> f64 {
 |---------------------------|--------------------------------------------|
 | `clamp(x, lo, hi)`       | `min(max(x, lo), hi)`                      |
 | `saturate(x)`             | `clamp(x, 0, 1)`                           |
-| `length(x, y)`            | `sqrt(x*x + y*y)`                          |
-| `distance(x1, y1, x2, y2)` | `length(x2-x1, y2-y1)`                   |
-| `mix(a, b, t)`            | `a + t * (b - a)`                          |
 | `smoothstep(e0, e1, x)`   | Hermite interpolation with clamped t       |
 | `step(edge, x)`           | `0.0` if `x < edge`, `1.0` otherwise       |
 
@@ -269,16 +351,16 @@ kernel sdf(x: f64, y: f64) -> u32 {
 }
 ```
 
-## Example with functions and loops
+## Example with functions, loops, and vec types
 
 ```
-fn circle_sdf(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> f64 {
-    return length(px - cx, py - cy) - r;
+fn circle_sdf(p: vec2, center: vec2, r: f64) -> f64 {
+    return length(p - center) - r;
 }
 
-fn scene_sdf(px: f64, py: f64) -> f64 {
-    let d1 = circle_sdf(px, py, -0.3, 0.0, 0.4);
-    let d2 = circle_sdf(px, py, 0.3, 0.0, 0.3);
+fn scene_sdf(p: vec2) -> f64 {
+    let d1 = circle_sdf(p, vec2(-0.3, 0.0), 0.4);
+    let d2 = circle_sdf(p, vec2(0.3, 0.0), 0.3);
     return min(d1, d2);
 }
 
@@ -286,18 +368,18 @@ kernel ray_march_ao(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -> u32 
     let seed = hash(px, py);
     let seed2 = hash(seed, sample_index);
     let theta = norm(seed2) * 6.283185307179586;
-    let dx = cos(theta);
-    let dy = sin(theta);
+    let dir = vec2(cos(theta), sin(theta));
+    let pos = vec2(x, y);
 
-    while rx = x, ry = y, total_d = 0.0, steps: u32 = 0 {
-        let d = abs(scene_sdf(rx, ry));
+    while ray_pos: vec2 = pos, total_d = 0.0, steps: u32 = 0 {
+        let d = abs(scene_sdf(ray_pos));
         let new_total = total_d + d;
         break_if d < 0.001 || new_total > 2.0;
-        yield rx + dx * d, ry + dy * d, new_total, steps + 1u32;
+        yield ray_pos + dir * d, new_total, steps + 1u32;
     }
 
     let ao = saturate(total_d / 2.0);
-    let in_shape = scene_sdf(x, y) <= 0.0;
+    let in_shape = scene_sdf(pos) <= 0.0;
     let brightness = if in_shape { min(ao * 200.0, 255.0) } else { 20.0 };
     emit rgb255(brightness, brightness, brightness);
 }

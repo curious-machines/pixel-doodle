@@ -7,18 +7,46 @@
 /// a `u32` ARGB color via `emit`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarType {
+pub enum ValType {
     F64,
     U32,
     Bool,
+    Vec2, // 2x f64
+    Vec3, // 3x f64
 }
 
-impl std::fmt::Display for ScalarType {
+impl ValType {
+    /// Returns true if this is a vector type.
+    pub fn is_vec(self) -> bool {
+        matches!(self, ValType::Vec2 | ValType::Vec3)
+    }
+
+    /// Number of scalar components (1 for scalars, 2 for Vec2, 3 for Vec3).
+    pub fn component_count(self) -> usize {
+        match self {
+            ValType::Vec2 => 2,
+            ValType::Vec3 => 3,
+            _ => 1,
+        }
+    }
+
+    /// The element type of a vector (F64), or self for scalars.
+    pub fn element_type(self) -> ValType {
+        match self {
+            ValType::Vec2 | ValType::Vec3 => ValType::F64,
+            other => other,
+        }
+    }
+}
+
+impl std::fmt::Display for ValType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScalarType::F64 => write!(f, "f64"),
-            ScalarType::U32 => write!(f, "u32"),
-            ScalarType::Bool => write!(f, "bool"),
+            ValType::F64 => write!(f, "f64"),
+            ValType::U32 => write!(f, "u32"),
+            ValType::Bool => write!(f, "bool"),
+            ValType::Vec2 => write!(f, "vec2"),
+            ValType::Vec3 => write!(f, "vec3"),
         }
     }
 }
@@ -30,7 +58,7 @@ pub struct Var(pub u32);
 pub struct Binding {
     pub var: Var,
     pub name: String,
-    pub ty: ScalarType,
+    pub ty: ValType,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +130,23 @@ pub enum ConvOp {
     U32ToF64Norm,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecBinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecUnaryOp {
+    Neg,
+    Abs,
+    Normalize,
+}
+
 #[derive(Debug, Clone)]
 pub enum Inst {
     Const(Const),
@@ -111,6 +156,29 @@ pub enum Inst {
     Conv { op: ConvOp, arg: Var },
     Select { cond: Var, then_val: Var, else_val: Var },
     PackArgb { r: Var, g: Var, b: Var },
+
+    // Vector construction
+    MakeVec2 { x: Var, y: Var },
+    MakeVec3 { x: Var, y: Var, z: Var },
+
+    // Component extraction (vec -> f64)
+    VecExtract { vec: Var, index: u8 }, // 0=x, 1=y, 2=z
+
+    // Component-wise binary (vec op vec -> vec)
+    VecBinary { op: VecBinOp, lhs: Var, rhs: Var },
+
+    // Scalar-vector multiply (f64 * vec -> vec)
+    VecScale { scalar: Var, vec: Var },
+
+    // Unary (vec -> vec)
+    VecUnary { op: VecUnaryOp, arg: Var },
+
+    // Reductions (vec -> f64)
+    VecDot { lhs: Var, rhs: Var },
+    VecLength { arg: Var },
+
+    // Cross product (vec3 x vec3 -> vec3)
+    VecCross { lhs: Var, rhs: Var },
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +218,7 @@ pub enum BodyItem {
 pub struct Kernel {
     pub name: String,
     pub params: Vec<Binding>,
-    pub return_ty: ScalarType,
+    pub return_ty: ValType,
     pub body: Vec<BodyItem>,
     pub emit: Var,
 }
@@ -165,7 +233,7 @@ impl Kernel {
     }
 
     /// Get the type of a Var.
-    pub fn var_type(&self, var: Var) -> Option<ScalarType> {
+    pub fn var_type(&self, var: Var) -> Option<ValType> {
         self.binding(var).map(|b| b.ty)
     }
 
