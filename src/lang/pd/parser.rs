@@ -1,10 +1,18 @@
 use crate::kernel_ir::ValType;
 use super::ast::*;
-use super::lexer::{Token, Spanned};
+use super::lexer::{self, Token, Spanned};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
+    /// Directory of the file being parsed, for resolving relative `use` paths.
+    base_dir: PathBuf,
+    /// Set of already-included canonical paths (shared across recursive parses).
+    included: Rc<RefCell<HashSet<PathBuf>>>,
 }
 
 #[derive(Debug)]
@@ -22,7 +30,20 @@ impl std::fmt::Display for ParseError {
 
 impl Parser {
     pub fn new(tokens: Vec<Spanned>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            base_dir: PathBuf::from("."),
+            included: Rc::new(RefCell::new(HashSet::new())),
+        }
+    }
+
+    pub fn new_with_context(
+        tokens: Vec<Spanned>,
+        base_dir: PathBuf,
+        included: Rc<RefCell<HashSet<PathBuf>>>,
+    ) -> Self {
+        Self { tokens, pos: 0, base_dir, included }
     }
 
     fn peek(&self) -> &Token {
@@ -78,6 +99,10 @@ impl Parser {
 
         loop {
             match self.peek() {
+                Token::Use => {
+                    let use_fns = self.parse_use()?;
+                    fns.extend(use_fns);
+                }
                 Token::Fn => fns.push(self.parse_fn_def()?),
                 Token::Kernel => {
                     if kernel.is_some() {
@@ -86,12 +111,94 @@ impl Parser {
                     kernel = Some(self.parse_kernel_def()?);
                 }
                 Token::Eof => break,
-                _ => return Err(self.error(format!("expected 'fn' or 'kernel', got '{}'", self.peek()))),
+                _ => return Err(self.error(format!("expected 'use', 'fn', or 'kernel', got '{}'", self.peek()))),
             }
         }
 
         let kernel = kernel.ok_or_else(|| self.error("no kernel defined".into()))?;
         Ok(Program { fns, kernel })
+    }
+
+    /// Parse `use "path";` and return the function definitions from the included file.
+    fn parse_use(&mut self) -> Result<Vec<FnDef>, ParseError> {
+        let span = self.span();
+        self.advance(); // use
+
+        // Expect string literal
+        let path_str = match self.peek().clone() {
+            Token::StringLit(s) => { self.advance(); s }
+            _ => return Err(self.error(format!("expected string path after 'use', got '{}'", self.peek()))),
+        };
+        self.expect(&Token::Semi)?;
+
+        // Resolve relative to current file's directory
+        let resolved = self.base_dir.join(&path_str);
+        let canonical = resolved.canonicalize().map_err(|e| {
+            ParseError {
+                line: span.line,
+                col: span.col,
+                message: format!("cannot open '{}': {}", path_str, e),
+            }
+        })?;
+
+        // Dedup: skip if already included
+        if self.included.borrow().contains(&canonical) {
+            return Ok(Vec::new());
+        }
+        self.included.borrow_mut().insert(canonical.clone());
+
+        // Read and lex the included file
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+            ParseError {
+                line: span.line,
+                col: span.col,
+                message: format!("cannot read '{}': {}", path_str, e),
+            }
+        })?;
+        let tokens = lexer::lex(&source).map_err(|e| {
+            ParseError {
+                line: span.line,
+                col: span.col,
+                message: format!("in '{}': {}", path_str, e),
+            }
+        })?;
+
+        // Parse the included file
+        let sub_dir = canonical.parent().unwrap().to_path_buf();
+        let mut sub = Parser::new_with_context(tokens, sub_dir, self.included.clone());
+        let sub_prog = sub.parse_library(&path_str).map_err(|e| {
+            ParseError {
+                line: span.line,
+                col: span.col,
+                message: format!("in '{}': {}", path_str, e.message),
+            }
+        })?;
+
+        Ok(sub_prog)
+    }
+
+    /// Parse an included file: allows `use` and `fn` but not `kernel`.
+    fn parse_library(&mut self, file_name: &str) -> Result<Vec<FnDef>, ParseError> {
+        let mut fns = Vec::new();
+
+        loop {
+            match self.peek() {
+                Token::Use => {
+                    let use_fns = self.parse_use()?;
+                    fns.extend(use_fns);
+                }
+                Token::Fn => fns.push(self.parse_fn_def()?),
+                Token::Kernel => {
+                    return Err(self.error(format!(
+                        "included file '{}' must not contain a kernel", file_name
+                    )));
+                }
+                Token::Eof => break,
+                _ => return Err(self.error(format!("expected 'use', 'fn', or end of file, got '{}'", self.peek()))),
+            }
+        }
+
+        Ok(fns)
     }
 
     fn parse_type(&mut self) -> Result<ValType, ParseError> {

@@ -3,16 +3,7 @@
 // Uses vec2 types for point coordinates, dimensions, and edge vectors.
 // ============================================================================
 
-// --- Helpers ----------------------------------------------------------------
-
-fn sign(x: f64) -> f64 {
-    return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
-}
-
-// GLSL mod: x - y*floor(x/y)
-fn mod_f(x: f64, y: f64) -> f64 {
-    return x - y * floor(x / y);
-}
+use "sdf_helpers.pd";
 
 // --- Basic Shapes -----------------------------------------------------------
 

@@ -101,7 +101,7 @@ fn load_kernel(kernel_path: &Option<String>, backend: &str) -> KernelSource {
                     eprintln!("GPU backend requires a .wgsl kernel, got '{}'", path);
                     std::process::exit(1);
                 }
-                let kernel = lang::pd::parse(&src).unwrap_or_else(|e| {
+                let kernel = lang::pd::parse(&src, Some(std::path::Path::new(path))).unwrap_or_else(|e| {
                     eprintln!("Parse error in '{}': {}", path, e);
                     std::process::exit(1);
                 });

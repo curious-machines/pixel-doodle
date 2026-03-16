@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Keywords
+    Use,
     Kernel,
     Fn,
     Let,
@@ -26,6 +27,7 @@ pub enum Token {
     FloatLit(f64),
     IntLit(u64),
     U32Lit(u32),
+    StringLit(String),
     // Identifier
     Ident(String),
     // Operators
@@ -67,6 +69,7 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Token::Use => write!(f, "use"),
             Token::Kernel => write!(f, "kernel"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "let"),
@@ -88,6 +91,7 @@ impl fmt::Display for Token {
             Token::FloatLit(v) => write!(f, "{}", v),
             Token::IntLit(v) => write!(f, "{}", v),
             Token::U32Lit(v) => write!(f, "{}u32", v),
+            Token::StringLit(s) => write!(f, "\"{}\"", s),
             Token::Ident(s) => write!(f, "{}", s),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
@@ -212,6 +216,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
             }
             let text: String = chars[start..i].iter().collect();
             let token = match text.as_str() {
+                "use" => Token::Use,
                 "kernel" => Token::Kernel,
                 "fn" => Token::Fn,
                 "let" => Token::Let,
@@ -233,6 +238,28 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 _ => Token::Ident(text),
             };
             tokens.push(Spanned { token, line, col: start_col });
+            continue;
+        }
+
+        // String literal
+        if ch == '"' {
+            i += 1;
+            col += 1;
+            let mut s = String::new();
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\n' {
+                    return Err(format!("{}:{}: unterminated string literal", line, start_col));
+                }
+                s.push(chars[i]);
+                i += 1;
+                col += 1;
+            }
+            if i >= chars.len() {
+                return Err(format!("{}:{}: unterminated string literal", line, start_col));
+            }
+            i += 1; // closing "
+            col += 1;
+            tokens.push(Spanned { token: Token::StringLit(s), line, col: start_col });
             continue;
         }
 

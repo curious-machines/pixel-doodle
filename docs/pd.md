@@ -2,6 +2,26 @@
 
 PD is a higher-level language for writing per-pixel compute kernels. It compiles to the same Kernel IR as PDL but uses conventional infix syntax, expression nesting, and type inference for local variables. Kernels are JIT-compiled and run in parallel across tiles of the output image.
 
+## Includes
+
+Use `use` to import function definitions from other PD files:
+
+```
+use "sdf/helpers.pd";
+use "sdf/shapes.pd";
+
+kernel my_kernel(x: f64, y: f64) -> u32 {
+    let d = sd_circle(vec2(x, y), 0.5);
+    ...
+}
+```
+
+- Paths are relative to the current file's directory.
+- Included files can contain `use` and `fn` definitions, but not a `kernel`.
+- Nested includes are supported (A uses B, B uses C).
+- Each file is only processed once — duplicate `use` of the same file is silently skipped.
+- Unused functions from included files have no runtime cost (they are never inlined into the IR).
+
 ## Kernel structure
 
 A kernel declares its name, parameters, return type, a body of statements, and an `emit` that produces the final value.

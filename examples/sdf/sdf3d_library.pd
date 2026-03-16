@@ -3,21 +3,7 @@
 // Uses vec3 for point coordinates and dimensions.
 // ============================================================================
 
-// --- Helpers ----------------------------------------------------------------
-
-fn sign(x: f64) -> f64 {
-    return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
-}
-
-// dot(v,v) convenience for vec2
-fn dot2v(v: vec2) -> f64 {
-    return dot(v, v);
-}
-
-// dot(v,v) convenience for vec3
-fn dot3v(v: vec3) -> f64 {
-    return dot(v, v);
-}
+use "sdf_helpers.pd";
 
 // --- Primitives (exact) -----------------------------------------------------
 
@@ -363,26 +349,6 @@ fn udQuad(p: vec3, a: vec3, b: vec3, c: vec3, d: vec3) -> f64 {
     let edge_dist = min(min(min(dot(e1, e1), dot(e2, e2)), dot(e3, e3)), dot(e4, e4));
     let face_dist = dot(nor, pa) * dot(nor, pa) / dot(nor, nor);
     return sqrt(if s1 + s2 + s3 + s4 < 3.0 { edge_dist } else { face_dist });
-}
-
-// --- Operations -------------------------------------------------------------
-
-// Smooth union
-fn opSmoothUnion(a: f64, b: f64, k: f64) -> f64 {
-    let h = max(k - abs(a - b), 0.0) / k;
-    return min(a, b) - h * h * k * 0.25;
-}
-
-// Smooth subtraction (subtracts a from b)
-fn opSmoothSubtraction(a: f64, b: f64, k: f64) -> f64 {
-    let h = max(k - abs(-a - b), 0.0) / k;
-    return max(-a, b) + h * h * k * 0.25;
-}
-
-// Smooth intersection
-fn opSmoothIntersection(a: f64, b: f64, k: f64) -> f64 {
-    let h = max(k - abs(a - b), 0.0) / k;
-    return max(a, b) + h * h * k * 0.25;
 }
 
 // --- Demo: Raymarched scene -------------------------------------------------
