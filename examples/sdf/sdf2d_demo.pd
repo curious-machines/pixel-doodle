@@ -1,0 +1,26 @@
+use "sdf2d_library.pd";
+
+kernel sdf2d_demo(x: f64, y: f64, time: f64) -> u32 {
+//kernel sdf2d_demo(x: f64, y: f64) -> u32 {
+    let p = vec2(x, y);
+    // let d = sd_heart(vec2(x, y * -1.0 + 0.5));
+    // let d = sd_hexagon(p, 0.5);
+    // let d = sd_star(p, 0.4, 5u32, 2.5);
+    // let d = sd_box(p, vec2(0.5, 0.3));
+    // let d = sd_moon(p, 0.3, 0.5, 0.4);
+
+    let height = 0.501 - 0.499 * cos(time * 1.1 + 0.0);
+    let radius = 0.100 + 0.100 * sin(time * 1.7 + 2.0);
+    let d = sd_rounded_cross(p, height) - radius;
+
+    // Shadertoy-style visualization
+    let out_r = if d > 0.0 { 0.9 } else { 0.65 };
+    let out_g = if d > 0.0 { 0.6 } else { 0.85 };
+    let out_b = if d > 0.0 { 0.3 } else { 1.0 };
+    let fade = 1.0 - exp(-6.0 * abs(d));
+    let ring = 0.8 + 0.2 * cos(150.0 * d);
+    let edge = 1.0 - smoothstep(0.0, 0.01, abs(d));
+    emit rgb(mix(out_r * fade * ring, 1.0, edge),
+             mix(out_g * fade * ring, 1.0, edge),
+             mix(out_b * fade * ring, 1.0, edge));
+}

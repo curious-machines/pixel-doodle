@@ -1,0 +1,40 @@
+use "sdf3d_library.pd";
+
+kernel sdf3d_demo(x: f64, y: f64, time: f64) -> u32 {
+    let p = vec2(x, y);
+
+    // Camera orbit
+    let an = 0.5 * time;
+    let ro = vec3(1.5 * cos(an), 0.8, 1.5 * sin(an));
+    let ta = vec3(0.0, 0.1, 0.0);
+
+    // Camera matrix
+    let ww = normalize(ta - ro);
+    let uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
+    let vv = cross(uu, ww);
+
+    // View ray
+    let rd = normalize(p.x * uu + p.y * vv + 1.5 * ww);
+
+    // Raymarch
+    let tmax = 5.0;
+    while t = 0.0, i: u32 = 0 {
+        let pos = ro + t * rd;
+        let h = map(pos);
+        break_if h < 0.0001 || t > tmax || i >= 256u32;
+        yield t + h, i + 1u32;
+    }
+
+    // Shading
+    let hit_pos = ro + t * rd;
+    let nor = calc_normal(hit_pos);
+    let sun_dir = vec3(0.57703, 0.57703, 0.57703);
+    let dif = clamp(dot(nor, sun_dir), 0.0, 1.0);
+    let amb = 0.5 + 0.5 * dot(nor, vec3(0.0, 1.0, 0.0));
+    let lit = vec3(0.2, 0.3, 0.4) * amb + vec3(0.8, 0.7, 0.5) * dif;
+    let col = if t < tmax { lit } else { vec3(0.05, 0.05, 0.1) };
+
+    // Gamma
+    let final_col = vec3(sqrt(col.x), sqrt(col.y), sqrt(col.z));
+    emit rgb(final_col.x, final_col.y, final_col.z);
+}
