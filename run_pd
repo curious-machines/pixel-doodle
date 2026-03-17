@@ -15,6 +15,16 @@ example="$2"
 shift 2
 extra_args=("$@")
 
+# Ensure llvm-sys can find LLVM on macOS (Homebrew) and Linux
+if [[ -z "${LLVM_SYS_201_PREFIX:-}" ]]; then
+    if command -v brew &>/dev/null; then
+        llvm_prefix="$(brew --prefix llvm@20 2>/dev/null || brew --prefix llvm 2>/dev/null || true)"
+        if [[ -n "$llvm_prefix" && -d "$llvm_prefix" ]]; then
+            export LLVM_SYS_201_PREFIX="$llvm_prefix"
+        fi
+    fi
+fi
+
 case "$backend" in
     cranelift)
         features="cranelift-backend"
@@ -39,4 +49,4 @@ if [[ ! -f "$kernel" ]]; then
     exit 1
 fi
 
-exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel" "${extra_args[@]}"
+exec cargo run --release --no-default-features --features "$features" -- --backend "$backend" --kernel "$kernel" ${extra_args[@]+"${extra_args[@]}"}
