@@ -31,7 +31,8 @@
       "Bash(timeout:*)",
       "Bash(grep:*)",
       "Bash(ls:*)",
-      "WebFetch(domain:www.shadertoy.com)"
+      "WebFetch(domain:www.shadertoy.com)",
+      "WebFetch(domain:iquilezles.org)"
     ]
   }
 }
