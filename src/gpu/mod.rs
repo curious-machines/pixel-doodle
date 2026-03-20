@@ -361,6 +361,50 @@ impl GpuBackend {
         display.present_with_commands(encoder.finish());
     }
 
+    /// Read back the storage buffer contents as a Vec<u32> pixel buffer.
+    /// Handles stride alignment (storage rows may be wider than width).
+    pub fn readback_pixels(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u32> {
+        let aligned_bpr = aligned_bytes_per_row(self.width);
+        let buf_size = (aligned_bpr * self.height) as u64;
+
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback staging"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback"),
+        });
+        encoder.copy_buffer_to_buffer(&self.storage_buffer, 0, &staging, 0, buf_size);
+        queue.submit(std::iter::once(encoder.finish()));
+        device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
+        rx.recv().unwrap().expect("buffer map failed");
+
+        let data = slice.get_mapped_range();
+        let stride = self.stride as usize;
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let all_pixels: &[u32] = bytemuck::cast_slice(&data);
+
+        // Copy only width pixels per row (skip stride padding)
+        let mut out = Vec::with_capacity(w * h);
+        for row in 0..h {
+            out.extend_from_slice(&all_pixels[row * stride..row * stride + w]);
+        }
+        drop(data);
+        staging.unmap();
+        out
+    }
+
     /// Dispatch the compute shader without presentation (for benchmarking).
     /// Blocks until the GPU has finished executing.
     pub fn dispatch_compute(

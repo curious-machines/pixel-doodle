@@ -1,4 +1,8 @@
 kernel mandelbrot(x: f64, y: f64) -> u32 {
+    # Center the view on the Mandelbrot set
+    cx: f64 = sub x 0.5
+    cy: f64 = add y 0.0
+
     max_iter: u32 = const 256
     zero: f64 = const 0.0
     four: f64 = const 4.0
@@ -15,12 +19,12 @@ kernel mandelbrot(x: f64, y: f64) -> u32 {
         cont: bool = not done
         cond cont
 
-        # z = z^2 + c  (where c = x + yi)
+        # z = z^2 + c  (where c = cx + cy*i)
         new_zx: f64 = sub zx2 zy2
-        new_zx2: f64 = add new_zx x
+        new_zx2: f64 = add new_zx cx
         zxzy: f64 = mul zx zy
         new_zy: f64 = mul zxzy 2.0
-        new_zy2: f64 = add new_zy y
+        new_zy2: f64 = add new_zy cy
         new_iter: u32 = add iter 1
         yield new_zx2 new_zy2 new_iter
     }

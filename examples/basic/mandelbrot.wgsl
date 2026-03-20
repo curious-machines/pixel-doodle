@@ -49,7 +49,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if col >= params.width || row >= params.height {
         return;
     }
-    let cx = params.x_min + f32(col) * params.x_step;
+    // Center the view on the Mandelbrot set
+    let cx = params.x_min + f32(col) * params.x_step - 0.5;
     let cy = params.y_min + f32(row) * params.y_step;
     let iter = mandelbrot(cx, cy, params.max_iter);
     let color = iter_to_color(iter, params.max_iter);

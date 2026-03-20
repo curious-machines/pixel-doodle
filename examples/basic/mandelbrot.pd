@@ -1,8 +1,12 @@
 kernel mandelbrot(x: f64, y: f64) -> u32 {
+    // Center the view on the Mandelbrot set
+    let cx = x - 0.5;
+    let cy = y;
+
     while zx = 0.0, zy = 0.0, iter: u32 = 0 {
         break_if zx * zx + zy * zy > 4.0 || iter >= 256u32;
-        yield zx * zx - zy * zy + x,
-              2.0 * zx * zy + y,
+        yield zx * zx - zy * zy + cx,
+              2.0 * zx * zy + cy,
               iter + 1u32;
     }
 

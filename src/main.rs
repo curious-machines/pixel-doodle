@@ -34,6 +34,7 @@ struct CliArgs {
     threads: Option<usize>,
     bench: bool,
     bench_frames: u32,
+    output: Option<String>,
 }
 
 fn parse_args() -> CliArgs {
@@ -45,6 +46,7 @@ fn parse_args() -> CliArgs {
     let mut threads = None;
     let mut bench = false;
     let mut bench_frames = 100u32;
+    let mut output = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -93,6 +95,12 @@ fn parse_args() -> CliArgs {
                     });
                 }
             }
+            "--output" => {
+                i += 1;
+                if i < args.len() {
+                    output = Some(args[i].clone());
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -100,7 +108,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames }
+    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -592,6 +600,33 @@ fn main() {
         eprintln!("warning: --threads is ignored for GPU backend");
     }
 
+    // Output-only mode: render a single frame and save (no window)
+    if args.output.is_some() && !args.bench {
+        match backend {
+            Backend::Cpu { kernel_fn, .. } => {
+                let pixel_count = (WIDTH * HEIGHT) as usize;
+                let mut buffer = vec![0u32; pixel_count];
+                with_pool(&thread_pool, || render::render(
+                    &mut buffer, WIDTH as usize, HEIGHT as usize,
+                    0.0, 0.0, 1.0, kernel_fn, 0xFFFFFFFF, 0.0,
+                ));
+                bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
+            }
+            Backend::Gpu { .. } => {
+                let wgsl = wgsl_source.as_deref();
+                let wgsl = match wgsl {
+                    Some("") | None => None,
+                    Some(s) => Some(s),
+                };
+                let (gpu, device, queue) = GpuBackend::new_headless(WIDTH, HEIGHT, 256, wgsl);
+                gpu.dispatch_compute(&device, &queue, 0.0, 0.0, 1.0, 0xFFFFFFFF, 0, 0.0);
+                let buffer = gpu.readback_pixels(&device, &queue);
+                bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
+            }
+        }
+        return;
+    }
+
     // Bench mode: headless timing loop, no window
     if args.bench {
         let warmup = 5;
@@ -626,6 +661,10 @@ fn main() {
                     None => format!("{} ({}t)", label, rayon::current_num_threads()),
                 };
                 bench::BenchResult { frame_times }.report(&thread_label, WIDTH, HEIGHT);
+
+                if let Some(ref path) = args.output {
+                    bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
+                }
             }
             Backend::Gpu { .. } => {
                 let wgsl = wgsl_source.as_deref();
@@ -649,6 +688,11 @@ fn main() {
                 }
 
                 bench::BenchResult { frame_times }.report("gpu", WIDTH, HEIGHT);
+
+                if let Some(ref path) = args.output {
+                    let buffer = gpu.readback_pixels(&device, &queue);
+                    bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
+                }
             }
         }
         return;
