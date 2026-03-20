@@ -1,3 +1,4 @@
+mod bench;
 mod display;
 mod gpu;
 mod jit;
@@ -30,6 +31,9 @@ struct CliArgs {
     kernel_path: Option<String>,
     samples: Option<u32>,
     dump_ir: bool,
+    threads: Option<usize>,
+    bench: bool,
+    bench_frames: u32,
 }
 
 fn parse_args() -> CliArgs {
@@ -38,6 +42,9 @@ fn parse_args() -> CliArgs {
     let mut kernel_path = None;
     let mut samples = None;
     let mut dump_ir = false;
+    let mut threads = None;
+    let mut bench = false;
+    let mut bench_frames = 100u32;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -65,6 +72,27 @@ fn parse_args() -> CliArgs {
             "--dump-ir" => {
                 dump_ir = true;
             }
+            "--threads" => {
+                i += 1;
+                if i < args.len() {
+                    threads = Some(args[i].parse::<usize>().unwrap_or_else(|_| {
+                        eprintln!("--threads requires a positive integer");
+                        std::process::exit(1);
+                    }));
+                }
+            }
+            "--bench" => {
+                bench = true;
+            }
+            "--bench-frames" => {
+                i += 1;
+                if i < args.len() {
+                    bench_frames = args[i].parse::<u32>().unwrap_or_else(|_| {
+                        eprintln!("--bench-frames requires a positive integer");
+                        std::process::exit(1);
+                    });
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -72,7 +100,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples, dump_ir }
+    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -144,6 +172,13 @@ enum Backend {
     },
 }
 
+fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
+    match pool {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
+}
+
 fn compile_cpu_kernel(backend_name: &str, kernel: &Kernel) -> (TileKernelFn, &'static str) {
     match backend_name {
         "native" => (native_kernel::native_mandelbrot_kernel, "native"),
@@ -185,6 +220,7 @@ struct App {
     label: &'static str,
     compile_ms: f64,
     wgsl_source: Option<String>,
+    thread_pool: Option<rayon::ThreadPool>,
     window: Option<Arc<Window>>,
     display: Option<Display>,
     center_x: f64,
@@ -197,12 +233,20 @@ struct App {
 }
 
 impl App {
-    fn new(backend: Backend, label: &'static str, compile_ms: f64, wgsl_source: Option<String>, animated: bool) -> Self {
+    fn new(
+        backend: Backend,
+        label: &'static str,
+        compile_ms: f64,
+        wgsl_source: Option<String>,
+        thread_pool: Option<rayon::ThreadPool>,
+        animated: bool,
+    ) -> Self {
         Self {
             backend,
             label,
             compile_ms,
             wgsl_source,
+            thread_pool,
             window: None,
             display: None,
             center_x: 0.0,
@@ -214,6 +258,7 @@ impl App {
             animated,
         }
     }
+
 
     fn handle_input(&mut self) -> bool {
         let pan_speed = 0.05 / self.zoom;
@@ -329,6 +374,7 @@ impl ApplicationHandler for App {
                 let moved = self.handle_input();
                 let display = self.display.as_ref().unwrap();
                 let time = self.start_time.elapsed().as_secs_f64();
+                let pool = &self.thread_pool;
 
                 match &mut self.backend {
                     Backend::Cpu { kernel_fn, buffer, display_buffer, accum } => {
@@ -340,17 +386,18 @@ impl ApplicationHandler for App {
                                 }
                                 if !accum.is_converged() {
                                     let t0 = Instant::now();
-                                    render::render(
+                                    let kfn = *kernel_fn;
+                                    let (cx, cy, z) = (self.center_x, self.center_y, self.zoom);
+                                    let si = accum.sample_count;
+                                    with_pool(pool, || render::render(
                                         buffer,
                                         WIDTH as usize,
                                         HEIGHT as usize,
-                                        self.center_x,
-                                        self.center_y,
-                                        self.zoom,
-                                        *kernel_fn,
-                                        accum.sample_count,
+                                        cx, cy, z,
+                                        kfn,
+                                        si,
                                         time,
-                                    );
+                                    ));
                                     accum.accumulate(buffer);
                                     let disp = display_buffer.as_mut().unwrap();
                                     accum.resolve(disp);
@@ -377,17 +424,17 @@ impl ApplicationHandler for App {
                                 // Non-progressive mode (original behavior)
                                 if moved || self.needs_render || self.animated {
                                     let t0 = Instant::now();
-                                    render::render(
+                                    let kfn = *kernel_fn;
+                                    let (cx, cy, z) = (self.center_x, self.center_y, self.zoom);
+                                    with_pool(pool, || render::render(
                                         buffer,
                                         WIDTH as usize,
                                         HEIGHT as usize,
-                                        self.center_x,
-                                        self.center_y,
-                                        self.zoom,
-                                        *kernel_fn,
+                                        cx, cy, z,
+                                        kfn,
                                         0xFFFFFFFF,
                                         time,
-                                    );
+                                    ));
                                     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
                                     if let Some(window) = &self.window {
                                         window.set_title(&format!(
@@ -533,8 +580,82 @@ fn main() {
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
     eprintln!("[{label}] compile: {compile_ms:.1}ms");
 
+    // Build custom thread pool if --threads was specified
+    let thread_pool = args.threads.map(|n| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .expect("failed to create thread pool")
+    });
+
+    if args.threads.is_some() && args.backend == "gpu" {
+        eprintln!("warning: --threads is ignored for GPU backend");
+    }
+
+    // Bench mode: headless timing loop, no window
+    if args.bench {
+        let warmup = 5;
+        let frames = args.bench_frames;
+
+        match backend {
+            Backend::Cpu { kernel_fn, .. } => {
+                let pixel_count = (WIDTH * HEIGHT) as usize;
+                let mut buffer = vec![0u32; pixel_count];
+
+                // Warmup
+                for i in 0..warmup {
+                    with_pool(&thread_pool, || render::render(
+                        &mut buffer, WIDTH as usize, HEIGHT as usize,
+                        0.0, 0.0, 1.0, kernel_fn, i, 0.0,
+                    ));
+                }
+
+                // Timed frames
+                let mut frame_times = Vec::with_capacity(frames as usize);
+                for i in 0..frames {
+                    let t0 = Instant::now();
+                    with_pool(&thread_pool, || render::render(
+                        &mut buffer, WIDTH as usize, HEIGHT as usize,
+                        0.0, 0.0, 1.0, kernel_fn, i, 0.0,
+                    ));
+                    frame_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+                }
+
+                let thread_label = match args.threads {
+                    Some(n) => format!("{} ({}t)", label, n),
+                    None => format!("{} ({}t)", label, rayon::current_num_threads()),
+                };
+                bench::BenchResult { frame_times }.report(&thread_label, WIDTH, HEIGHT);
+            }
+            Backend::Gpu { .. } => {
+                let wgsl = wgsl_source.as_deref();
+                let wgsl = match wgsl {
+                    Some("") | None => None,
+                    Some(s) => Some(s),
+                };
+                let (gpu, device, queue) = GpuBackend::new_headless(WIDTH, HEIGHT, 256, wgsl);
+
+                // Warmup
+                for i in 0..warmup {
+                    gpu.dispatch_compute(&device, &queue, 0.0, 0.0, 1.0, i, 0, 0.0);
+                }
+
+                // Timed frames
+                let mut frame_times = Vec::with_capacity(frames as usize);
+                for i in 0..frames {
+                    let t0 = Instant::now();
+                    gpu.dispatch_compute(&device, &queue, 0.0, 0.0, 1.0, i, 0, 0.0);
+                    frame_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+                }
+
+                bench::BenchResult { frame_times }.report("gpu", WIDTH, HEIGHT);
+            }
+        }
+        return;
+    }
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(backend, label, compile_ms, wgsl_source, animated);
+    let mut app = App::new(backend, label, compile_ms, wgsl_source, thread_pool, animated);
     event_loop.run_app(&mut app).unwrap();
 }

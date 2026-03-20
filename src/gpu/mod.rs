@@ -39,15 +39,14 @@ pub struct GpuBackend {
 }
 
 impl GpuBackend {
-    pub fn new(
-        display: &Display,
+    /// Build pipeline and buffers on the given device.
+    fn build(
+        device: &wgpu::Device,
         width: u32,
         height: u32,
         max_iter: u32,
         wgsl_source: Option<&str>,
     ) -> Self {
-        let device = &display.device;
-
         let default_source = include_str!("mandelbrot.wgsl");
         let source = wgsl_source.unwrap_or(default_source);
 
@@ -146,11 +145,135 @@ impl GpuBackend {
         }
     }
 
+    pub fn new(
+        display: &Display,
+        width: u32,
+        height: u32,
+        max_iter: u32,
+        wgsl_source: Option<&str>,
+    ) -> Self {
+        Self::build(&display.device, width, height, max_iter, wgsl_source)
+    }
+
+    /// Create a headless GPU context (no window/surface) for benchmarking.
+    pub fn new_headless(
+        width: u32,
+        height: u32,
+        max_iter: u32,
+        wgsl_source: Option<&str>,
+    ) -> (Self, wgpu::Device, wgpu::Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("failed to find a suitable GPU adapter");
+
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("pixel-doodle bench"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                ..Default::default()
+            },
+        ))
+        .expect("failed to create device");
+
+        let backend = Self::build(&device, width, height, max_iter, wgsl_source);
+        (backend, device, queue)
+    }
+
     /// Zero the accumulation buffer (call on pan/zoom reset).
     pub fn reset_accumulation(&self, queue: &wgpu::Queue) {
         let size = (self.stride * self.height) as u64 * 16;
         let zeroes = vec![0u8; size as usize];
         queue.write_buffer(&self.accum_buffer, 0, &zeroes);
+    }
+
+    /// Compute view params from center/zoom.
+    fn view_params(
+        &self,
+        center_x: f64,
+        center_y: f64,
+        zoom: f64,
+        sample_index: u32,
+        sample_count: u32,
+        time: f64,
+    ) -> Params {
+        let aspect = self.width as f64 / self.height as f64;
+        let view_w = 3.5 / zoom;
+        let view_h = view_w / aspect;
+        let x_min = center_x - view_w / 2.0;
+        let y_min = center_y - view_h / 2.0;
+        let x_step = view_w / self.width as f64;
+        let y_step = view_h / self.height as f64;
+
+        Params {
+            width: self.width,
+            height: self.height,
+            max_iter: self.max_iter,
+            stride: self.stride,
+            x_min: x_min as f32,
+            y_min: y_min as f32,
+            x_step: x_step as f32,
+            y_step: y_step as f32,
+            sample_index,
+            sample_count,
+            time: time as f32,
+            _pad: [0; 1],
+        }
+    }
+
+    /// Encode the compute dispatch into a command encoder.
+    fn encode_compute(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &Params,
+    ) -> wgpu::CommandBuffer {
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(params));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu compute"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.storage_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.accum_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu compute"),
+        });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mandelbrot"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.compute_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            let wg_x = (self.width + 15) / 16;
+            let wg_y = (self.height + 15) / 16;
+            pass.dispatch_workgroups(wg_x, wg_y, 1);
+        }
+
+        encoder.finish()
     }
 
     /// Dispatch the compute shader and copy results to the display texture.
@@ -164,28 +287,7 @@ impl GpuBackend {
         sample_count: u32,
         time: f64,
     ) {
-        let aspect = self.width as f64 / self.height as f64;
-        let view_w = 3.5 / zoom;
-        let view_h = view_w / aspect;
-        let x_min = center_x - view_w / 2.0;
-        let y_min = center_y - view_h / 2.0;
-        let x_step = view_w / self.width as f64;
-        let y_step = view_h / self.height as f64;
-
-        let params = Params {
-            width: self.width,
-            height: self.height,
-            max_iter: self.max_iter,
-            stride: self.stride,
-            x_min: x_min as f32,
-            y_min: y_min as f32,
-            x_step: x_step as f32,
-            y_step: y_step as f32,
-            sample_index,
-            sample_count,
-            time: time as f32,
-            _pad: [0; 1],
-        };
+        let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
 
         display
             .queue
@@ -257,5 +359,24 @@ impl GpuBackend {
         );
 
         display.present_with_commands(encoder.finish());
+    }
+
+    /// Dispatch the compute shader without presentation (for benchmarking).
+    /// Blocks until the GPU has finished executing.
+    pub fn dispatch_compute(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        center_x: f64,
+        center_y: f64,
+        zoom: f64,
+        sample_index: u32,
+        sample_count: u32,
+        time: f64,
+    ) {
+        let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
+        let commands = self.encode_compute(device, queue, &params);
+        queue.submit(std::iter::once(commands));
+        device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
     }
 }

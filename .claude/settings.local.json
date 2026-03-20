@@ -32,7 +32,12 @@
       "Bash(grep:*)",
       "Bash(ls:*)",
       "WebFetch(domain:www.shadertoy.com)",
-      "WebFetch(domain:iquilezles.org)"
+      "WebFetch(domain:iquilezles.org)",
+      "Bash(cargo run:*)",
+      "Bash(for t:*)",
+      "Bash(do cargo:*)",
+      "Bash(done)",
+      "Bash(./run_pd cranelift:*)"
     ]
   }
 }

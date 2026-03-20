@@ -2,9 +2,13 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: ./run <backend> <example> [--samples N]"
+    echo "Usage: ./run_pd <backend> <example> [options]"
     echo "  backend: cranelift, llvm, gpu"
     echo "  example: gradient, checkerboard, circle, etc."
+    echo "  --samples N         progressive sampling with N samples"
+    echo "  --threads N         limit CPU threads (ignored for gpu)"
+    echo "  --bench             headless benchmark mode"
+    echo "  --bench-frames N    frames to time (default 100)"
     exit 1
 }
 

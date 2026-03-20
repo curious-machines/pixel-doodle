@@ -12,3 +12,77 @@
 
     // 822 lines before addding vec2/vec3
     
+---
+$ for t in 1 2 4 8 20; do ./run_pd llvm basic/mandelbrot --bench --threads $t; done
+
+[kernel] loaded 'mandelbrot' (36 statements)
+[llvm] compile: 23.7ms
+── bench: llvm (1t) | 100 frames | 1200x900 ──
+  min:        98.02 ms
+  max:        99.17 ms
+  avg:        98.45 ms
+  median:     98.43 ms
+  total:      9845.5 ms
+  throughput: 11.0 Mpix/s
+  fps:        10.2
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running `target/release/pixel-doodle --backend llvm --kernel examples/basic/mandelbrot.pd --bench --threads 2`
+[kernel] loaded 'mandelbrot' (36 statements)
+[llvm] compile: 9.3ms
+── bench: llvm (2t) | 100 frames | 1200x900 ──
+  min:        49.16 ms
+  max:        50.91 ms
+  avg:        49.67 ms
+  median:     49.64 ms
+  total:      4966.7 ms
+  throughput: 21.7 Mpix/s
+  fps:        20.1
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running `target/release/pixel-doodle --backend llvm --kernel examples/basic/mandelbrot.pd --bench --threads 4`
+[kernel] loaded 'mandelbrot' (36 statements)
+[llvm] compile: 8.7ms
+── bench: llvm (4t) | 100 frames | 1200x900 ──
+  min:        25.56 ms
+  max:        30.31 ms
+  avg:        27.25 ms
+  median:     27.03 ms
+  total:      2725.3 ms
+  throughput: 39.6 Mpix/s
+  fps:        36.7
+    Finished `release` profile [optimized] target(s) in 0.05s
+     Running `target/release/pixel-doodle --backend llvm --kernel examples/basic/mandelbrot.pd --bench --threads 8`
+[kernel] loaded 'mandelbrot' (36 statements)
+[llvm] compile: 8.9ms
+── bench: llvm (8t) | 100 frames | 1200x900 ──
+  min:        13.27 ms
+  max:        20.30 ms
+  avg:        14.98 ms
+  median:     14.96 ms
+  total:      1498.1 ms
+  throughput: 72.1 Mpix/s
+  fps:        66.8
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running `target/release/pixel-doodle --backend llvm --kernel examples/basic/mandelbrot.pd --bench --threads 20`
+[kernel] loaded 'mandelbrot' (36 statements)
+[llvm] compile: 9.3ms
+── bench: llvm (20t) | 100 frames | 1200x900 ──
+  min:        8.56 ms
+  max:        13.28 ms
+  avg:        10.61 ms
+  median:     10.68 ms
+  total:      1060.8 ms
+  throughput: 101.8 Mpix/s
+  fps:        94.3
+
+./run_pd gpu basic/mandelbrot --bench
+
+[kernel] loaded WGSL from 'examples/basic/mandelbrot.wgsl'
+[gpu] compile: 0.0ms
+── bench: gpu | 100 frames | 1200x900 ──
+  min:        0.22 ms
+  max:        2.06 ms
+  avg:        0.74 ms
+  median:     0.60 ms
+  total:      73.8 ms
+  throughput: 1464.3 Mpix/s
+  fps:        1355.8
