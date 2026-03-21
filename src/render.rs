@@ -2,7 +2,7 @@ use rayon::prelude::*;
 
 use crate::jit::TileKernelFn;
 
-const TILE_HEIGHT: usize = 16;
+pub const DEFAULT_TILE_HEIGHT: usize = 1;
 
 pub fn render(
     buffer: &mut [u32],
@@ -14,6 +14,7 @@ pub fn render(
     kernel: TileKernelFn,
     sample_index: u32,
     time: f64,
+    tile_height: usize,
 ) {
     let aspect = width as f64 / height as f64;
     let view_w = 3.5 / zoom;
@@ -23,8 +24,7 @@ pub fn render(
     let x_step = view_w / width as f64;
     let y_step = view_h / height as f64;
 
-    // Split buffer into tiles of TILE_HEIGHT rows each
-    let rows_per_tile = TILE_HEIGHT;
+    let rows_per_tile = tile_height;
     let num_tiles = (height + rows_per_tile - 1) / rows_per_tile;
 
     // Use par_chunks_mut on the buffer, chunked by rows_per_tile * width

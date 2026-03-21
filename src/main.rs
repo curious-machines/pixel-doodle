@@ -35,6 +35,7 @@ struct CliArgs {
     bench: bool,
     bench_frames: u32,
     output: Option<String>,
+    tile_height: usize,
 }
 
 fn parse_args() -> CliArgs {
@@ -47,6 +48,7 @@ fn parse_args() -> CliArgs {
     let mut bench = false;
     let mut bench_frames = 100u32;
     let mut output = None;
+    let mut tile_height = render::DEFAULT_TILE_HEIGHT;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -101,6 +103,15 @@ fn parse_args() -> CliArgs {
                     output = Some(args[i].clone());
                 }
             }
+            "--tile-height" => {
+                i += 1;
+                if i < args.len() {
+                    tile_height = args[i].parse::<usize>().unwrap_or_else(|_| {
+                        eprintln!("--tile-height requires a positive integer");
+                        std::process::exit(1);
+                    });
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -108,7 +119,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output }
+    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output, tile_height }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -238,6 +249,7 @@ struct App {
     keys_down: Vec<KeyCode>,
     start_time: Instant,
     animated: bool,
+    tile_height: usize,
 }
 
 impl App {
@@ -248,6 +260,7 @@ impl App {
         wgsl_source: Option<String>,
         thread_pool: Option<rayon::ThreadPool>,
         animated: bool,
+        tile_height: usize,
     ) -> Self {
         Self {
             backend,
@@ -264,6 +277,7 @@ impl App {
             keys_down: Vec::new(),
             start_time: Instant::now(),
             animated,
+            tile_height,
         }
     }
 
@@ -383,6 +397,7 @@ impl ApplicationHandler for App {
                 let display = self.display.as_ref().unwrap();
                 let time = self.start_time.elapsed().as_secs_f64();
                 let pool = &self.thread_pool;
+                let th = self.tile_height;
 
                 match &mut self.backend {
                     Backend::Cpu { kernel_fn, buffer, display_buffer, accum } => {
@@ -405,6 +420,7 @@ impl ApplicationHandler for App {
                                         kfn,
                                         si,
                                         time,
+                                        th,
                                     ));
                                     accum.accumulate(buffer);
                                     let disp = display_buffer.as_mut().unwrap();
@@ -442,6 +458,7 @@ impl ApplicationHandler for App {
                                         kfn,
                                         0xFFFFFFFF,
                                         time,
+                                        th,
                                     ));
                                     let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
                                     if let Some(window) = &self.window {
@@ -600,6 +617,8 @@ fn main() {
         eprintln!("warning: --threads is ignored for GPU backend");
     }
 
+    let tile_height = args.tile_height;
+
     // Output-only mode: render a single frame and save (no window)
     if args.output.is_some() && !args.bench {
         match backend {
@@ -608,7 +627,7 @@ fn main() {
                 let mut buffer = vec![0u32; pixel_count];
                 with_pool(&thread_pool, || render::render(
                     &mut buffer, WIDTH as usize, HEIGHT as usize,
-                    0.0, 0.0, 1.0, kernel_fn, 0xFFFFFFFF, 0.0,
+                    0.0, 0.0, 1.0, kernel_fn, 0xFFFFFFFF, 0.0, tile_height,
                 ));
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
@@ -641,7 +660,7 @@ fn main() {
                 for i in 0..warmup {
                     with_pool(&thread_pool, || render::render(
                         &mut buffer, WIDTH as usize, HEIGHT as usize,
-                        0.0, 0.0, 1.0, kernel_fn, i, 0.0,
+                        0.0, 0.0, 1.0, kernel_fn, i, 0.0, tile_height,
                     ));
                 }
 
@@ -651,7 +670,7 @@ fn main() {
                     let t0 = Instant::now();
                     with_pool(&thread_pool, || render::render(
                         &mut buffer, WIDTH as usize, HEIGHT as usize,
-                        0.0, 0.0, 1.0, kernel_fn, i, 0.0,
+                        0.0, 0.0, 1.0, kernel_fn, i, 0.0, tile_height,
                     ));
                     frame_times.push(t0.elapsed().as_secs_f64() * 1000.0);
                 }
@@ -700,6 +719,6 @@ fn main() {
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App::new(backend, label, compile_ms, wgsl_source, thread_pool, animated);
+    let mut app = App::new(backend, label, compile_ms, wgsl_source, thread_pool, animated, tile_height);
     event_loop.run_app(&mut app).unwrap();
 }
