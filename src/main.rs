@@ -202,6 +202,9 @@ enum Backend {
         state: simulation::FluidState,
         pixel_buffer: Vec<u32>,
     },
+    GpuSimulation {
+        gpu_fluid: Option<gpu::fluid::GpuFluidBackend>,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
@@ -354,6 +357,15 @@ impl ApplicationHandler for App {
             .with_resizable(false);
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let display = Display::new(window.clone(), WIDTH, HEIGHT);
+
+        if let Backend::GpuSimulation { gpu_fluid } = &mut self.backend {
+            *gpu_fluid = Some(gpu::fluid::GpuFluidBackend::new(
+                &display,
+                WIDTH,
+                HEIGHT,
+                &simulation::GrayScottParams::default(),
+            ));
+        }
 
         if let Backend::Gpu { gpu_backend, .. } = &mut self.backend {
             let wgsl = self.wgsl_source.as_deref();
@@ -519,6 +531,28 @@ impl ApplicationHandler for App {
                         }
                         display.upload_and_present(pixel_buffer);
                     }
+                    Backend::GpuSimulation { gpu_fluid } => {
+                        let gpu = gpu_fluid.as_mut().unwrap();
+
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as u32;
+                            let py = self.mouse_pos.1 as u32;
+                            if px < WIDTH && py < HEIGHT {
+                                gpu.inject(&display.queue, px, py, 5);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        gpu.step_and_render(display, 8);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "gray-scott [gpu] | {render_ms:.1}ms ({fps:.0} fps)",
+                            ));
+                        }
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -589,14 +623,21 @@ fn main() {
     if let Some(ref sim_name) = args.sim {
         match sim_name.as_str() {
             "gray-scott" => {
-                eprintln!("[sim] Gray-Scott reaction-diffusion ({}x{})", WIDTH, HEIGHT);
-                let state = simulation::FluidState::new(WIDTH as usize, HEIGHT as usize);
-                let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
-                let backend = Backend::Simulation { state, pixel_buffer };
+                let use_gpu = args.backend == "gpu";
+                let label = if use_gpu { "gpu" } else { "native" };
+                eprintln!("[sim] Gray-Scott reaction-diffusion ({}x{}) [{}]", WIDTH, HEIGHT, label);
+
+                let backend = if use_gpu {
+                    Backend::GpuSimulation { gpu_fluid: None }
+                } else {
+                    let state = simulation::FluidState::new(WIDTH as usize, HEIGHT as usize);
+                    let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
+                    Backend::Simulation { state, pixel_buffer }
+                };
 
                 let event_loop = EventLoop::new().unwrap();
                 event_loop.set_control_flow(ControlFlow::Poll);
-                let mut app = App::new(backend, "native", 0.0, None, None, true, args.tile_height);
+                let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
                 event_loop.run_app(&mut app).unwrap();
             }
             other => {
@@ -711,7 +752,9 @@ fn main() {
                 let buffer = gpu.readback_pixels(&device, &queue);
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
-            Backend::Simulation { .. } => unreachable!("--sim uses its own path"),
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } => {
+                unreachable!("--sim uses its own path")
+            }
         }
         return;
     }
@@ -783,7 +826,9 @@ fn main() {
                     bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
                 }
             }
-            Backend::Simulation { .. } => unreachable!("--sim uses its own path"),
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } => {
+                unreachable!("--sim uses its own path")
+            }
         }
         return;
     }
