@@ -10,6 +10,7 @@ mod lang;
 mod native_kernel;
 mod progressive;
 mod render;
+mod simulation;
 
 use display::Display;
 use gpu::GpuBackend;
@@ -18,7 +19,7 @@ use kernel_ir::Kernel;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -36,6 +37,7 @@ struct CliArgs {
     bench_frames: u32,
     output: Option<String>,
     tile_height: usize,
+    sim: Option<String>,
 }
 
 fn parse_args() -> CliArgs {
@@ -49,6 +51,7 @@ fn parse_args() -> CliArgs {
     let mut bench_frames = 100u32;
     let mut output = None;
     let mut tile_height = render::DEFAULT_TILE_HEIGHT;
+    let mut sim = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -112,6 +115,12 @@ fn parse_args() -> CliArgs {
                     });
                 }
             }
+            "--sim" => {
+                i += 1;
+                if i < args.len() {
+                    sim = Some(args[i].clone());
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -119,7 +128,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output, tile_height }
+    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output, tile_height, sim }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -189,6 +198,10 @@ enum Backend {
         sample_count: u32,
         max_samples: Option<u32>,
     },
+    Simulation {
+        state: simulation::FluidState,
+        pixel_buffer: Vec<u32>,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
@@ -250,6 +263,8 @@ struct App {
     start_time: Instant,
     animated: bool,
     tile_height: usize,
+    mouse_pos: (f64, f64),
+    mouse_down: bool,
 }
 
 impl App {
@@ -278,6 +293,8 @@ impl App {
             start_time: Instant::now(),
             animated,
             tile_height,
+            mouse_pos: (0.0, 0.0),
+            mouse_down: false,
         }
     }
 
@@ -392,6 +409,12 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_pos = (position.x, position.y);
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                self.mouse_down = state == ElementState::Pressed;
+            }
             WindowEvent::RedrawRequested => {
                 let moved = self.handle_input();
                 let display = self.display.as_ref().unwrap();
@@ -472,6 +495,30 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    Backend::Simulation { state, pixel_buffer } => {
+                        // Inject chemical on mouse drag
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as usize;
+                            let py = self.mouse_pos.1 as usize;
+                            if px < WIDTH as usize && py < HEIGHT as usize {
+                                state.inject(px, py, 5);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        state.step();
+                        state.to_pixels(pixel_buffer);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "gray-scott [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -537,6 +584,28 @@ impl ApplicationHandler for App {
 
 fn main() {
     let args = parse_args();
+
+    // Simulation mode: separate path from kernel rendering
+    if let Some(ref sim_name) = args.sim {
+        match sim_name.as_str() {
+            "gray-scott" => {
+                eprintln!("[sim] Gray-Scott reaction-diffusion ({}x{})", WIDTH, HEIGHT);
+                let state = simulation::FluidState::new(WIDTH as usize, HEIGHT as usize);
+                let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
+                let backend = Backend::Simulation { state, pixel_buffer };
+
+                let event_loop = EventLoop::new().unwrap();
+                event_loop.set_control_flow(ControlFlow::Poll);
+                let mut app = App::new(backend, "native", 0.0, None, None, true, args.tile_height);
+                event_loop.run_app(&mut app).unwrap();
+            }
+            other => {
+                eprintln!("Unknown simulation: '{}'. Available: gray-scott", other);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     let kernel_source = load_kernel(&args.kernel_path, &args.backend);
 
@@ -642,6 +711,7 @@ fn main() {
                 let buffer = gpu.readback_pixels(&device, &queue);
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
+            Backend::Simulation { .. } => unreachable!("--sim uses its own path"),
         }
         return;
     }
@@ -713,6 +783,7 @@ fn main() {
                     bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
                 }
             }
+            Backend::Simulation { .. } => unreachable!("--sim uses its own path"),
         }
         return;
     }
