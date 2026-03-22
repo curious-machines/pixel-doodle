@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use crate::jit::TileKernelFn;
+use crate::jit::{SimTileKernelFn, TileKernelFn};
 
 pub const DEFAULT_TILE_HEIGHT: usize = 1;
 
@@ -49,6 +49,52 @@ pub fn render(
                     row_end as u32,
                     sample_index,
                     time,
+                );
+            }
+        });
+}
+
+/// Render a simulation step using a JIT'd sim kernel.
+///
+/// `bufs_in`: slice of read-only f64 buffer pointers.
+/// `bufs_out`: slice of writable f64 buffer pointers.
+/// `pixel_output`: ARGB pixel buffer (width * height).
+///
+/// Safety: caller must ensure all buffer pointers are valid and that
+/// output buffers have disjoint write regions per tile (guaranteed by
+/// the simulation's double-buffering: we read from one set and write
+/// to another). The pixel output is partitioned by par_chunks_mut.
+pub fn render_sim(
+    pixel_output: &mut [u32],
+    width: usize,
+    height: usize,
+    kernel: SimTileKernelFn,
+    bufs_in: &[*const f64],
+    bufs_out: &[*mut f64],
+    tile_height: usize,
+) {
+    let rows_per_tile = tile_height;
+
+    // Stash pointer-to-pointer as usize to satisfy Send+Sync for rayon
+    let in_base = bufs_in.as_ptr() as usize;
+    let out_base = bufs_out.as_ptr() as usize;
+
+    pixel_output
+        .par_chunks_mut(rows_per_tile * width)
+        .enumerate()
+        .for_each(|(tile_idx, chunk)| {
+            let row_start = tile_idx * rows_per_tile;
+            let row_end = (row_start + rows_per_tile).min(height);
+
+            unsafe {
+                kernel(
+                    chunk.as_mut_ptr(),
+                    width as u32,
+                    height as u32,
+                    row_start as u32,
+                    row_end as u32,
+                    in_base as *const *const f64,
+                    out_base as *const *mut f64,
                 );
             }
         });

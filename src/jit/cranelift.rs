@@ -7,8 +7,15 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
-use crate::jit::{CompiledKernel, JitBackend, TileKernelFn};
+use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn};
 use crate::kernel_ir::*;
+
+/// Context for buffer operations in simulation kernels.
+struct BufContext {
+    v_width: Variable,
+    v_buf_ptrs: Variable,
+    v_buf_out_ptrs: Variable,
+}
 
 /// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
 enum VarValues {
@@ -54,9 +61,26 @@ impl CompiledKernel for CraneliftKernel {
     }
 }
 
+struct CraneliftSimKernel {
+    _module: JITModule,
+    fn_ptr: SimTileKernelFn,
+}
+
+unsafe impl Send for CraneliftSimKernel {}
+unsafe impl Sync for CraneliftSimKernel {}
+
+impl CompiledSimKernel for CraneliftSimKernel {
+    fn function_ptr(&self) -> SimTileKernelFn {
+        self.fn_ptr
+    }
+}
+
 impl JitBackend for CraneliftBackend {
     fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel> {
         Box::new(compile_kernel(kernel))
+    }
+    fn compile_sim(&self, kernel: &Kernel) -> Box<dyn CompiledSimKernel> {
+        Box::new(compile_sim_kernel(kernel))
     }
 }
 
@@ -321,7 +345,7 @@ fn lower_kernel_body(
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map);
+    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map, None);
 
     get_scalar(&val_map, &kernel.emit)
 }
@@ -332,15 +356,16 @@ fn lower_body_items(
     kernel: &Kernel,
     body: &[BodyItem],
     val_map: &mut std::collections::HashMap<Var, VarValues>,
+    buf_ctx: Option<&BufContext>,
 ) {
     for item in body {
         match item {
             BodyItem::Stmt(stmt) => {
-                let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
+                let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx);
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(module, builder, kernel, w, val_map);
+                lower_while(module, builder, kernel, w, val_map, buf_ctx);
             }
         }
     }
@@ -352,6 +377,7 @@ fn lower_while(
     kernel: &Kernel,
     w: &While,
     val_map: &mut std::collections::HashMap<Var, VarValues>,
+    buf_ctx: Option<&BufContext>,
 ) {
     // Cranelift uses Variables for SSA construction (like mutable locals).
     // We declare a Variable for each carry var, def it with the initial value,
@@ -425,7 +451,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    lower_body_items(module, builder, kernel, &w.cond_body, val_map);
+    lower_body_items(module, builder, kernel, &w.cond_body, val_map, buf_ctx);
 
     // Branch on cond
     let cond_val = get_scalar(val_map, &w.cond);
@@ -435,7 +461,7 @@ fn lower_while(
     builder.switch_to_block(loop_body);
     builder.seal_block(loop_body);
 
-    lower_body_items(module, builder, kernel, &w.body, val_map);
+    lower_body_items(module, builder, kernel, &w.body, val_map, buf_ctx);
 
     // Update carry Variables with yield values
     for (i, yv) in w.yields.iter().enumerate() {
@@ -525,6 +551,7 @@ fn lower_inst(
     inst: &Inst,
     binding: &Binding,
     val_map: &std::collections::HashMap<Var, VarValues>,
+    buf_ctx: Option<&BufContext>,
 ) -> VarValues {
     match inst {
         Inst::Const(c) => VarValues::Scalar(match c {
@@ -882,5 +909,246 @@ fn lower_inst(
             let cz = builder.ins().fsub(a, b);
             VarValues::Vec3(cx, cy, cz)
         }
+        Inst::BufLoad { buf, x, y } => {
+            // Load f64 from buffer: buf_ptrs[buf][(y * width + x)]
+            // buf_ctx must be set for sim kernels
+            let ctx = buf_ctx.expect("BufLoad requires simulation context");
+            let xv = get_scalar(val_map, x);
+            let yv = get_scalar(val_map, y);
+            let width = builder.use_var(ctx.v_width);
+
+            // Compute wrapped index: ((y % h) * w + (x % w))
+            // The kernel is responsible for wrapping — we just compute the flat index
+            let row_off = builder.ins().imul(yv, width);
+            let idx = builder.ins().iadd(row_off, xv);
+            let idx64 = builder.ins().uextend(I64, idx);
+            let eight = builder.ins().iconst(I64, 8);
+            let byte_off = builder.ins().imul(idx64, eight);
+
+            // Load buffer pointer from buf_ptrs array
+            let is_output = kernel.buffers[*buf as usize].is_output;
+            let ptrs_base = if is_output {
+                builder.use_var(ctx.v_buf_out_ptrs)
+            } else {
+                builder.use_var(ctx.v_buf_ptrs)
+            };
+            // Compute the index into the read or write pointer array
+            let buf_local_idx = if is_output {
+                kernel.buffers.iter().take(*buf as usize).filter(|b| b.is_output).count()
+            } else {
+                kernel.buffers.iter().take(*buf as usize).filter(|b| !b.is_output).count()
+            };
+            let ptr_off = builder.ins().iconst(I64, (buf_local_idx * 8) as i64);
+            let ptr_addr = builder.ins().iadd(ptrs_base, ptr_off);
+            let buf_ptr = builder.ins().load(I64, MemFlags::trusted(), ptr_addr, 0);
+            let elem_addr = builder.ins().iadd(buf_ptr, byte_off);
+            VarValues::Scalar(builder.ins().load(F64, MemFlags::trusted(), elem_addr, 0))
+        }
+        Inst::BufStore { buf, x, y, val } => {
+            let ctx = buf_ctx.expect("BufStore requires simulation context");
+            let xv = get_scalar(val_map, x);
+            let yv = get_scalar(val_map, y);
+            let value = get_scalar(val_map, val);
+            let width = builder.use_var(ctx.v_width);
+
+            let row_off = builder.ins().imul(yv, width);
+            let idx = builder.ins().iadd(row_off, xv);
+            let idx64 = builder.ins().uextend(I64, idx);
+            let eight = builder.ins().iconst(I64, 8);
+            let byte_off = builder.ins().imul(idx64, eight);
+
+            // Output buffer pointer
+            let ptrs_base = builder.use_var(ctx.v_buf_out_ptrs);
+            let buf_local_idx = kernel.buffers.iter().take(*buf as usize).filter(|b| b.is_output).count();
+            let ptr_off = builder.ins().iconst(I64, (buf_local_idx * 8) as i64);
+            let ptr_addr = builder.ins().iadd(ptrs_base, ptr_off);
+            let buf_ptr = builder.ins().load(I64, MemFlags::trusted(), ptr_addr, 0);
+            let elem_addr = builder.ins().iadd(buf_ptr, byte_off);
+            builder.ins().store(MemFlags::trusted(), value, elem_addr, 0);
+
+            // Return dummy u32 0
+            VarValues::Scalar(builder.ins().iconst(I32, 0))
+        }
+    }
+}
+
+fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    let isa_builder = cranelift_codegen::isa::lookup_by_name(
+        &target_lexicon::Triple::host().to_string(),
+    )
+    .unwrap();
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap();
+
+    let mut module =
+        JITModule::new(JITBuilder::with_isa(isa, cranelift_module::default_libcall_names()));
+
+    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs)
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(I64)); // output: *mut u32
+    sig.params.push(AbiParam::new(I32)); // width: u32
+    sig.params.push(AbiParam::new(I32)); // height: u32
+    sig.params.push(AbiParam::new(I32)); // row_start: u32
+    sig.params.push(AbiParam::new(I32)); // row_end: u32
+    sig.params.push(AbiParam::new(I64)); // buf_ptrs: *const *const f64
+    sig.params.push(AbiParam::new(I64)); // buf_out_ptrs: *const *mut f64
+
+    let func_id = module
+        .declare_function(&kernel.name, Linkage::Export, &sig)
+        .unwrap();
+
+    let mut func = Function::with_name_signature(UserFuncName::default(), sig.clone());
+    let mut fb_ctx = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut func, &mut fb_ctx);
+
+    // Variables for the tile loop
+    let v_output = builder.declare_var(I64);
+    let v_width = builder.declare_var(I32);
+    let v_height = builder.declare_var(I32);
+    let v_row_start = builder.declare_var(I32);
+    let v_row_end = builder.declare_var(I32);
+    let v_buf_ptrs = builder.declare_var(I64);
+    let v_buf_out_ptrs = builder.declare_var(I64);
+    let v_row = builder.declare_var(I32);
+    let v_col = builder.declare_var(I32);
+
+    let buf_ctx = BufContext { v_width, v_buf_ptrs, v_buf_out_ptrs };
+
+    let entry_block = builder.create_block();
+    let outer_check = builder.create_block();
+    let col_init = builder.create_block();
+    let inner_check = builder.create_block();
+    let body_block = builder.create_block();
+    let inner_inc = builder.create_block();
+    let outer_inc = builder.create_block();
+    let exit_block = builder.create_block();
+
+    // -- Entry: read params, init row --
+    builder.append_block_params_for_function_params(entry_block);
+    builder.switch_to_block(entry_block);
+    builder.seal_block(entry_block);
+
+    let params: Vec<_> = builder.block_params(entry_block).to_vec();
+    builder.def_var(v_output, params[0]);
+    builder.def_var(v_width, params[1]);
+    builder.def_var(v_height, params[2]);
+    builder.def_var(v_row_start, params[3]);
+    builder.def_var(v_row_end, params[4]);
+    builder.def_var(v_buf_ptrs, params[5]);
+    builder.def_var(v_buf_out_ptrs, params[6]);
+
+    let row_start_val = builder.use_var(v_row_start);
+    builder.def_var(v_row, row_start_val);
+    builder.ins().jump(outer_check, &[]);
+
+    // -- Outer check: row < row_end --
+    builder.switch_to_block(outer_check);
+    let row = builder.use_var(v_row);
+    let row_end = builder.use_var(v_row_end);
+    let done = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, row, row_end);
+    builder.ins().brif(done, exit_block, &[], col_init, &[]);
+
+    // -- Col init: col = 0 --
+    builder.switch_to_block(col_init);
+    builder.seal_block(col_init);
+    let zero_i32 = builder.ins().iconst(I32, 0);
+    builder.def_var(v_col, zero_i32);
+    builder.ins().jump(inner_check, &[]);
+
+    // -- Inner check: col < width --
+    builder.switch_to_block(inner_check);
+    let col = builder.use_var(v_col);
+    let width = builder.use_var(v_width);
+    let col_done = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, col, width);
+    builder.ins().brif(col_done, outer_inc, &[], body_block, &[]);
+
+    // -- Body: lower kernel body with buffer context --
+    builder.switch_to_block(body_block);
+    builder.seal_block(body_block);
+
+    let col = builder.use_var(v_col);
+    let row = builder.use_var(v_row);
+    let height = builder.use_var(v_height);
+    let width = builder.use_var(v_width);
+
+    // Map kernel params to values
+    use std::collections::HashMap;
+    let mut val_map: HashMap<Var, VarValues> = HashMap::new();
+    for param in &kernel.params {
+        let val = match param.name.as_str() {
+            "px" => col,
+            "py" => row,
+            "width" => width,
+            "height" => height,
+            name => panic!("unknown sim kernel parameter: '{name}'"),
+        };
+        val_map.insert(param.var, VarValues::Scalar(val));
+    }
+
+    lower_body_items(&mut module, &mut builder, kernel, &kernel.body, &mut val_map, Some(&buf_ctx));
+
+    let color = get_scalar(&val_map, &kernel.emit);
+
+    // Store pixel: output[(row - row_start) * width + col] = color
+    let row = builder.use_var(v_row);
+    let row_start = builder.use_var(v_row_start);
+    let width = builder.use_var(v_width);
+    let col = builder.use_var(v_col);
+    let row_off = builder.ins().isub(row, row_start);
+    let row_off_wide = builder.ins().uextend(I64, row_off);
+    let width_wide = builder.ins().uextend(I64, width);
+    let col_wide = builder.ins().uextend(I64, col);
+    let idx = builder.ins().imul(row_off_wide, width_wide);
+    let idx = builder.ins().iadd(idx, col_wide);
+    let four_bytes = builder.ins().iconst(I64, 4);
+    let byte_off = builder.ins().imul(idx, four_bytes);
+    let output = builder.use_var(v_output);
+    let addr = builder.ins().iadd(output, byte_off);
+    builder.ins().store(MemFlags::new(), color, addr, 0);
+
+    builder.ins().jump(inner_inc, &[]);
+
+    // -- Inner inc: col++ --
+    builder.switch_to_block(inner_inc);
+    builder.seal_block(inner_inc);
+    let col = builder.use_var(v_col);
+    let one = builder.ins().iconst(I32, 1);
+    let col_next = builder.ins().iadd(col, one);
+    builder.def_var(v_col, col_next);
+    builder.ins().jump(inner_check, &[]);
+
+    builder.seal_block(inner_check);
+
+    // -- Outer inc: row++ --
+    builder.switch_to_block(outer_inc);
+    builder.seal_block(outer_inc);
+    let row = builder.use_var(v_row);
+    let one = builder.ins().iconst(I32, 1);
+    let row_next = builder.ins().iadd(row, one);
+    builder.def_var(v_row, row_next);
+    builder.ins().jump(outer_check, &[]);
+
+    builder.seal_block(outer_check);
+
+    // -- Exit --
+    builder.switch_to_block(exit_block);
+    builder.seal_block(exit_block);
+    builder.ins().return_(&[]);
+
+    builder.finalize();
+
+    let mut ctx = cranelift_codegen::Context::for_function(func);
+    module.define_function(func_id, &mut ctx).unwrap();
+    module.finalize_definitions().unwrap();
+
+    let code_ptr = module.get_finalized_function(func_id);
+    let fn_ptr: SimTileKernelFn = unsafe { std::mem::transmute(code_ptr) };
+
+    CraneliftSimKernel {
+        _module: module,
+        fn_ptr,
     }
 }

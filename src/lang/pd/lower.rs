@@ -990,5 +990,6 @@ pub fn lower(program: &TProgram) -> Kernel {
         return_ty: program.kernel.return_ty,
         body,
         emit,
+        buffers: vec![],
     }
 }

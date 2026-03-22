@@ -205,12 +205,47 @@ enum Backend {
     GpuSimulation {
         gpu_fluid: Option<gpu::fluid::GpuFluidBackend>,
     },
+    JitSimulation {
+        sim_fn: jit::SimTileKernelFn,
+        /// Per-field f64 buffers: [u, v] (current) and [u_next, v_next] (next)
+        u: Vec<f64>,
+        v: Vec<f64>,
+        u_next: Vec<f64>,
+        v_next: Vec<f64>,
+        pixel_buffer: Vec<u32>,
+        substeps: u32,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
     match pool {
         Some(pool) => pool.install(f),
         None => f(),
+    }
+}
+
+fn compile_sim_kernel(backend_name: &str, kernel: &Kernel) -> jit::SimTileKernelFn {
+    match backend_name {
+        #[cfg(feature = "cranelift-backend")]
+        "cranelift" => {
+            let backend = jit::cranelift::CraneliftBackend;
+            let compiled = jit::JitBackend::compile_sim(&backend, kernel);
+            let compiled: &'static dyn jit::CompiledSimKernel = Box::leak(compiled);
+            compiled.function_ptr()
+        }
+
+        #[cfg(feature = "llvm-backend")]
+        "llvm" => {
+            let backend = jit::llvm::LlvmBackend;
+            let compiled = jit::JitBackend::compile_sim(&backend, kernel);
+            let compiled: &'static dyn jit::CompiledSimKernel = Box::leak(compiled);
+            compiled.function_ptr()
+        }
+
+        other => {
+            eprintln!("Unknown JIT backend for sim: '{}'", other);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -531,6 +566,32 @@ impl ApplicationHandler for App {
                         }
                         display.upload_and_present(pixel_buffer);
                     }
+                    Backend::JitSimulation { sim_fn, u, v, u_next, v_next, pixel_buffer, substeps } => {
+                        let t0 = Instant::now();
+                        let w = WIDTH as usize;
+                        let h = HEIGHT as usize;
+
+                        for _ in 0..*substeps {
+                            let bufs_in = [u.as_ptr(), v.as_ptr()];
+                            let bufs_out = [u_next.as_mut_ptr(), v_next.as_mut_ptr()];
+                            render::render_sim(
+                                pixel_buffer, w, h, *sim_fn,
+                                &bufs_in, &bufs_out, self.tile_height,
+                            );
+                            std::mem::swap(u, u_next);
+                            std::mem::swap(v, v_next);
+                        }
+
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "gray-scott [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
                     Backend::GpuSimulation { gpu_fluid } => {
                         let gpu = gpu_fluid.as_mut().unwrap();
 
@@ -623,16 +684,82 @@ fn main() {
     if let Some(ref sim_name) = args.sim {
         match sim_name.as_str() {
             "gray-scott" => {
-                let use_gpu = args.backend == "gpu";
-                let label = if use_gpu { "gpu" } else { "native" };
+                let label: &'static str = match args.backend.as_str() {
+                    "gpu" => "gpu",
+                    "native" => "native",
+                    "cranelift" => "cranelift",
+                    "llvm" => "llvm",
+                    other => {
+                        eprintln!("Unknown backend for sim: '{}'", other);
+                        std::process::exit(1);
+                    }
+                };
                 eprintln!("[sim] Gray-Scott reaction-diffusion ({}x{}) [{}]", WIDTH, HEIGHT, label);
 
-                let backend = if use_gpu {
-                    Backend::GpuSimulation { gpu_fluid: None }
-                } else {
-                    let state = simulation::FluidState::new(WIDTH as usize, HEIGHT as usize);
-                    let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
-                    Backend::Simulation { state, pixel_buffer }
+                let backend = match args.backend.as_str() {
+                    "gpu" => Backend::GpuSimulation { gpu_fluid: None },
+                    "native" => {
+                        let state = simulation::FluidState::new(WIDTH as usize, HEIGHT as usize);
+                        let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
+                        Backend::Simulation { state, pixel_buffer }
+                    }
+                    jit_backend => {
+                        let kernel_path = args.kernel_path.as_deref().unwrap_or_else(|| {
+                            eprintln!("--kernel required for JIT sim backend");
+                            std::process::exit(1);
+                        });
+                        let src = std::fs::read_to_string(kernel_path).unwrap_or_else(|e| {
+                            eprintln!("Failed to read kernel file '{}': {}", kernel_path, e);
+                            std::process::exit(1);
+                        });
+                        let kernel = lang::parser::parse(&src).unwrap_or_else(|e| {
+                            eprintln!("Parse error in '{}': {}", kernel_path, e);
+                            std::process::exit(1);
+                        });
+                        eprintln!("[kernel] loaded '{}' ({} statements, {} buffers)",
+                            kernel.name, kernel.body.len(), kernel.buffers.len());
+
+                        let sim_fn = compile_sim_kernel(jit_backend, &kernel);
+
+                        let n = (WIDTH * HEIGHT) as usize;
+                        let mut u = vec![1.0f64; n];
+                        let mut v = vec![0.0f64; n];
+
+                        // Seed (same as native)
+                        let mut rng = 12345u64;
+                        let mut next = || -> u64 {
+                            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                            rng
+                        };
+                        let w = WIDTH as usize;
+                        let h = HEIGHT as usize;
+                        let radius = 6usize;
+                        for _ in 0..20 {
+                            let sx = (next() as usize) % (w - 2 * radius) + radius;
+                            let sy = (next() as usize) % (h - 2 * radius) + radius;
+                            for dy in -(radius as isize)..=(radius as isize) {
+                                for dx in -(radius as isize)..=(radius as isize) {
+                                    if dx * dx + dy * dy > (radius * radius) as isize {
+                                        continue;
+                                    }
+                                    let x = (sx as isize + dx) as usize;
+                                    let y = (sy as isize + dy) as usize;
+                                    u[y * w + x] = 0.5;
+                                    v[y * w + x] = 0.25;
+                                }
+                            }
+                        }
+
+                        Backend::JitSimulation {
+                            sim_fn,
+                            u,
+                            v,
+                            u_next: vec![0.0; n],
+                            v_next: vec![0.0; n],
+                            pixel_buffer: vec![0u32; n],
+                            substeps: 8,
+                        }
+                    }
                 };
 
                 let event_loop = EventLoop::new().unwrap();
@@ -752,7 +879,7 @@ fn main() {
                 let buffer = gpu.readback_pixels(&device, &queue);
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
-            Backend::Simulation { .. } | Backend::GpuSimulation { .. } => {
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -826,7 +953,7 @@ fn main() {
                     bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
                 }
             }
-            Backend::Simulation { .. } | Backend::GpuSimulation { .. } => {
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }

@@ -97,6 +97,12 @@ enum Token {
     U32ToF64Norm,
     // Hash op (binary u32 -> u32)
     Hash,
+    // Buffer ops
+    BufLoad,
+    BufStore,
+    Buffers,
+    Read_,
+    Write_,
     // Literals
     FloatLit(f64),
     IntLit(u64),
@@ -225,6 +231,11 @@ fn keyword_lookup(word: &str) -> Token {
         "u32_to_f64" => Token::U32ToF64,
         "u32_to_f64_norm" => Token::U32ToF64Norm,
         "hash" => Token::Hash,
+        "buf_load" => Token::BufLoad,
+        "buf_store" => Token::BufStore,
+        "buffers" => Token::Buffers,
+        "read" => Token::Read_,
+        "write" => Token::Write_,
         "true" => Token::True,
         "false" => Token::False,
         _ => Token::Ident(word.to_string()),
@@ -478,6 +489,10 @@ struct Parser {
     inline_call_count: u32,
     /// Buffer for BodyItems produced during inline expansion (e.g. While blocks).
     expanded_body_items: Vec<BodyItem>,
+    /// Buffer declarations for simulation kernels.
+    buf_decls: Vec<BufDecl>,
+    /// Map buffer names to indices.
+    buf_names: HashMap<String, u32>,
 }
 
 impl Parser {
@@ -492,6 +507,8 @@ impl Parser {
             inline_defs: HashMap::new(),
             inline_call_count: 0,
             expanded_body_items: Vec::new(),
+            buf_decls: Vec::new(),
+            buf_names: HashMap::new(),
         }
     }
 
@@ -1000,6 +1017,40 @@ impl Parser {
                 }
                 Ok(Inst::VecCross { lhs, rhs })
             }
+            Token::BufLoad => {
+                self.advance();
+                if declared_ty != ValType::F64 {
+                    return Err(ParseError { line, col, message: format!("buf_load produces f64, got {declared_ty}") });
+                }
+                let (buf_name, bline, bcol) = self.expect_ident()?;
+                let buf = *self.buf_names.get(&buf_name).ok_or_else(|| ParseError {
+                    line: bline, col: bcol, message: format!("unknown buffer '{buf_name}'"),
+                })?;
+                let x = self.parse_operand(ValType::U32)?;
+                self.check_types_match(ValType::U32, self.var_ty(x), "buf_load x", line, col)?;
+                let y = self.parse_operand(ValType::U32)?;
+                self.check_types_match(ValType::U32, self.var_ty(y), "buf_load y", line, col)?;
+                Ok(Inst::BufLoad { buf, x, y })
+            }
+            Token::BufStore => {
+                self.advance();
+                // buf_store doesn't produce a value, but we still need a binding.
+                // The declared type should be u32 (dummy, value 0).
+                let (buf_name, bline, bcol) = self.expect_ident()?;
+                let buf = *self.buf_names.get(&buf_name).ok_or_else(|| ParseError {
+                    line: bline, col: bcol, message: format!("unknown buffer '{buf_name}'"),
+                })?;
+                if !self.buf_decls[buf as usize].is_output {
+                    return Err(ParseError { line: bline, col: bcol, message: format!("buffer '{buf_name}' is read-only") });
+                }
+                let x = self.parse_operand(ValType::U32)?;
+                self.check_types_match(ValType::U32, self.var_ty(x), "buf_store x", line, col)?;
+                let y = self.parse_operand(ValType::U32)?;
+                self.check_types_match(ValType::U32, self.var_ty(y), "buf_store y", line, col)?;
+                let val = self.parse_operand(ValType::F64)?;
+                self.check_types_match(ValType::F64, self.var_ty(val), "buf_store val", line, col)?;
+                Ok(Inst::BufStore { buf, x, y, val })
+            }
             Token::Ident(name) if self.inline_defs.contains_key(name) => {
                 let func_name = name.clone();
                 self.advance();
@@ -1467,6 +1518,8 @@ impl Parser {
             Inst::VecDot { lhs, rhs } => Inst::VecDot { lhs: remap(lhs), rhs: remap(rhs) },
             Inst::VecLength { arg } => Inst::VecLength { arg: remap(arg) },
             Inst::VecCross { lhs, rhs } => Inst::VecCross { lhs: remap(lhs), rhs: remap(rhs) },
+            Inst::BufLoad { buf, x, y } => Inst::BufLoad { buf: *buf, x: remap(x), y: remap(y) },
+            Inst::BufStore { buf, x, y, val } => Inst::BufStore { buf: *buf, x: remap(x), y: remap(y), val: remap(val) },
         }
     }
 
@@ -1591,6 +1644,37 @@ impl Parser {
         let params = self.parse_params()?;
         self.expect_tok(&Token::Arrow)?;
         let return_ty = self.parse_type()?;
+
+        // Optional buffer declarations
+        if self.peek().token == Token::Buffers {
+            self.advance();
+            self.expect_tok(&Token::LParen)?;
+            loop {
+                let sp = self.peek().clone();
+                if sp.token == Token::RParen {
+                    self.advance();
+                    break;
+                }
+                if !self.buf_decls.is_empty() {
+                    self.expect_tok(&Token::Comma)?;
+                }
+                let (buf_name, _bl, _bc) = self.expect_ident()?;
+                self.expect_tok(&Token::Colon)?;
+                let mode_sp = self.peek().clone();
+                let is_output = match &mode_sp.token {
+                    Token::Read_ => { self.advance(); false }
+                    Token::Write_ => { self.advance(); true }
+                    _ => return Err(ParseError {
+                        line: mode_sp.line, col: mode_sp.col,
+                        message: "expected 'read' or 'write'".to_string(),
+                    }),
+                };
+                let idx = self.buf_decls.len() as u32;
+                self.buf_names.insert(buf_name.clone(), idx);
+                self.buf_decls.push(BufDecl { name: buf_name, is_output });
+            }
+        }
+
         self.expect_tok(&Token::LBrace)?;
 
         let mut body = Vec::new();
@@ -1642,7 +1726,8 @@ impl Parser {
 
         self.expect_tok(&Token::RBrace)?;
 
-        Ok(Kernel { name, params, return_ty, body, emit: emit_var })
+        let buffers = std::mem::take(&mut self.buf_decls);
+        Ok(Kernel { name, params, return_ty, body, emit: emit_var, buffers })
     }
 }
 

@@ -206,6 +206,22 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *rhs, kernel);
         }
+        Inst::BufLoad { buf, x, y } => {
+            let buf_name = &kernel.buffers[*buf as usize].name;
+            out.push_str(&format!("buf_load {} ", buf_name));
+            print_operand(out, *x, kernel);
+            out.push(' ');
+            print_operand(out, *y, kernel);
+        }
+        Inst::BufStore { buf, x, y, val } => {
+            let buf_name = &kernel.buffers[*buf as usize].name;
+            out.push_str(&format!("buf_store {} ", buf_name));
+            print_operand(out, *x, kernel);
+            out.push(' ');
+            print_operand(out, *y, kernel);
+            out.push(' ');
+            print_operand(out, *val, kernel);
+        }
     }
 }
 

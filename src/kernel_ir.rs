@@ -179,6 +179,13 @@ pub enum Inst {
 
     // Cross product (vec3 x vec3 -> vec3)
     VecCross { lhs: Var, rhs: Var },
+
+    // Buffer operations (for simulation kernels)
+    /// Load f64 from buffer `buf` at position (x, y). Width/height for wrapping
+    /// come from the kernel's implicit width/height parameters.
+    BufLoad { buf: u32, x: Var, y: Var },
+    /// Store f64 value to buffer `buf` at position (x, y).
+    BufStore { buf: u32, x: Var, y: Var, val: Var },
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +221,13 @@ pub enum BodyItem {
     While(While),
 }
 
+/// Declaration of a buffer accessible from the kernel.
+#[derive(Debug, Clone)]
+pub struct BufDecl {
+    pub name: String,
+    pub is_output: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub name: String,
@@ -221,6 +235,8 @@ pub struct Kernel {
     pub return_ty: ValType,
     pub body: Vec<BodyItem>,
     pub emit: Var,
+    /// Buffer declarations for simulation kernels. Empty for standard pixel kernels.
+    pub buffers: Vec<BufDecl>,
 }
 
 impl Kernel {

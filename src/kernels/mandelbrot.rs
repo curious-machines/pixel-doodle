@@ -56,6 +56,7 @@ pub fn gradient_kernel() -> Kernel {
             }),
         ],
         emit: pixel,
+        buffers: vec![],
     }
 }
 
@@ -96,5 +97,6 @@ pub fn solid_color_kernel(r: u32, g: u32, b: u32) -> Kernel {
             }),
         ],
         emit: pixel,
+        buffers: vec![],
     }
 }

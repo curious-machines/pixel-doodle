@@ -1,0 +1,149 @@
+# Gray-Scott reaction-diffusion simulation kernel
+#
+# Buffers: u_in/v_in are the previous frame's chemical concentrations.
+#          u_out/v_out are where we write the new values.
+#
+# Parameters: F=0.037, k=0.06, Du=0.21, Dv=0.105, dt=1.0
+
+kernel gray_scott(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(u_in: read, v_in: read, u_out: write, v_out: write)
+{
+    # Wrap neighbor coordinates (toroidal boundary)
+    one: u32 = const 1
+    wm1: u32 = sub width one
+    hm1: u32 = sub height one
+
+    px_plus_wm1: u32 = add px wm1
+    xm: u32 = rem px_plus_wm1 width
+    px_plus_one: u32 = add px one
+    xp: u32 = rem px_plus_one width
+    py_plus_hm1: u32 = add py hm1
+    ym: u32 = rem py_plus_hm1 height
+    py_plus_one: u32 = add py one
+    yp: u32 = rem py_plus_one height
+
+    # Load 5-point stencil for U
+    u_c: f64 = buf_load u_in px py
+    u_l: f64 = buf_load u_in xm py
+    u_r: f64 = buf_load u_in xp py
+    u_u: f64 = buf_load u_in px ym
+    u_d: f64 = buf_load u_in px yp
+
+    # Load 5-point stencil for V
+    v_c: f64 = buf_load v_in px py
+    v_l: f64 = buf_load v_in xm py
+    v_r: f64 = buf_load v_in xp py
+    v_u: f64 = buf_load v_in px ym
+    v_d: f64 = buf_load v_in px yp
+
+    # Laplacian: sum of neighbors - 4 * center
+    u_lr: f64 = add u_l u_r
+    u_ud: f64 = add u_u u_d
+    u_sum: f64 = add u_lr u_ud
+    four: f64 = const 4.0
+    u_center4: f64 = mul four u_c
+    lap_u: f64 = sub u_sum u_center4
+
+    v_lr: f64 = add v_l v_r
+    v_ud: f64 = add v_u v_d
+    v_sum: f64 = add v_lr v_ud
+    v_center4: f64 = mul four v_c
+    lap_v: f64 = sub v_sum v_center4
+
+    # Reaction term: u * v * v
+    vv: f64 = mul v_c v_c
+    uvv: f64 = mul u_c vv
+
+    # Gray-Scott update
+    f_rate: f64 = const 0.037
+    k_rate: f64 = const 0.06
+    du_coeff: f64 = const 0.21
+    dv_coeff: f64 = const 0.105
+
+    # new_u = u + (Du * lap_u - uvv + F * (1 - u))
+    one_f: f64 = const 1.0
+    one_minus_u: f64 = sub one_f u_c
+    feed_term: f64 = mul f_rate one_minus_u
+    diffuse_u: f64 = mul du_coeff lap_u
+    du_sub: f64 = sub diffuse_u uvv
+    du_total: f64 = add du_sub feed_term
+    new_u: f64 = add u_c du_total
+
+    # new_v = v + (Dv * lap_v + uvv - (F + k) * v)
+    fk: f64 = add f_rate k_rate
+    kill_term: f64 = mul fk v_c
+    diffuse_v: f64 = mul dv_coeff lap_v
+    dv_add: f64 = add diffuse_v uvv
+    dv_total: f64 = sub dv_add kill_term
+    new_v: f64 = add v_c dv_total
+
+    # Store results
+    _s0: u32 = buf_store u_out px py new_u
+    _s1: u32 = buf_store v_out px py new_v
+
+    # Visualization: map V concentration to color ramp
+    zero_f: f64 = const 0.0
+    v_cl: f64 = max new_v zero_f
+    v_clamped: f64 = min v_cl one_f
+    c255: f64 = const 255.0
+    quarter: f64 = const 0.25
+    half: f64 = const 0.5
+    three_quarter: f64 = const 0.75
+
+    # Quadrant 1: black -> blue (v < 0.25)
+    t1: f64 = div v_clamped quarter
+    b1: f64 = mul t1 c255
+
+    # Quadrant 2: blue -> white (0.25 <= v < 0.5)
+    t2_raw: f64 = sub v_clamped quarter
+    t2: f64 = div t2_raw quarter
+    rg2: f64 = mul t2 c255
+
+    # Quadrant 3: white -> orange (0.5 <= v < 0.75)
+    t3_raw: f64 = sub v_clamped half
+    t3: f64 = div t3_raw quarter
+    g3_coeff: f64 = const 0.35
+    g3_sub: f64 = mul g3_coeff t3
+    g3_frac: f64 = sub one_f g3_sub
+    g3: f64 = mul g3_frac c255
+    b3_frac: f64 = sub one_f t3
+    b3: f64 = mul b3_frac c255
+
+    # Quadrant 4: orange -> bright (v >= 0.75)
+    t4_raw: f64 = sub v_clamped three_quarter
+    t4: f64 = div t4_raw quarter
+    g4_coeff: f64 = const 0.25
+    g4_sub: f64 = mul g4_coeff t4
+    g4_base: f64 = const 0.65
+    g4_frac: f64 = sub g4_base g4_sub
+    g4: f64 = mul g4_frac c255
+    b4_coeff: f64 = const 0.1
+    b4_prod: f64 = mul t4 b4_coeff
+    b4: f64 = mul b4_prod c255
+
+    is_q1: bool = lt v_clamped quarter
+    is_q2: bool = lt v_clamped half
+    is_q3: bool = lt v_clamped three_quarter
+
+    # Q1 vs Q2
+    r_12: f64 = select is_q1 zero_f rg2
+    g_12: f64 = select is_q1 zero_f rg2
+    b_12: f64 = select is_q1 b1 c255
+
+    # Q3 vs Q4
+    r_34: f64 = select is_q3 c255 c255
+    g_34: f64 = select is_q3 g3 g4
+    b_34: f64 = select is_q3 b3 b4
+
+    # Q1-2 vs Q3-4
+    r_f: f64 = select is_q2 r_12 r_34
+    g_f: f64 = select is_q2 g_12 g_34
+    b_f: f64 = select is_q2 b_12 b_34
+
+    r_u: u32 = f64_to_u32 r_f
+    g_u: u32 = f64_to_u32 g_f
+    b_u: u32 = f64_to_u32 b_f
+
+    pixel: u32 = pack_argb r_u g_u b_u
+    emit pixel
+}

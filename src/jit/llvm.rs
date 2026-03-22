@@ -5,7 +5,7 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
-use crate::jit::{CompiledKernel, JitBackend, TileKernelFn};
+use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn};
 use crate::kernel_ir::*;
 
 /// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
@@ -38,6 +38,13 @@ fn get_vec3<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var
 
 pub struct LlvmBackend;
 
+/// Buffer context for simulation kernels — holds function params for buffer pointer arrays.
+struct LlvmBufContext<'ctx> {
+    p_width: inkwell::values::IntValue<'ctx>,
+    p_buf_ptrs: inkwell::values::PointerValue<'ctx>,
+    p_buf_out_ptrs: inkwell::values::PointerValue<'ctx>,
+}
+
 struct LlvmKernel {
     _engine: inkwell::execution_engine::ExecutionEngine<'static>,
     fn_ptr: TileKernelFn,
@@ -52,9 +59,26 @@ impl CompiledKernel for LlvmKernel {
     }
 }
 
+struct LlvmSimKernel {
+    _engine: inkwell::execution_engine::ExecutionEngine<'static>,
+    fn_ptr: SimTileKernelFn,
+}
+
+unsafe impl Send for LlvmSimKernel {}
+unsafe impl Sync for LlvmSimKernel {}
+
+impl CompiledSimKernel for LlvmSimKernel {
+    fn function_ptr(&self) -> SimTileKernelFn {
+        self.fn_ptr
+    }
+}
+
 impl JitBackend for LlvmBackend {
     fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel> {
         Box::new(compile_kernel(kernel))
+    }
+    fn compile_sim(&self, kernel: &Kernel) -> Box<dyn CompiledSimKernel> {
+        Box::new(compile_sim_kernel(kernel))
     }
 }
 
@@ -322,7 +346,7 @@ fn lower_kernel_body(
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map);
+    lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map, None);
 
     get_scalar(&val_map, &kernel.emit).into_int_value()
 }
@@ -335,15 +359,16 @@ fn lower_body_items(
     kernel: &Kernel,
     body: &[BodyItem],
     val_map: &mut std::collections::HashMap<Var, VarValues<'static>>,
+    buf_ctx: Option<&LlvmBufContext<'static>>,
 ) {
     for item in body {
         match item {
             BodyItem::Stmt(stmt) => {
-                let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map);
+                let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx);
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(context, module, builder, function, kernel, w, val_map);
+                lower_while(context, module, builder, function, kernel, w, val_map, buf_ctx);
             }
         }
     }
@@ -357,6 +382,7 @@ fn lower_while(
     kernel: &Kernel,
     w: &While,
     val_map: &mut std::collections::HashMap<Var, VarValues<'static>>,
+    buf_ctx: Option<&LlvmBufContext<'static>>,
 ) {
     let i32_type = context.i32_type();
     let f64_type = context.f64_type();
@@ -433,7 +459,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    lower_body_items(context, module, builder, function, kernel, &w.cond_body, val_map);
+    lower_body_items(context, module, builder, function, kernel, &w.cond_body, val_map, buf_ctx);
 
     // Branch on cond
     let cond_val = get_scalar(val_map, &w.cond).into_int_value();
@@ -442,7 +468,7 @@ fn lower_while(
     // -- Loop body: compute next values, branch back to header --
     builder.position_at_end(loop_body);
 
-    lower_body_items(context, module, builder, function, kernel, &w.body, val_map);
+    lower_body_items(context, module, builder, function, kernel, &w.body, val_map, buf_ctx);
 
     // Add incoming edges to phi nodes from loop body (yield values)
     let body_block = builder.get_insert_block().unwrap();
@@ -478,6 +504,7 @@ fn lower_inst(
     inst: &Inst,
     binding: &Binding,
     val_map: &std::collections::HashMap<Var, VarValues<'static>>,
+    buf_ctx: Option<&LlvmBufContext<'static>>,
 ) -> VarValues<'static> {
     let i32_type = context.i32_type();
     let f64_type = context.f64_type();
@@ -861,6 +888,64 @@ fn lower_inst(
             let cz = builder.build_float_sub(a, b, "cross_z").unwrap();
             VarValues::Vec3(cx.into(), cy.into(), cz.into())
         }
+        Inst::BufLoad { buf, x, y } => {
+            let ctx = buf_ctx.expect("BufLoad requires simulation context");
+            let i64_type = context.i64_type();
+            let f64_type = context.f64_type();
+            let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+
+            let xv = get_scalar(val_map, x).into_int_value();
+            let yv = get_scalar(val_map, y).into_int_value();
+
+            // flat index = y * width + x
+            let row_off = builder.build_int_mul(yv, ctx.p_width, "bl_row").unwrap();
+            let idx = builder.build_int_add(row_off, xv, "bl_idx").unwrap();
+            let idx64 = builder.build_int_z_extend(idx, i64_type, "bl_idx64").unwrap();
+
+            // Load buffer pointer from the pointer array
+            let is_output = kernel.buffers[*buf as usize].is_output;
+            let ptrs_base = if is_output { ctx.p_buf_out_ptrs } else { ctx.p_buf_ptrs };
+            let buf_local_idx = if is_output {
+                kernel.buffers.iter().take(*buf as usize).filter(|b| b.is_output).count()
+            } else {
+                kernel.buffers.iter().take(*buf as usize).filter(|b| !b.is_output).count()
+            };
+            let ptr_off = i64_type.const_int(buf_local_idx as u64, false);
+            let buf_ptr_ptr = unsafe { builder.build_gep(ptr_type, ptrs_base, &[ptr_off], "bl_bpp").unwrap() };
+            let buf_ptr = builder.build_load(ptr_type, buf_ptr_ptr, "bl_bp").unwrap().into_pointer_value();
+
+            // Load f64 from buf_ptr[idx]
+            let elem_ptr = unsafe { builder.build_gep(f64_type, buf_ptr, &[idx64], "bl_ep").unwrap() };
+            let val = builder.build_load(f64_type, elem_ptr, "bl_val").unwrap();
+            VarValues::Scalar(val)
+        }
+        Inst::BufStore { buf, x, y, val } => {
+            let ctx = buf_ctx.expect("BufStore requires simulation context");
+            let i32_type = context.i32_type();
+            let i64_type = context.i64_type();
+            let f64_type = context.f64_type();
+            let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+
+            let xv = get_scalar(val_map, x).into_int_value();
+            let yv = get_scalar(val_map, y).into_int_value();
+            let value = get_scalar(val_map, val).into_float_value();
+
+            let row_off = builder.build_int_mul(yv, ctx.p_width, "bs_row").unwrap();
+            let idx = builder.build_int_add(row_off, xv, "bs_idx").unwrap();
+            let idx64 = builder.build_int_z_extend(idx, i64_type, "bs_idx64").unwrap();
+
+            // Output buffer pointer
+            let buf_local_idx = kernel.buffers.iter().take(*buf as usize).filter(|b| b.is_output).count();
+            let ptr_off = i64_type.const_int(buf_local_idx as u64, false);
+            let buf_ptr_ptr = unsafe { builder.build_gep(ptr_type, ctx.p_buf_out_ptrs, &[ptr_off], "bs_bpp").unwrap() };
+            let buf_ptr = builder.build_load(ptr_type, buf_ptr_ptr, "bs_bp").unwrap().into_pointer_value();
+
+            let elem_ptr = unsafe { builder.build_gep(f64_type, buf_ptr, &[idx64], "bs_ep").unwrap() };
+            builder.build_store(elem_ptr, value).unwrap();
+
+            // Return dummy u32 0
+            VarValues::Scalar(i32_type.const_zero().into())
+        }
     }
 }
 
@@ -931,4 +1016,199 @@ fn call_f64_intrinsic(
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
+}
+
+fn create_llvm_module_and_machine(context: &'static Context, name: &str) -> (Module<'static>, TargetMachine) {
+    let module = context.create_module(name);
+
+    Target::initialize_native(&InitializationConfig::default())
+        .expect("failed to initialize native target");
+    let triple = TargetMachine::get_default_triple();
+    let cpu = TargetMachine::get_host_cpu_name();
+    let features = TargetMachine::get_host_cpu_features();
+    let features_str = features.to_str().unwrap();
+    let filtered_features: String = features_str
+        .split(',')
+        .filter(|f| !f.contains("sve") && !f.contains("sme"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let filtered_features = if cfg!(target_arch = "aarch64") {
+        format!("{filtered_features},-sve,-sve2")
+    } else {
+        filtered_features
+    };
+    let target = Target::from_triple(&triple).unwrap();
+    let machine = target
+        .create_target_machine(
+            &triple,
+            cpu.to_str().unwrap(),
+            &filtered_features,
+            OptimizationLevel::Aggressive,
+            RelocMode::Default,
+            CodeModel::JITDefault,
+        )
+        .unwrap();
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
+    module.set_triple(&triple);
+    (module, machine)
+}
+
+fn compile_sim_kernel(kernel: &Kernel) -> LlvmSimKernel {
+    let context: &'static Context = Box::leak(Box::new(Context::create()));
+    let (module, machine) = create_llvm_module_and_machine(context, &kernel.name);
+
+    let i32_type = context.i32_type();
+    let void_type = context.void_type();
+    let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+
+    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs)
+    let fn_type = void_type.fn_type(
+        &[
+            ptr_type.into(),  // output: *mut u32
+            i32_type.into(),  // width: u32
+            i32_type.into(),  // height: u32
+            i32_type.into(),  // row_start: u32
+            i32_type.into(),  // row_end: u32
+            ptr_type.into(),  // buf_ptrs: *const *const f64
+            ptr_type.into(),  // buf_out_ptrs: *const *mut f64
+        ],
+        false,
+    );
+
+    let function = module.add_function(&kernel.name, fn_type, None);
+    build_sim_tile_loop(context, &module, function, kernel);
+
+    let pass_options = PassBuilderOptions::create();
+    module
+        .run_passes("default<O3>", &machine, pass_options)
+        .expect("failed to run LLVM optimization passes");
+
+    let engine = module
+        .create_jit_execution_engine(OptimizationLevel::Aggressive)
+        .unwrap();
+
+    let fn_ptr = unsafe {
+        engine
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, u32, u32, *const *const f64, *const *mut f64)>(
+                &kernel.name,
+            )
+            .unwrap()
+            .as_raw()
+    };
+    let fn_ptr: SimTileKernelFn = unsafe { std::mem::transmute(fn_ptr) };
+
+    LlvmSimKernel {
+        _engine: engine,
+        fn_ptr,
+    }
+}
+
+fn build_sim_tile_loop(
+    context: &'static Context,
+    module: &Module<'static>,
+    function: FunctionValue<'static>,
+    kernel: &Kernel,
+) {
+    let builder = context.create_builder();
+    let i32_type = context.i32_type();
+    let i64_type = context.i64_type();
+
+    let entry = context.append_basic_block(function, "entry");
+    let outer_check = context.append_basic_block(function, "outer_check");
+    let inner_pre = context.append_basic_block(function, "inner_pre");
+    let inner_check = context.append_basic_block(function, "inner_check");
+    let body = context.append_basic_block(function, "body");
+    let inner_inc = context.append_basic_block(function, "inner_inc");
+    let outer_inc = context.append_basic_block(function, "outer_inc");
+    let exit = context.append_basic_block(function, "exit");
+
+    // -- Entry --
+    builder.position_at_end(entry);
+    let p_output = function.get_nth_param(0).unwrap().into_pointer_value();
+    let p_width = function.get_nth_param(1).unwrap().into_int_value();
+    let p_height = function.get_nth_param(2).unwrap().into_int_value();
+    let p_row_start = function.get_nth_param(3).unwrap().into_int_value();
+    let p_row_end = function.get_nth_param(4).unwrap().into_int_value();
+    let p_buf_ptrs = function.get_nth_param(5).unwrap().into_pointer_value();
+    let p_buf_out_ptrs = function.get_nth_param(6).unwrap().into_pointer_value();
+
+    let buf_ctx = LlvmBufContext { p_width, p_buf_ptrs, p_buf_out_ptrs };
+
+    let row_ptr = builder.build_alloca(i32_type, "row_ptr").unwrap();
+    let col_ptr = builder.build_alloca(i32_type, "col_ptr").unwrap();
+
+    builder.build_store(row_ptr, p_row_start).unwrap();
+    builder.build_unconditional_branch(outer_check).unwrap();
+
+    // -- Outer check --
+    builder.position_at_end(outer_check);
+    let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
+    let cmp = builder.build_int_compare(IntPredicate::SLT, row, p_row_end, "row_lt").unwrap();
+    builder.build_conditional_branch(cmp, inner_pre, exit).unwrap();
+
+    // -- Inner pre --
+    builder.position_at_end(inner_pre);
+    builder.build_store(col_ptr, i32_type.const_zero()).unwrap();
+    builder.build_unconditional_branch(inner_check).unwrap();
+
+    // -- Inner check --
+    builder.position_at_end(inner_check);
+    let col = builder.build_load(i32_type, col_ptr, "col").unwrap().into_int_value();
+    let cmp = builder.build_int_compare(IntPredicate::SLT, col, p_width, "col_lt").unwrap();
+    builder.build_conditional_branch(cmp, body, outer_inc).unwrap();
+
+    // -- Body --
+    builder.position_at_end(body);
+    let col = builder.build_load(i32_type, col_ptr, "col").unwrap().into_int_value();
+    let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
+
+    // Map kernel params
+    use std::collections::HashMap;
+    let mut val_map: HashMap<Var, VarValues<'static>> = HashMap::new();
+    for param in &kernel.params {
+        let val: BasicValueEnum<'static> = match param.name.as_str() {
+            "px" => col.into(),
+            "py" => row.into(),
+            "width" => p_width.into(),
+            "height" => p_height.into(),
+            name => panic!("unknown sim kernel parameter: '{name}'"),
+        };
+        val_map.insert(param.var, VarValues::Scalar(val));
+    }
+
+    lower_body_items(context, module, &builder, function, kernel, &kernel.body, &mut val_map, Some(&buf_ctx));
+
+    let color = get_scalar(&val_map, &kernel.emit).into_int_value();
+
+    // Store pixel: output[(row - row_start) * width + col]
+    let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
+    let col = builder.build_load(i32_type, col_ptr, "col").unwrap().into_int_value();
+    let row_off = builder.build_int_sub(row, p_row_start, "row_off").unwrap();
+    let row_off64 = builder.build_int_z_extend(row_off, i64_type, "row_off64").unwrap();
+    let width64 = builder.build_int_z_extend(p_width, i64_type, "width64").unwrap();
+    let col64 = builder.build_int_z_extend(col, i64_type, "col64").unwrap();
+    let idx = builder.build_int_mul(row_off64, width64, "idx1").unwrap();
+    let idx = builder.build_int_add(idx, col64, "idx2").unwrap();
+    let ptr = unsafe { builder.build_gep(i32_type, p_output, &[idx], "ptr").unwrap() };
+    builder.build_store(ptr, color).unwrap();
+
+    builder.build_unconditional_branch(inner_inc).unwrap();
+
+    // -- Inner inc --
+    builder.position_at_end(inner_inc);
+    let col = builder.build_load(i32_type, col_ptr, "col").unwrap().into_int_value();
+    let col_next = builder.build_int_add(col, i32_type.const_int(1, false), "col_next").unwrap();
+    builder.build_store(col_ptr, col_next).unwrap();
+    builder.build_unconditional_branch(inner_check).unwrap();
+
+    // -- Outer inc --
+    builder.position_at_end(outer_inc);
+    let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
+    let row_next = builder.build_int_add(row, i32_type.const_int(1, false), "row_next").unwrap();
+    builder.build_store(row_ptr, row_next).unwrap();
+    builder.build_unconditional_branch(outer_check).unwrap();
+
+    // -- Exit --
+    builder.position_at_end(exit);
+    builder.build_return(None).unwrap();
 }
