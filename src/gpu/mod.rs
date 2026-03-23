@@ -1,4 +1,5 @@
 pub mod fluid;
+pub mod game_of_life_gpu;
 pub mod shallow_water_gpu;
 pub mod smoke_gpu;
 

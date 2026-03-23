@@ -8,7 +8,8 @@ pixel-doodle renders pixel kernels and runs fluid simulations in a 1200x900 wind
 |------|-------|-------------|
 | `--backend` | `native`, `cranelift`, `llvm`, `gpu` | Execution backend (default: `native`) |
 | `--kernel` | path | Kernel source file (`.pd`, `.pdl`, or `.wgsl`) |
-| `--sim` | `gray-scott`, `shallow-water`, `smoke` | Run a fluid simulation |
+| `--sim` | `gray-scott`, `shallow-water`, `smoke`, `game-of-life` | Run a simulation |
+| `--density` | float (0.0–1.0) | Initial cell density for game-of-life (default: 0.3) |
 | `--samples` | integer | Progressive sampling passes (kernel mode only) |
 | `--threads` | integer | CPU thread count (CPU backends only) |
 | `--tile-height` | integer | Rows per rayon tile (default: 1) |
@@ -118,11 +119,36 @@ cargo run --release -- --sim smoke --backend cranelift
 cargo run --release --features llvm-backend -- --sim smoke --backend llvm
 ```
 
+### Game of Life
+
+Conway's Game of Life (B3/S23) with age-based coloring. Alive cells shift green to cyan to blue over time; dead cells fade red to black. Click/drag to draw live cells.
+
+```bash
+# GPU compute shader (supports zoom/pan)
+cargo run --release -- --sim game-of-life --backend gpu
+
+# Cranelift JIT (uses embedded PD kernel — no --kernel needed)
+cargo run --release -- --sim game-of-life --backend cranelift
+
+# LLVM JIT
+cargo run --release --features llvm-backend -- --sim game-of-life --backend llvm
+
+# Custom initial density
+cargo run --release -- --sim game-of-life --backend gpu --density 0.5
+```
+
 ### Simulation Controls
 
 | Input | Action |
 |-------|--------|
-| Click / drag | Inject (chemical, wave bump, or smoke depending on sim) |
+| Click / drag | Inject (chemical, wave bump, smoke, or live cells depending on sim) |
+| Space | Pause / resume simulation |
+| `.` | Single step (when paused) |
+| `]` | Increase speed (up to 10x generations per frame) |
+| `[` | Decrease speed |
+| Arrow keys | Pan (game-of-life GPU only) |
+| `+` / `-` | Zoom (game-of-life GPU only) |
+| `0` | Reset pan/zoom |
 | Escape | Quit |
 
 ### Simulation Backends Summary
@@ -132,6 +158,7 @@ cargo run --release --features llvm-backend -- --sim smoke --backend llvm
 | gray-scott | built-in | built-in | `--kernel .pd/.pdl` | `--kernel .pd/.pdl` |
 | shallow-water | built-in | built-in | `--kernel .pd/.pdl` | `--kernel .pd/.pdl` |
 | smoke | built-in | built-in | embedded PD kernels | embedded PD kernels |
+| game-of-life | — | built-in | embedded PD kernel | embedded PD kernel |
 
 ## Benchmarking
 

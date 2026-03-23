@@ -38,6 +38,7 @@ struct CliArgs {
     output: Option<String>,
     tile_height: usize,
     sim: Option<String>,
+    density: Option<f64>,
 }
 
 fn parse_args() -> CliArgs {
@@ -52,6 +53,7 @@ fn parse_args() -> CliArgs {
     let mut output = None;
     let mut tile_height = render::DEFAULT_TILE_HEIGHT;
     let mut sim = None;
+    let mut density = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -121,6 +123,15 @@ fn parse_args() -> CliArgs {
                     sim = Some(args[i].clone());
                 }
             }
+            "--density" => {
+                i += 1;
+                if i < args.len() {
+                    density = Some(args[i].parse::<f64>().unwrap_or_else(|_| {
+                        eprintln!("--density requires a number between 0.0 and 1.0");
+                        std::process::exit(1);
+                    }));
+                }
+            }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
                 std::process::exit(1);
@@ -128,7 +139,7 @@ fn parse_args() -> CliArgs {
         }
         i += 1;
     }
-    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output, tile_height, sim }
+    CliArgs { backend, kernel_path, samples, dump_ir, threads, bench, bench_frames, output, tile_height, sim, density }
 }
 
 /// What kind of kernel file was provided (or none).
@@ -271,6 +282,19 @@ enum Backend {
         pixel_buffer: Vec<u32>,
         substeps: u32,
     },
+    GameOfLife {
+        sim_fn: jit::SimTileKernelFn,
+        state: Vec<f64>,
+        age: Vec<f64>,
+        state_next: Vec<f64>,
+        age_next: Vec<f64>,
+        pixel_buffer: Vec<u32>,
+        generation: u64,
+    },
+    GpuGameOfLife {
+        gpu: Option<gpu::game_of_life_gpu::GpuGameOfLifeBackend>,
+        density: f64,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
@@ -359,6 +383,9 @@ struct App {
     tile_height: usize,
     mouse_pos: (f64, f64),
     mouse_down: bool,
+    paused: bool,
+    single_step: bool,
+    generations_per_frame: u32,
 }
 
 impl App {
@@ -389,6 +416,9 @@ impl App {
             tile_height,
             mouse_pos: (0.0, 0.0),
             mouse_down: false,
+            paused: false,
+            single_step: false,
+            generations_per_frame: 1,
         }
     }
 
@@ -476,6 +506,15 @@ impl ApplicationHandler for App {
             ));
         }
 
+        if let Backend::GpuGameOfLife { gpu, density } = &mut self.backend {
+            *gpu = Some(gpu::game_of_life_gpu::GpuGameOfLifeBackend::new(
+                &display,
+                WIDTH,
+                HEIGHT,
+                *density,
+            ));
+        }
+
         if let Backend::Gpu { gpu_backend, .. } = &mut self.backend {
             let wgsl = self.wgsl_source.as_deref();
             // Empty string means "use default", None also means default
@@ -512,6 +551,36 @@ impl ApplicationHandler for App {
                     }
                     match event.state {
                         ElementState::Pressed => {
+                            // Simulation controls (single-action, not hold-to-repeat)
+                            match code {
+                                KeyCode::Space => {
+                                    self.paused = !self.paused;
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                }
+                                KeyCode::Period => {
+                                    if self.paused {
+                                        self.single_step = true;
+                                        if let Some(window) = &self.window {
+                                            window.request_redraw();
+                                        }
+                                    }
+                                }
+                                KeyCode::BracketRight => {
+                                    if self.generations_per_frame < 10 {
+                                        self.generations_per_frame += 1;
+                                        eprintln!("[sim] speed: {}x", self.generations_per_frame);
+                                    }
+                                }
+                                KeyCode::BracketLeft => {
+                                    if self.generations_per_frame > 1 {
+                                        self.generations_per_frame -= 1;
+                                        eprintln!("[sim] speed: {}x", self.generations_per_frame);
+                                    }
+                                }
+                                _ => {}
+                            }
                             if !self.keys_down.contains(&code) {
                                 self.keys_down.push(code);
                             }
@@ -523,7 +592,7 @@ impl ApplicationHandler for App {
                         }
                         ElementState::Released => {
                             self.keys_down.retain(|&k| k != code);
-                            if self.keys_down.is_empty() {
+                            if self.keys_down.is_empty() && !self.animated {
                                 event_loop.set_control_flow(ControlFlow::Wait);
                             }
                         }
@@ -904,6 +973,114 @@ impl ApplicationHandler for App {
                         }
                         display.upload_and_present(pixel_buffer);
                     }
+                    Backend::GameOfLife { sim_fn, state, age, state_next, age_next, pixel_buffer, generation } => {
+                        // Mouse: draw live cells
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as isize;
+                            let py = self.mouse_pos.1 as isize;
+                            let w = WIDTH as isize;
+                            let h = HEIGHT as isize;
+                            let radius: isize = 3;
+                            for dy in -radius..=radius {
+                                for dx in -radius..=radius {
+                                    let x = (px + dx).rem_euclid(w) as usize;
+                                    let y = (py + dy).rem_euclid(h) as usize;
+                                    let i = y * WIDTH as usize + x;
+                                    state[i] = 1.0;
+                                    age[i] = 0.0;
+                                }
+                            }
+                        }
+
+                        let should_step = !self.paused || self.single_step;
+                        if self.single_step { self.single_step = false; }
+
+                        if should_step {
+                            let t0 = Instant::now();
+                            for _ in 0..self.generations_per_frame {
+                                let bufs_in = [state.as_ptr(), age.as_ptr()];
+                                let bufs_out = [state_next.as_mut_ptr(), age_next.as_mut_ptr()];
+                                render::render_sim(
+                                    pixel_buffer, WIDTH as usize, HEIGHT as usize, *sim_fn,
+                                    &bufs_in, &bufs_out, self.tile_height,
+                                );
+                                std::mem::swap(state, state_next);
+                                std::mem::swap(age, age_next);
+                                *generation += 1;
+                            }
+                            let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                            let fps = 1000.0 / render_ms;
+                            let pause_str = if self.paused { " | PAUSED" } else { "" };
+                            let speed_str = if self.generations_per_frame > 1 {
+                                format!(" | {}x", self.generations_per_frame)
+                            } else { String::new() };
+                            if let Some(window) = &self.window {
+                                window.set_title(&format!(
+                                    "game-of-life [{}] | gen {} | {render_ms:.1}ms ({fps:.0} fps){pause_str}{speed_str}",
+                                    self.label, generation
+                                ));
+                            }
+                        } else if let Some(window) = &self.window {
+                            let pause_str = if self.paused { " | PAUSED" } else { "" };
+                            let speed_str = if self.generations_per_frame > 1 {
+                                format!(" | {}x", self.generations_per_frame)
+                            } else { String::new() };
+                            window.set_title(&format!(
+                                "game-of-life [{}] | gen {}{pause_str}{speed_str}",
+                                self.label, generation
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
+                    Backend::GpuGameOfLife { gpu, .. } => {
+                        let gpu = gpu.as_mut().unwrap();
+
+                        // Update viewport uniforms
+                        gpu.update_viewport(
+                            &display.queue,
+                            self.center_x as f32,
+                            self.center_y as f32,
+                            self.zoom as f32,
+                        );
+
+                        if self.mouse_down {
+                            // Map screen coords to grid coords through viewport
+                            let (gx, gy) = gpu.screen_to_grid(
+                                self.mouse_pos.0 as f32,
+                                self.mouse_pos.1 as f32,
+                                self.center_x as f32,
+                                self.center_y as f32,
+                                self.zoom as f32,
+                            );
+                            gpu.inject(&display.queue, gx, gy, 3);
+                        }
+
+                        let should_step = !self.paused || self.single_step;
+                        if self.single_step { self.single_step = false; }
+
+                        if should_step {
+                            let t0 = Instant::now();
+                            for _ in 0..self.generations_per_frame {
+                                gpu.step_and_render(display);
+                            }
+                            let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                            let fps = 1000.0 / render_ms;
+                            let pause_str = if self.paused { " | PAUSED" } else { "" };
+                            let speed_str = if self.generations_per_frame > 1 {
+                                format!(" | {}x", self.generations_per_frame)
+                            } else { String::new() };
+                            let zoom_str = if self.zoom != 1.0 {
+                                format!(" | {:.1}x zoom", self.zoom)
+                            } else { String::new() };
+                            if let Some(window) = &self.window {
+                                window.set_title(&format!(
+                                    "game-of-life [gpu] | {render_ms:.1}ms ({fps:.0} fps){pause_str}{speed_str}{zoom_str}",
+                                ));
+                            }
+                        } else {
+                            gpu.render_current(display);
+                        }
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -1206,8 +1383,66 @@ fn main() {
                 let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
                 event_loop.run_app(&mut app).unwrap();
             }
+            "game-of-life" => {
+                let label: &'static str = match args.backend.as_str() {
+                    "gpu" => "gpu",
+                    "cranelift" => "cranelift",
+                    "llvm" => "llvm",
+                    other => {
+                        eprintln!("Unknown backend for game-of-life sim: '{}' (available: gpu, cranelift, llvm)", other);
+                        std::process::exit(1);
+                    }
+                };
+                let density = args.density.unwrap_or(0.3);
+                eprintln!("[sim] Game of Life ({}x{}) [{}] density={:.2}", WIDTH, HEIGHT, label, density);
+
+                let backend = match args.backend.as_str() {
+                    "gpu" => Backend::GpuGameOfLife { gpu: None, density },
+                    jit_backend => {
+                        let src = include_str!("../examples/sim/game_of_life.pd");
+                        let kernel = lang::pd::parse(src, None).unwrap_or_else(|e| {
+                            eprintln!("Parse error in game_of_life.pd: {}", e);
+                            std::process::exit(1);
+                        });
+                        eprintln!("[kernel] loaded '{}' ({} statements, {} buffers)",
+                            kernel.name, kernel.body.len(), kernel.buffers.len());
+
+                        let sim_fn = compile_sim_kernel(jit_backend, &kernel);
+
+                        let n = (WIDTH * HEIGHT) as usize;
+                        let mut state = vec![0.0f64; n];
+
+                        // Random init with LCG
+                        let mut rng = 98765u64;
+                        let mut next_rng = || -> f64 {
+                            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                            (rng >> 33) as f64 / (1u64 << 31) as f64
+                        };
+                        for cell in state.iter_mut() {
+                            if next_rng() < density {
+                                *cell = 1.0;
+                            }
+                        }
+
+                        Backend::GameOfLife {
+                            sim_fn,
+                            state,
+                            age: vec![0.0; n],
+                            state_next: vec![0.0; n],
+                            age_next: vec![0.0; n],
+                            pixel_buffer: vec![0u32; n],
+                            generation: 0,
+                        }
+                    }
+                };
+
+                let event_loop = EventLoop::new().unwrap();
+                event_loop.set_control_flow(ControlFlow::Poll);
+                let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
+                event_loop.run_app(&mut app).unwrap();
+            }
             other => {
-                eprintln!("Unknown simulation: '{}'. Available: gray-scott, shallow-water, smoke", other);
+                eprintln!("Unknown simulation: '{}'. Available: gray-scott, shallow-water, smoke, game-of-life", other);
                 std::process::exit(1);
             }
         }
@@ -1321,7 +1556,8 @@ fn main() {
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
             | Backend::JitShallowWater { .. }
-            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. } => {
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. }
+            | Backend::GameOfLife { .. } | Backend::GpuGameOfLife { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -1398,7 +1634,8 @@ fn main() {
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
             | Backend::JitShallowWater { .. }
-            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. } => {
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. }
+            | Backend::GameOfLife { .. } | Backend::GpuGameOfLife { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }

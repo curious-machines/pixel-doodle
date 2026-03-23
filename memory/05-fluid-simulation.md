@@ -1,6 +1,6 @@
-# Fluid Simulations
+# Simulations
 
-Three grid-based simulations share the same infrastructure (double-buffered fields, rayon tile parallelism, GPU ping-pong compute, mouse injection).
+Grid-based simulations sharing the same infrastructure (double-buffered fields, rayon tile parallelism, GPU ping-pong compute, mouse injection).
 
 ---
 
@@ -364,3 +364,85 @@ Three `Backend` variants:
 | `examples/sim/smoke/jacobi.pdl` | Jacobi pressure iteration kernel |
 | `examples/sim/smoke/project.pdl` | Pressure projection + visualization kernel |
 | `src/main.rs` | CLI integration, multi-pass host orchestration |
+
+---
+
+# Game of Life
+
+## Overview
+
+Conway's Game of Life (B3/S23) cellular automaton with age-based coloring. Implemented with GPU compute shader and JIT (Cranelift/LLVM) backends. No native CPU backend.
+
+## Algorithm
+
+Per-cell update each generation:
+
+```
+count = sum of 8 neighbors (alive = 1, dead = 0)
+new_alive = (alive AND count in {2,3}) OR (dead AND count == 3)
+```
+
+Age tracking: alive cells increment age each generation (positive i32/f64). Dead cells get negative age that decrements to -20 (fade counter). Color mapping: alive green→cyan→blue over ~100 generations; dead red fading to black over 20 frames.
+
+Parameters: density (initial random fill, default 0.3). Toroidal boundary conditions. 1 generation per frame by default (adjustable 1-10x).
+
+## Running
+
+```bash
+# GPU compute shader (supports zoom/pan)
+cargo run --release -- --sim game-of-life --backend gpu
+
+# Cranelift JIT (embedded PD kernel)
+cargo run --release -- --sim game-of-life --backend cranelift
+
+# LLVM JIT
+cargo run --release --features llvm-backend -- --sim game-of-life --backend llvm
+
+# Custom density
+cargo run --release -- --sim game-of-life --backend gpu --density 0.5
+```
+
+Mouse click/drag draws live cells. Keyboard: Space=pause, `.`=step, `[`/`]`=speed, arrows/+/-=pan/zoom (GPU only).
+
+## Architecture
+
+### Backend 1: GPU compute shader
+
+- `src/gpu/game_of_life.wgsl` — WGSL compute shader with two entry points:
+  - `step`: reads 8 neighbors from `grid_in` (i32 age), applies B3/S23, updates age, writes to `grid_out`
+  - `visualize`: maps age to colored ARGB pixels through a viewport (center, zoom) for pan/zoom support
+- `src/gpu/game_of_life_gpu.rs` — `GpuGameOfLifeBackend` manages ping-pong `i32` grid buffers
+  - `update_viewport()` uploads center/zoom to uniform buffer before visualization
+  - `screen_to_grid()` maps screen pixel coords to grid coords for mouse interaction at any zoom
+  - `inject()` writes live cells directly to current grid buffer
+  - `render_current()` re-renders without stepping (for paused display)
+
+### Backend 2: PD/JIT (embedded kernel)
+
+- `examples/sim/game_of_life.pd` — PD kernel with 4 f64 buffers:
+  - `state_in`, `age_in` (read), `state_out`, `age_out` (write)
+  - State: 1.0 = alive, 0.0 = dead. Age: positive = alive duration, negative = dead fade
+  - B3/S23 via f64 range checks (e.g., `count > 2.5 && count < 3.5` for exactly 3)
+  - No viewport support (1:1 pixel-to-cell mapping)
+- Embedded via `include_str!` — no `--kernel` flag needed
+
+### Simulation controls (shared across all sims)
+
+Added to `App` struct: `paused`, `single_step`, `generations_per_frame` fields. Keyboard handlers: Space (toggle pause), `.` (single step when paused), `]`/`[` (speed ±1, range 1-10). Step logic gated by `should_step = !paused || single_step` in all simulation render arms.
+
+### Main integration (`src/main.rs`)
+
+Two `Backend` variants:
+- `Backend::GameOfLife` — JIT with double-buffered `Vec<f64>` state/age fields
+- `Backend::GpuGameOfLife` — GPU (initialized in `resumed()`)
+
+CLI: `--sim game-of-life`, `--density` flag, supports `gpu`/`cranelift`/`llvm` backends.
+
+## Key files
+
+| File | Role |
+|------|------|
+| `src/gpu/game_of_life_gpu.rs` | GPU backend (2 pipelines, ping-pong grids, viewport) |
+| `src/gpu/game_of_life.wgsl` | WGSL compute shader (step + visualize with viewport) |
+| `examples/sim/game_of_life.pd` | Game of Life kernel in PD |
+| `src/main.rs` | CLI integration, pause/step/speed controls |

@@ -1,0 +1,64 @@
+// Game of Life (B3/S23) with age-based coloring
+//
+// State: 1.0 = alive, 0.0 = dead
+// Age: positive = alive duration, negative = dead fade counter (clamped at -20)
+
+kernel game_of_life(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(state_in: read, age_in: read, state_out: write, age_out: write)
+{
+    // Toroidal neighbor coordinates
+    let wm1 = width - 1u32;
+    let hm1 = height - 1u32;
+    let xm = (px + wm1) % width;
+    let xp = (px + 1u32) % width;
+    let ym = (py + hm1) % height;
+    let yp = (py + 1u32) % height;
+
+    // Load 8 neighbors
+    let n0 = buf_load(state_in, xm, ym);
+    let n1 = buf_load(state_in, px, ym);
+    let n2 = buf_load(state_in, xp, ym);
+    let n3 = buf_load(state_in, xm, py);
+    let n4 = buf_load(state_in, xp, py);
+    let n5 = buf_load(state_in, xm, yp);
+    let n6 = buf_load(state_in, px, yp);
+    let n7 = buf_load(state_in, xp, yp);
+
+    let count = n0 + n1 + n2 + n3 + n4 + n5 + n6 + n7;
+    let alive = buf_load(state_in, px, py);
+    let old_age = buf_load(age_in, px, py);
+
+    // B3/S23: alive if (alive AND count in {2,3}) OR (dead AND count == 3)
+    let is_3 = select(count > 2.5, select(count < 3.5, true, false), false);
+    let is_2 = select(count > 1.5, select(count < 2.5, true, false), false);
+    let survives = alive > 0.5 && (is_2 || is_3);
+    let born = alive < 0.5 && is_3;
+    let new_alive = select(survives || born, 1.0, 0.0);
+
+    buf_store(state_out, px, py, new_alive);
+
+    // Age tracking
+    let alive_age = select(old_age > 0.0, old_age + 1.0, 1.0);
+    let dead_age = select(old_age > 0.0, -1.0, select(old_age < -19.5, -20.0, old_age - 1.0));
+    let new_age = select(new_alive > 0.5, alive_age, dead_age);
+    buf_store(age_out, px, py, new_age);
+
+    // Color mapping
+    let is_alive = new_alive > 0.5;
+
+    // Dead fade: red dimming to black over 20 frames
+    let fade_t = clamp((new_age + 20.0) / 20.0, 0.0, 1.0);
+    let dead_r = fade_t * 180.0;
+
+    // Alive color ramp: green -> cyan -> blue over ~100 generations
+    let age_t = clamp(new_age / 100.0, 0.0, 1.0);
+    let alive_r = (1.0 - age_t) * 50.0;
+    let alive_g = (1.0 - age_t * 0.5) * 255.0;
+    let alive_b = age_t * 255.0;
+
+    let r_f = select(is_alive, alive_r, dead_r);
+    let g_f = select(is_alive, alive_g, 0.0);
+    let b_f = select(is_alive, alive_b, 0.0);
+
+    emit pack_argb(r_f as u32, g_f as u32, b_f as u32);
+}
