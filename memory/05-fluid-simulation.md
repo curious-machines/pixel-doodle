@@ -275,6 +275,12 @@ cargo run --release -- --sim smoke --backend gpu
 
 # Native CPU (rayon parallelism)
 cargo run --release -- --sim smoke --backend native
+
+# Cranelift JIT (multi-pass PDL kernels)
+cargo run --release -- --sim smoke --backend cranelift
+
+# LLVM JIT (multi-pass PDL kernels, requires llvm-backend feature)
+cargo run --release --features llvm-backend -- --sim smoke --backend llvm
 ```
 
 Mouse click/drag injects smoke density + upward velocity impulse at the cursor position (radius 15).
@@ -321,13 +327,30 @@ copy_buffer_to_texture
 
 Total: 44 compute dispatches per frame (1 + 1 + 40 + 1 + 1).
 
+### Backend 3: PDL/JIT (multi-pass kernel orchestration)
+
+First simulation to use **multi-pass kernel orchestration** — 4 separate PDL kernels compiled independently, called in sequence by the host with buffer swaps between passes. This works around the single-pass `SimTileKernelFn` ABI limitation.
+
+- `examples/sim/smoke/advect.pdl` (91 stmts) — Semi-Lagrangian advection with inlined bilinear interpolation (4 BufLoads per field × 3 fields = 12 loads), buoyancy, dissipation, boundary zeroing
+- `examples/sim/smoke/divergence.pdl` (32 stmts) — Central-difference velocity divergence
+- `examples/sim/smoke/jacobi.pdl` (34 stmts) — One Jacobi pressure iteration (called 40× by host)
+- `examples/sim/smoke/project.pdl` (45 stmts) — Pressure gradient subtraction + density visualization
+
+Host orchestration per frame:
+1. Swap vx/vy/density with vx0/vy0/density0
+2. `render_sim(advect_fn, [vx0,vy0,den0], [vx,vy,den])`
+3. `render_sim(div_fn, [vx,vy], [divergence])`
+4. 40× `render_sim(jacobi_fn, [divergence,pressure], [pressure_tmp])` + swap
+5. `render_sim(project_fn, [pressure,vx,vy,density], [vx0,vy0])` + swap back
+
+Neighbor coordinates use `rem` wrapping (not raw subtraction) to avoid u32 underflow segfaults on BufLoad. Boundary results are discarded via `select`.
+
 ### Main integration (`src/main.rs`)
 
-Two `Backend` variants:
+Three `Backend` variants:
 - `Backend::Smoke` — native CPU
 - `Backend::GpuSmoke` — GPU (initialized in `resumed()`)
-
-No JIT/PDL backend yet (the iterative pressure solver doesn't fit the single-pass `SimTileKernelFn` ABI).
+- `Backend::JitSmoke` — Cranelift/LLVM with 4 compiled kernel functions + 9 `Vec<f64>` buffers
 
 ## Key files
 
@@ -336,4 +359,8 @@ No JIT/PDL backend yet (the iterative pressure solver doesn't fit the single-pas
 | `src/simulation.rs` | `SmokeState` — CPU advect, pressure solve, project, visualization |
 | `src/gpu/smoke_gpu.rs` | GPU backend (5 pipelines, 7 buffers, dispatch orchestration) |
 | `src/gpu/smoke.wgsl` | WGSL compute shader (5 entry points) |
-| `src/main.rs` | CLI integration (`--sim smoke`) |
+| `examples/sim/smoke/advect.pdl` | Semi-Lagrangian advection kernel |
+| `examples/sim/smoke/divergence.pdl` | Velocity divergence kernel |
+| `examples/sim/smoke/jacobi.pdl` | Jacobi pressure iteration kernel |
+| `examples/sim/smoke/project.pdl` | Pressure projection + visualization kernel |
+| `src/main.rs` | CLI integration, multi-pass host orchestration |

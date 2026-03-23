@@ -1,0 +1,71 @@
+# Smoke pressure projection + visualization
+#
+# Subtracts pressure gradient from velocity to enforce incompressibility.
+# Also reads density for grayscale visualization (this is the final pass).
+
+kernel smoke_project(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(press_in: read, vx_in: read, vy_in: read, den_in: read,
+          vx_out: write, vy_out: write)
+{
+    zero_u: u32 = const 0
+    one_u: u32 = const 1
+    zero_f: f64 = const 0.0
+    half: f64 = const 0.5
+    one_f: f64 = const 1.0
+    c255: f64 = const 255.0
+
+    wm1: u32 = sub width one_u
+    hm1: u32 = sub height one_u
+
+    # Boundary check
+    is_left: bool = eq px zero_u
+    is_right: bool = eq px wm1
+    is_top: bool = eq py zero_u
+    is_bottom: bool = eq py hm1
+    is_edge_h: bool = or is_left is_right
+    is_edge_v: bool = or is_top is_bottom
+    is_edge: bool = or is_edge_h is_edge_v
+
+    # Read current velocity
+    cur_vx: f64 = buf_load vx_in px py
+    cur_vy: f64 = buf_load vy_in px py
+
+    # Pressure gradient (wrapped to avoid u32 underflow on BufLoad)
+    px_plus_wm1: u32 = add px wm1
+    xl: u32 = rem px_plus_wm1 width
+    px_plus_one: u32 = add px one_u
+    xr: u32 = rem px_plus_one width
+    py_plus_hm1: u32 = add py hm1
+    yu: u32 = rem py_plus_hm1 height
+    py_plus_one: u32 = add py one_u
+    yd: u32 = rem py_plus_one height
+    p_r: f64 = buf_load press_in xr py
+    p_l: f64 = buf_load press_in xl py
+    p_d: f64 = buf_load press_in px yd
+    p_u: f64 = buf_load press_in px yu
+
+    dp_x: f64 = sub p_r p_l
+    dp_y: f64 = sub p_d p_u
+    grad_x: f64 = mul half dp_x
+    grad_y: f64 = mul half dp_y
+
+    # Subtract gradient from velocity
+    proj_vx: f64 = sub cur_vx grad_x
+    proj_vy: f64 = sub cur_vy grad_y
+
+    # Boundary: zero velocity at edges
+    final_vx: f64 = select is_edge zero_f proj_vx
+    final_vy: f64 = select is_edge zero_f proj_vy
+
+    _s0: u32 = buf_store vx_out px py final_vx
+    _s1: u32 = buf_store vy_out px py final_vy
+
+    # Visualization: density -> grayscale
+    den: f64 = buf_load den_in px py
+    den_lo: f64 = max den zero_f
+    den_cl: f64 = min den_lo one_f
+    den_sc: f64 = mul den_cl c255
+    den_u: u32 = f64_to_u32 den_sc
+    pixel: u32 = pack_argb den_u den_u den_u
+    emit pixel
+}

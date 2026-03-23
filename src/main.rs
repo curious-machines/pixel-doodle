@@ -229,6 +229,22 @@ enum Backend {
     GpuSmoke {
         gpu: Option<gpu::smoke_gpu::GpuSmokeBackend>,
     },
+    JitSmoke {
+        advect_fn: jit::SimTileKernelFn,
+        div_fn: jit::SimTileKernelFn,
+        jacobi_fn: jit::SimTileKernelFn,
+        project_fn: jit::SimTileKernelFn,
+        vx: Vec<f64>,
+        vy: Vec<f64>,
+        density: Vec<f64>,
+        vx0: Vec<f64>,
+        vy0: Vec<f64>,
+        density0: Vec<f64>,
+        pressure: Vec<f64>,
+        pressure_tmp: Vec<f64>,
+        divergence: Vec<f64>,
+        pixel_buffer: Vec<u32>,
+    },
     JitShallowWater {
         sim_fn: jit::SimTileKernelFn,
         h: Vec<f64>,
@@ -790,6 +806,89 @@ impl ApplicationHandler for App {
                             ));
                         }
                     }
+                    Backend::JitSmoke {
+                        advect_fn, div_fn, jacobi_fn, project_fn,
+                        vx, vy, density, vx0, vy0, density0,
+                        pressure, pressure_tmp, divergence, pixel_buffer,
+                    } => {
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as usize;
+                            let py = self.mouse_pos.1 as usize;
+                            let w = WIDTH as usize;
+                            let h = HEIGHT as usize;
+                            if px < w && py < h {
+                                let radius: isize = 15;
+                                let r2 = radius * radius;
+                                for idy in -radius..=radius {
+                                    for idx in -radius..=radius {
+                                        let d2 = idx * idx + idy * idy;
+                                        if d2 > r2 { continue; }
+                                        let x = (px as isize + idx).clamp(0, w as isize - 1) as usize;
+                                        let y = (py as isize + idy).clamp(0, h as isize - 1) as usize;
+                                        let t = 1.0 - (d2 as f64 / r2 as f64);
+                                        let i = y * w + x;
+                                        vx[i] = 0.0;
+                                        vy[i] = -3.0 * t;
+                                        density[i] = 0.5 * t;
+                                    }
+                                }
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        let w = WIDTH as usize;
+                        let h = HEIGHT as usize;
+
+                        // 1. Advect: swap then trace backward
+                        std::mem::swap(vx, vx0);
+                        std::mem::swap(vy, vy0);
+                        std::mem::swap(density, density0);
+                        render::render_sim(
+                            pixel_buffer, w, h, *advect_fn,
+                            &[vx0.as_ptr(), vy0.as_ptr(), density0.as_ptr()],
+                            &[vx.as_mut_ptr(), vy.as_mut_ptr(), density.as_mut_ptr()],
+                            self.tile_height,
+                        );
+
+                        // 2. Divergence
+                        render::render_sim(
+                            pixel_buffer, w, h, *div_fn,
+                            &[vx.as_ptr(), vy.as_ptr()],
+                            &[divergence.as_mut_ptr()],
+                            self.tile_height,
+                        );
+
+                        // 3. Jacobi pressure solve (40 iterations)
+                        for _ in 0..40 {
+                            render::render_sim(
+                                pixel_buffer, w, h, *jacobi_fn,
+                                &[divergence.as_ptr(), pressure.as_ptr()],
+                                &[pressure_tmp.as_mut_ptr()],
+                                self.tile_height,
+                            );
+                            std::mem::swap(pressure, pressure_tmp);
+                        }
+
+                        // 4. Project + visualize (writes projected vx/vy to vx0/vy0 as scratch)
+                        render::render_sim(
+                            pixel_buffer, w, h, *project_fn,
+                            &[pressure.as_ptr(), vx.as_ptr(), vy.as_ptr(), density.as_ptr()],
+                            &[vx0.as_mut_ptr(), vy0.as_mut_ptr()],
+                            self.tile_height,
+                        );
+                        std::mem::swap(vx, vx0);
+                        std::mem::swap(vy, vy0);
+
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "smoke [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -1036,8 +1135,10 @@ fn main() {
                 let label: &'static str = match args.backend.as_str() {
                     "gpu" => "gpu",
                     "native" => "native",
+                    "cranelift" => "cranelift",
+                    "llvm" => "llvm",
                     other => {
-                        eprintln!("Unknown backend for smoke sim: '{}' (available: native, gpu)", other);
+                        eprintln!("Unknown backend for smoke sim: '{}' (available: native, gpu, cranelift, llvm)", other);
                         std::process::exit(1);
                     }
                 };
@@ -1045,10 +1146,49 @@ fn main() {
 
                 let backend = match args.backend.as_str() {
                     "gpu" => Backend::GpuSmoke { gpu: None },
-                    _ => {
+                    "native" => {
                         let state = simulation::SmokeState::new(WIDTH as usize, HEIGHT as usize);
                         let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
                         Backend::Smoke { state, pixel_buffer }
+                    }
+                    jit_backend => {
+                        let parse = |src: &str, name: &str| -> kernel_ir::Kernel {
+                            lang::parser::parse(src).unwrap_or_else(|e| {
+                                eprintln!("Parse error in smoke/{}: {}", name, e);
+                                std::process::exit(1);
+                            })
+                        };
+                        let advect_k = parse(
+                            include_str!("../examples/sim/smoke/advect.pdl"), "advect.pdl");
+                        let div_k = parse(
+                            include_str!("../examples/sim/smoke/divergence.pdl"), "divergence.pdl");
+                        let jacobi_k = parse(
+                            include_str!("../examples/sim/smoke/jacobi.pdl"), "jacobi.pdl");
+                        let project_k = parse(
+                            include_str!("../examples/sim/smoke/project.pdl"), "project.pdl");
+
+                        eprintln!("[kernel] smoke: advect({} stmts), divergence({} stmts), jacobi({} stmts), project({} stmts)",
+                            advect_k.body.len(), div_k.body.len(), jacobi_k.body.len(), project_k.body.len());
+
+                        let advect_fn = compile_sim_kernel(jit_backend, &advect_k);
+                        let div_fn = compile_sim_kernel(jit_backend, &div_k);
+                        let jacobi_fn = compile_sim_kernel(jit_backend, &jacobi_k);
+                        let project_fn = compile_sim_kernel(jit_backend, &project_k);
+
+                        let n = (WIDTH * HEIGHT) as usize;
+                        Backend::JitSmoke {
+                            advect_fn, div_fn, jacobi_fn, project_fn,
+                            vx: vec![0.0; n],
+                            vy: vec![0.0; n],
+                            density: vec![0.0; n],
+                            vx0: vec![0.0; n],
+                            vy0: vec![0.0; n],
+                            density0: vec![0.0; n],
+                            pressure: vec![0.0; n],
+                            pressure_tmp: vec![0.0; n],
+                            divergence: vec![0.0; n],
+                            pixel_buffer: vec![0u32; n],
+                        }
                     }
                 };
 
@@ -1172,7 +1312,7 @@ fn main() {
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
             | Backend::JitShallowWater { .. }
-            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } => {
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -1249,7 +1389,7 @@ fn main() {
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
             | Backend::JitShallowWater { .. }
-            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } => {
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } | Backend::JitSmoke { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
