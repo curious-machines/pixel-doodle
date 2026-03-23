@@ -222,6 +222,13 @@ enum Backend {
     GpuShallowWater {
         gpu: Option<gpu::shallow_water_gpu::GpuShallowWaterBackend>,
     },
+    Smoke {
+        state: simulation::SmokeState,
+        pixel_buffer: Vec<u32>,
+    },
+    GpuSmoke {
+        gpu: Option<gpu::smoke_gpu::GpuSmokeBackend>,
+    },
     JitShallowWater {
         sim_fn: jit::SimTileKernelFn,
         h: Vec<f64>,
@@ -426,6 +433,15 @@ impl ApplicationHandler for App {
                 WIDTH,
                 HEIGHT,
                 &simulation::ShallowWaterParams::default(),
+            ));
+        }
+
+        if let Backend::GpuSmoke { gpu } = &mut self.backend {
+            *gpu = Some(gpu::smoke_gpu::GpuSmokeBackend::new(
+                &display,
+                WIDTH,
+                HEIGHT,
+                &gpu::smoke_gpu::SmokeParams::default(),
             ));
         }
 
@@ -730,6 +746,50 @@ impl ApplicationHandler for App {
                         }
                         display.upload_and_present(pixel_buffer);
                     }
+                    Backend::Smoke { state, pixel_buffer } => {
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as usize;
+                            let py = self.mouse_pos.1 as usize;
+                            if (px as u32) < WIDTH && (py as u32) < HEIGHT {
+                                state.inject(px, py, 15);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        state.step();
+                        state.to_pixels(pixel_buffer);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "smoke [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
+                    Backend::GpuSmoke { gpu } => {
+                        let gpu = gpu.as_mut().unwrap();
+
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as u32;
+                            let py = self.mouse_pos.1 as u32;
+                            if px < WIDTH && py < HEIGHT {
+                                gpu.inject(&display.queue, px, py, 15);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        gpu.step_and_render(display);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "smoke [gpu] | {render_ms:.1}ms ({fps:.0} fps)",
+                            ));
+                        }
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -972,8 +1032,33 @@ fn main() {
                 let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
                 event_loop.run_app(&mut app).unwrap();
             }
+            "smoke" => {
+                let label: &'static str = match args.backend.as_str() {
+                    "gpu" => "gpu",
+                    "native" => "native",
+                    other => {
+                        eprintln!("Unknown backend for smoke sim: '{}' (available: native, gpu)", other);
+                        std::process::exit(1);
+                    }
+                };
+                eprintln!("[sim] Smoke ({}x{}) [{}]", WIDTH, HEIGHT, label);
+
+                let backend = match args.backend.as_str() {
+                    "gpu" => Backend::GpuSmoke { gpu: None },
+                    _ => {
+                        let state = simulation::SmokeState::new(WIDTH as usize, HEIGHT as usize);
+                        let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
+                        Backend::Smoke { state, pixel_buffer }
+                    }
+                };
+
+                let event_loop = EventLoop::new().unwrap();
+                event_loop.set_control_flow(ControlFlow::Poll);
+                let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
+                event_loop.run_app(&mut app).unwrap();
+            }
             other => {
-                eprintln!("Unknown simulation: '{}'. Available: gray-scott, shallow-water", other);
+                eprintln!("Unknown simulation: '{}'. Available: gray-scott, shallow-water, smoke", other);
                 std::process::exit(1);
             }
         }
@@ -1086,7 +1171,8 @@ fn main() {
             }
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
-            | Backend::JitShallowWater { .. } => {
+            | Backend::JitShallowWater { .. }
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -1162,7 +1248,8 @@ fn main() {
             }
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
             | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
-            | Backend::JitShallowWater { .. } => {
+            | Backend::JitShallowWater { .. }
+            | Backend::Smoke { .. } | Backend::GpuSmoke { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }

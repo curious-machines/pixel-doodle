@@ -1,5 +1,6 @@
 pub mod fluid;
 pub mod shallow_water_gpu;
+pub mod smoke_gpu;
 
 use crate::display::Display;
 

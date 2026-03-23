@@ -1,6 +1,6 @@
 # Fluid Simulations
 
-Two grid-based simulations share the same infrastructure (double-buffered fields, rayon tile parallelism, GPU ping-pong compute, mouse injection).
+Three grid-based simulations share the same infrastructure (double-buffered fields, rayon tile parallelism, GPU ping-pong compute, mouse injection).
 
 ---
 
@@ -234,3 +234,106 @@ Three `Backend` variants:
 | `src/gpu/shallow_water.wgsl` | WGSL compute shader (step + visualize) |
 | `examples/sim/shallow_water.pdl` | Shallow water kernel in PDL |
 | `src/main.rs` | CLI integration (`--sim shallow-water`) |
+
+---
+
+# Smoke (Stable Fluids)
+
+## Overview
+
+2D Eulerian smoke simulation based on Jos Stam's "Stable Fluids" (1999). Solves incompressible Navier-Stokes via semi-Lagrangian advection and pressure projection. More complex than Gray-Scott or shallow water — requires an iterative Jacobi pressure solver (40 iterations per frame) and bilinear interpolation for advection. Implemented with native CPU and GPU compute backends.
+
+## Algorithm
+
+Five steps per frame:
+
+```
+1. Advect — Semi-Lagrangian: trace each cell backward through velocity field,
+   bilinear interpolate all fields at the source position.
+   Apply buoyancy (density pushes upward) and density dissipation.
+
+2. Divergence — Central-difference divergence of advected velocity:
+   div = (vx[x+1,y] - vx[x-1,y] + vy[x,y+1] - vy[x,y-1]) * 0.5
+
+3. Jacobi pressure solve — 40 iterations, each:
+   p_new = (p_left + p_right + p_up + p_down - divergence) / 4
+
+4. Project — Subtract pressure gradient from velocity:
+   vx -= 0.5 * (p[x+1,y] - p[x-1,y])
+   vy -= 0.5 * (p[x,y+1] - p[x,y-1])
+
+5. Visualize — Density mapped to grayscale (white smoke on black background)
+```
+
+Parameters: dt=4.0, dissipation=0.998, buoyancy=0.08. Open boundary conditions (zero velocity at edges, density exits freely). No initial perturbations — starts blank, user injects smoke via mouse.
+
+## Running
+
+```bash
+# GPU compute shader (wgpu/WGSL)
+cargo run --release -- --sim smoke --backend gpu
+
+# Native CPU (rayon parallelism)
+cargo run --release -- --sim smoke --backend native
+```
+
+Mouse click/drag injects smoke density + upward velocity impulse at the cursor position (radius 15).
+
+## Architecture
+
+### Field layout
+
+Three logical fields packed into `vec4<f32>` per cell: (vx, vy, density, 0). Separate scalar (`f32`) buffers for pressure (ping-pong pair) and divergence.
+
+### Backend 1: Native Rust (`src/simulation.rs`)
+
+- `SmokeState` struct with separate `Vec<f64>` fields: vx, vy, density (current), vx0, vy0, density0 (previous), pressure, pressure_tmp, divergence
+- `step()` performs advect → divergence → 40× Jacobi → project, each parallelized with `rayon::par_chunks_mut` per row
+- `sample_bilinear()` helper for semi-Lagrangian advection (clamped, not wrapping)
+- `to_pixels()` maps density to grayscale ARGB
+- `inject()` adds Gaussian density bump + upward velocity impulse
+
+### Backend 2: GPU compute shader
+
+- `src/gpu/smoke.wgsl` — WGSL compute shader with **5 entry points**:
+  - `advect`: semi-Lagrangian with inlined bilinear interpolation + buoyancy + dissipation
+  - `divergence`: central-difference velocity divergence
+  - `jacobi`: one Jacobi pressure iteration (called 40× per frame)
+  - `project`: subtract pressure gradient from velocity
+  - `visualize`: density to grayscale ARGB pixels
+- `src/gpu/smoke_gpu.rs` — `GpuSmokeBackend` with:
+  - 5 compute pipelines, each with its own bind group layout
+  - 7 GPU buffers: field_a/field_b (vec4 ping-pong), pressure_a/pressure_b (f32 ping-pong), div_buf (f32), pixel_buffer (u32 stride-aligned)
+  - `step_and_render()` encodes all passes in a single command encoder: advect → divergence → 40× jacobi → project → visualize → copy to texture
+  - `inject()` writes density + velocity via `queue.write_buffer` to current field buffer
+  - `SmokeParams` struct with defaults (dt=4.0, dissipation=0.998, buoyancy=0.08)
+
+### Per-frame GPU dispatch sequence
+
+```
+advect:     field_a → field_b       (flip ping)
+divergence: field_b → div_buf
+jacobi ×40: pressure_a/pressure_b   (ping-pong, using div_buf)
+project:    field_b + pressure → field_a   (flip ping back)
+visualize:  field_a → pixel_buffer
+copy_buffer_to_texture
+```
+
+Total: 44 compute dispatches per frame (1 + 1 + 40 + 1 + 1).
+
+### Main integration (`src/main.rs`)
+
+Two `Backend` variants:
+- `Backend::Smoke` — native CPU
+- `Backend::GpuSmoke` — GPU (initialized in `resumed()`)
+
+No JIT/PDL backend yet (the iterative pressure solver doesn't fit the single-pass `SimTileKernelFn` ABI).
+
+## Key files
+
+| File | Role |
+|------|------|
+| `src/simulation.rs` | `SmokeState` — CPU advect, pressure solve, project, visualization |
+| `src/gpu/smoke_gpu.rs` | GPU backend (5 pipelines, 7 buffers, dispatch orchestration) |
+| `src/gpu/smoke.wgsl` | WGSL compute shader (5 entry points) |
+| `src/main.rs` | CLI integration (`--sim smoke`) |

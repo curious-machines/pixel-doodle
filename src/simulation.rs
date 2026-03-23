@@ -379,3 +379,235 @@ impl ShallowWaterState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Smoke simulation (Stable Fluids — Stam 1999)
+// ---------------------------------------------------------------------------
+
+pub struct SmokeState {
+    pub width: usize,
+    pub height: usize,
+    // Current fields
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    density: Vec<f64>,
+    // Temporary/previous fields
+    vx0: Vec<f64>,
+    vy0: Vec<f64>,
+    density0: Vec<f64>,
+    // Pressure solve workspace
+    pressure: Vec<f64>,
+    pressure_tmp: Vec<f64>,
+    divergence: Vec<f64>,
+    // Parameters
+    dt: f64,
+    dissipation: f64,
+    buoyancy: f64,
+}
+
+impl SmokeState {
+    pub fn new(width: usize, height: usize) -> Self {
+        let n = width * height;
+        Self {
+            width,
+            height,
+            vx: vec![0.0; n],
+            vy: vec![0.0; n],
+            density: vec![0.0; n],
+            vx0: vec![0.0; n],
+            vy0: vec![0.0; n],
+            density0: vec![0.0; n],
+            pressure: vec![0.0; n],
+            pressure_tmp: vec![0.0; n],
+            divergence: vec![0.0; n],
+            dt: 4.0,
+            dissipation: 0.998,
+            buoyancy: 0.08,
+        }
+    }
+
+    pub fn step(&mut self) {
+        let w = self.width;
+        let h = self.height;
+
+        // 1. Advect velocity and density (semi-Lagrangian)
+        std::mem::swap(&mut self.vx, &mut self.vx0);
+        std::mem::swap(&mut self.vy, &mut self.vy0);
+        std::mem::swap(&mut self.density, &mut self.density0);
+
+        self.vx.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let i = y * w + x;
+                let src_x = x as f64 - self.dt * self.vx0[i];
+                let src_y = y as f64 - self.dt * self.vy0[i];
+                row[x] = sample_bilinear(&self.vx0, src_x, src_y, w, h);
+            }
+        });
+
+        self.vy.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let i = y * w + x;
+                let src_x = x as f64 - self.dt * self.vx0[i];
+                let src_y = y as f64 - self.dt * self.vy0[i];
+                row[x] = sample_bilinear(&self.vy0, src_x, src_y, w, h);
+            }
+        });
+
+        self.density.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let i = y * w + x;
+                let src_x = x as f64 - self.dt * self.vx0[i];
+                let src_y = y as f64 - self.dt * self.vy0[i];
+                row[x] = sample_bilinear(&self.density0, src_x, src_y, w, h);
+            }
+        });
+
+        // Buoyancy (uses pre-dissipation density, matching GPU)
+        let buoy = self.buoyancy;
+        let dt = self.dt;
+        let dissipation = self.dissipation;
+        self.vy.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let i = y * w + x;
+                row[x] -= buoy * self.density[i] * dt;
+            }
+        });
+
+        // Apply density dissipation after buoyancy
+        self.density.par_chunks_mut(w).for_each(|row| {
+            for d in row.iter_mut() {
+                *d *= dissipation;
+            }
+        });
+
+        // Open boundaries: zero velocity at edges
+        for x in 0..w {
+            self.vx[x] = 0.0;
+            self.vy[x] = 0.0;
+            self.vx[(h - 1) * w + x] = 0.0;
+            self.vy[(h - 1) * w + x] = 0.0;
+        }
+        for y in 0..h {
+            self.vx[y * w] = 0.0;
+            self.vy[y * w] = 0.0;
+            self.vx[y * w + w - 1] = 0.0;
+            self.vy[y * w + w - 1] = 0.0;
+        }
+
+        // 2. Compute divergence
+        self.divergence.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                if x == 0 || x == w - 1 || y == 0 || y == h - 1 {
+                    row[x] = 0.0;
+                    continue;
+                }
+                let vx_r = self.vx[y * w + x + 1];
+                let vx_l = self.vx[y * w + x - 1];
+                let vy_d = self.vy[(y + 1) * w + x];
+                let vy_u = self.vy[(y - 1) * w + x];
+                row[x] = (vx_r - vx_l + vy_d - vy_u) * 0.5;
+            }
+        });
+
+        // 3. Jacobi pressure solve (40 iterations, warm-started from previous frame)
+        for _ in 0..40 {
+            std::mem::swap(&mut self.pressure, &mut self.pressure_tmp);
+            self.pressure.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+                for x in 0..w {
+                    if x == 0 || x == w - 1 || y == 0 || y == h - 1 {
+                        row[x] = 0.0;
+                        continue;
+                    }
+                    let p_l = self.pressure_tmp[y * w + x - 1];
+                    let p_r = self.pressure_tmp[y * w + x + 1];
+                    let p_u = self.pressure_tmp[(y - 1) * w + x];
+                    let p_d = self.pressure_tmp[(y + 1) * w + x];
+                    let d = self.divergence[y * w + x];
+                    row[x] = (p_l + p_r + p_u + p_d - d) * 0.25;
+                }
+            });
+        }
+
+        // 4. Project: subtract pressure gradient
+        // Need to copy pressure to temp since we'll read pressure while writing velocity
+        self.vx.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                if x == 0 || x == w - 1 || y == 0 || y == h - 1 {
+                    row[x] = 0.0;
+                    continue;
+                }
+                let p_r = self.pressure[y * w + x + 1];
+                let p_l = self.pressure[y * w + x - 1];
+                row[x] -= 0.5 * (p_r - p_l);
+            }
+        });
+
+        self.vy.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                if x == 0 || x == w - 1 || y == 0 || y == h - 1 {
+                    row[x] = 0.0;
+                    continue;
+                }
+                let p_d = self.pressure[(y + 1) * w + x];
+                let p_u = self.pressure[(y - 1) * w + x];
+                row[x] -= 0.5 * (p_d - p_u);
+            }
+        });
+    }
+
+    pub fn inject(&mut self, px: usize, py: usize, radius: usize) {
+        let w = self.width;
+        let h = self.height;
+        let r = radius as isize;
+
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let d2 = dx * dx + dy * dy;
+                let r2 = r * r;
+                if d2 > r2 {
+                    continue;
+                }
+                let x = (px as isize + dx).clamp(0, w as isize - 1) as usize;
+                let y = (py as isize + dy).clamp(0, h as isize - 1) as usize;
+                let t = 1.0 - (d2 as f64 / r2 as f64);
+                let i = y * w + x;
+                // Overwrite (matching GPU behavior)
+                self.vx[i] = 0.0;
+                self.vy[i] = -3.0 * t;
+                self.density[i] = 0.5 * t;
+            }
+        }
+    }
+
+    pub fn to_pixels(&self, pixels: &mut [u32]) {
+        pixels.par_chunks_mut(self.width).enumerate().for_each(|(y, row)| {
+            for x in 0..self.width {
+                let d = self.density[y * self.width + x].clamp(0.0, 1.0);
+                let v = (d * 255.0) as u32;
+                row[x] = 0xFF000000 | (v << 16) | (v << 8) | v;
+            }
+        });
+    }
+}
+
+fn sample_bilinear(field: &[f64], fx: f64, fy: f64, w: usize, h: usize) -> f64 {
+    let cx = fx.clamp(0.0, (w - 1) as f64 - 0.001);
+    let cy = fy.clamp(0.0, (h - 1) as f64 - 0.001);
+
+    let x0 = cx.floor() as usize;
+    let y0 = cy.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+
+    let sx = cx - cx.floor();
+    let sy = cy - cy.floor();
+
+    let v00 = field[y0 * w + x0];
+    let v10 = field[y0 * w + x1];
+    let v01 = field[y1 * w + x0];
+    let v11 = field[y1 * w + x1];
+
+    let top = v00 + sx * (v10 - v00);
+    let bot = v01 + sx * (v11 - v01);
+    top + sy * (bot - top)
+}
+
