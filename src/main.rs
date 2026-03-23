@@ -185,6 +185,21 @@ fn load_kernel(kernel_path: &Option<String>, backend: &str) -> KernelSource {
     }
 }
 
+/// Parse a kernel from source, auto-detecting PD vs PDL by file extension.
+fn parse_kernel_src(src: &str, path: &str) -> Kernel {
+    if path.ends_with(".pd") {
+        lang::pd::parse(src, Some(std::path::Path::new(path))).unwrap_or_else(|e| {
+            eprintln!("Parse error in '{}': {}", path, e);
+            std::process::exit(1);
+        })
+    } else {
+        lang::parser::parse(src).unwrap_or_else(|e| {
+            eprintln!("Parse error in '{}': {}", path, e);
+            std::process::exit(1);
+        })
+    }
+}
+
 enum Backend {
     Cpu {
         kernel_fn: TileKernelFn,
@@ -987,10 +1002,7 @@ fn main() {
                             eprintln!("Failed to read kernel file '{}': {}", kernel_path, e);
                             std::process::exit(1);
                         });
-                        let kernel = lang::parser::parse(&src).unwrap_or_else(|e| {
-                            eprintln!("Parse error in '{}': {}", kernel_path, e);
-                            std::process::exit(1);
-                        });
+                        let kernel = parse_kernel_src(&src, kernel_path);
                         eprintln!("[kernel] loaded '{}' ({} statements, {} buffers)",
                             kernel.name, kernel.body.len(), kernel.buffers.len());
 
@@ -1071,10 +1083,7 @@ fn main() {
                             eprintln!("Failed to read kernel file '{}': {}", kernel_path, e);
                             std::process::exit(1);
                         });
-                        let kernel = lang::parser::parse(&src).unwrap_or_else(|e| {
-                            eprintln!("Parse error in '{}': {}", kernel_path, e);
-                            std::process::exit(1);
-                        });
+                        let kernel = parse_kernel_src(&src, kernel_path);
                         eprintln!("[kernel] loaded '{}' ({} statements, {} buffers)",
                             kernel.name, kernel.body.len(), kernel.buffers.len());
 

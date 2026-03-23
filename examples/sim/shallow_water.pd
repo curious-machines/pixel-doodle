@@ -1,0 +1,109 @@
+// Shallow water wave simulation kernel (Lax-Friedrichs scheme) — PD version
+//
+// Three fields per cell: water height (h), x-velocity (vx), y-velocity (vy).
+// Parameters: gravity=9.8, damping=0.001, dt=0.02
+
+kernel shallow_water(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(h_in: read, vx_in: read, vy_in: read,
+          h_out: write, vx_out: write, vy_out: write)
+{
+    // Toroidal neighbor coordinates
+    let wm1 = width - 1u32;
+    let hm1 = height - 1u32;
+    let xm = (px + wm1) % width;
+    let xp = (px + 1u32) % width;
+    let ym = (py + hm1) % height;
+    let yp = (py + 1u32) % height;
+
+    // 5-point stencil for H
+    let h_c = buf_load(h_in, px, py);
+    let h_l = buf_load(h_in, xm, py);
+    let h_r = buf_load(h_in, xp, py);
+    let h_u = buf_load(h_in, px, ym);
+    let h_d = buf_load(h_in, px, yp);
+
+    // Neighbor velocities
+    let vx_l = buf_load(vx_in, xm, py);
+    let vx_r = buf_load(vx_in, xp, py);
+    let vx_u = buf_load(vx_in, px, ym);
+    let vx_d = buf_load(vx_in, px, yp);
+
+    let vy_l = buf_load(vy_in, xm, py);
+    let vy_r = buf_load(vy_in, xp, py);
+    let vy_u = buf_load(vy_in, px, ym);
+    let vy_d = buf_load(vy_in, px, yp);
+
+    // Lax-Friedrichs: average neighbors instead of using center
+    let h_avg = (h_l + h_r + h_u + h_d) * 0.25;
+    let vx_avg = (vx_l + vx_r + vx_u + vx_d) * 0.25;
+    let vy_avg = (vy_l + vy_r + vy_u + vy_d) * 0.25;
+
+    // Central differences for height gradient
+    let dh_dx = (h_r - h_l) * 0.5;
+    let dh_dy = (h_d - h_u) * 0.5;
+
+    // Parameters
+    let gravity = 9.8;
+    let damping = 0.001;
+    let dt = 0.02;
+
+    // Velocity update: avg - dt*g*grad_h - dt*damping*avg
+    let new_vx = vx_avg - dt * gravity * dh_dx - dt * damping * vx_avg;
+    let new_vy = vy_avg - dt * gravity * dh_dy - dt * damping * vy_avg;
+
+    // Height update: flux divergence
+    let flux_x = (h_r * vx_r - h_l * vx_l) * 0.5;
+    let flux_y = (h_d * vy_d - h_u * vy_u) * 0.5;
+    let new_h = h_avg - dt * (flux_x + flux_y);
+
+    buf_store(h_out, px, py, new_h);
+    buf_store(vx_out, px, py, new_vx);
+    buf_store(vy_out, px, py, new_vy);
+
+    // Visualization: height deviation -> color ramp
+    let deviation = new_h - 1.0;
+
+    // Deep trough: dark blue
+    let b_deep = 0.3 * 255.0;
+
+    // Below rest: dark -> mid blue
+    let t_below = max((deviation + 0.1) / 0.1, 0.0);
+    let g_below = 0.1 * t_below * 255.0;
+    let b_below = (0.3 + 0.4 * t_below) * 255.0;
+
+    // Near rest: mid -> light blue
+    let t_near = max(deviation / 0.05, 0.0);
+    let r_near = 0.1 * t_near * 255.0;
+    let g_near = (0.1 + 0.3 * t_near) * 255.0;
+    let b_near = (0.7 + 0.15 * t_near) * 255.0;
+
+    // Rising: light blue -> white
+    let t_rise = max((deviation - 0.05) / 0.1, 0.0);
+    let r_rise = (0.1 + 0.9 * t_rise) * 255.0;
+    let g_rise = (0.4 + 0.6 * t_rise) * 255.0;
+    let b_rise = (0.85 + 0.15 * t_rise) * 255.0;
+
+    let is_deep = deviation < -0.1;
+    let is_below = deviation < 0.0;
+    let is_near = deviation < 0.05;
+    let is_rise = deviation < 0.15;
+
+    // Nested selects for color ramp
+    let r_01 = select(is_deep, 0.0, 0.0);
+    let g_01 = select(is_deep, 0.0, g_below);
+    let b_01 = select(is_deep, b_deep, b_below);
+
+    let r_23 = select(is_near, r_near, r_rise);
+    let g_23 = select(is_near, g_near, g_rise);
+    let b_23 = select(is_near, b_near, b_rise);
+
+    let r_234 = select(is_rise, r_23, 255.0);
+    let g_234 = select(is_rise, g_23, 255.0);
+    let b_234 = select(is_rise, b_23, 255.0);
+
+    let r_f = select(is_below, r_01, r_234);
+    let g_f = select(is_below, g_01, g_234);
+    let b_f = select(is_below, b_01, b_234);
+
+    emit pack_argb(r_f as u32, g_f as u32, b_f as u32);
+}
