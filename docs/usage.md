@@ -169,7 +169,7 @@ cargo run --release -- --kernel examples/sim/gray_scott.pdl --dump-ir
 # Default (native + cranelift backends)
 cargo build --release
 
-# With LLVM support (requires LLVM 18 dev libraries)
+# With LLVM support (requires LLVM 20 dev libraries)
 cargo build --release --features llvm-backend
 
 # Native only (no JIT)
@@ -178,10 +178,10 @@ cargo build --release --no-default-features
 
 ### LLVM Setup
 
-Ubuntu/Debian: `sudo apt-get install llvm-18-dev libpolly-18-dev`
-macOS: `brew install llvm@18`
+Ubuntu/Debian: `sudo apt-get install llvm-20-dev libpolly-20-dev`
+macOS: `brew install llvm@20`
 
-If `llvm-config-18` is not on PATH:
+If `llvm-config-20` is not on PATH:
 ```bash
-LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend
+LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backend
 ```

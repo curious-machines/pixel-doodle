@@ -39,18 +39,18 @@ cargo build --release
 
 ### Adding LLVM Support
 
-The LLVM backend requires LLVM 18 development libraries installed on your system.
+The LLVM backend requires LLVM 20 development libraries installed on your system.
 
 #### Ubuntu / Debian
 
 ```bash
-sudo apt-get install llvm-18-dev libpolly-18-dev
+sudo apt-get install llvm-20-dev libpolly-20-dev
 ```
 
 #### macOS (Homebrew)
 
 ```bash
-brew install llvm@18
+brew install llvm@20
 ```
 
 Then build with the feature enabled:
@@ -59,10 +59,10 @@ Then build with the feature enabled:
 cargo build --release --features llvm-backend
 ```
 
-If `llvm-config-18` is not on your `PATH`, point the build to it:
+If `llvm-config-20` is not on your `PATH`, point the build to it:
 
 ```bash
-LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build --release --features llvm-backend
+LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backend
 ```
 
 ### Building Without Cranelift
