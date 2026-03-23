@@ -251,10 +251,41 @@ impl Parser {
         let params = self.parse_params()?;
         self.expect(&Token::Arrow)?;
         let return_ty = self.parse_type()?;
+        let buffers = if *self.peek() == Token::Buffers {
+            self.parse_buffers()?
+        } else {
+            Vec::new()
+        };
         self.expect(&Token::LBrace)?;
         let body = self.parse_body()?;
         self.expect(&Token::RBrace)?;
-        Ok(KernelDef { name, params, return_ty, body, span })
+        Ok(KernelDef { name, params, return_ty, buffers, body, span })
+    }
+
+    fn parse_buffers(&mut self) -> Result<Vec<BufferParam>, ParseError> {
+        self.advance(); // buffers
+        self.expect(&Token::LParen)?;
+        let mut bufs = Vec::new();
+        loop {
+            if *self.peek() == Token::RParen {
+                break;
+            }
+            let (name, _) = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let is_output = match self.peek() {
+                Token::Read => { self.advance(); false }
+                Token::Write => { self.advance(); true }
+                _ => return Err(self.error(format!("expected 'read' or 'write', got '{}'", self.peek()))),
+            };
+            bufs.push(BufferParam { name, is_output });
+            if *self.peek() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RParen)?;
+        Ok(bufs)
     }
 
     fn parse_body(&mut self) -> Result<Vec<Stmt>, ParseError> {
@@ -276,8 +307,25 @@ impl Parser {
             Token::Yield => self.parse_yield(),
             Token::Emit => self.parse_emit(),
             Token::Return => self.parse_return(),
+            Token::Ident(name) if name == "buf_store" => self.parse_buf_store(),
             _ => Err(self.error(format!("expected statement, got '{}'", self.peek()))),
         }
+    }
+
+    fn parse_buf_store(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.span();
+        self.advance(); // buf_store
+        self.expect(&Token::LParen)?;
+        let (buf_name, _) = self.expect_ident()?;
+        self.expect(&Token::Comma)?;
+        let x = self.parse_expr()?;
+        self.expect(&Token::Comma)?;
+        let y = self.parse_expr()?;
+        self.expect(&Token::Comma)?;
+        let val = self.parse_expr()?;
+        self.expect(&Token::RParen)?;
+        self.expect(&Token::Semi)?;
+        Ok(Stmt::BufStore { buf_name, x, y, val, span })
     }
 
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {

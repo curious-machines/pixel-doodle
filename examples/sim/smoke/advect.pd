@@ -1,0 +1,81 @@
+// Smoke advection kernel (semi-Lagrangian with bilinear interpolation) — PD version
+//
+// Traces each cell backward through the velocity field, bilinear interpolates
+// vx/vy/density at the source position. Applies buoyancy and dissipation.
+// Open boundaries: zero velocity at edges.
+
+kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(vx_in: read, vy_in: read, den_in: read,
+          vx_out: write, vy_out: write, den_out: write)
+{
+    let dt = 4.0;
+    let dissipation = 0.998;
+    let buoyancy = 0.08;
+
+    let wm1 = width - 1u32;
+    let hm1 = height - 1u32;
+    let max_x = (wm1 as f64) - 0.001;
+    let max_y = (hm1 as f64) - 0.001;
+
+    // Read velocity at current cell
+    let cur_vx = buf_load(vx_in, px, py);
+    let cur_vy = buf_load(vy_in, px, py);
+
+    // Trace backward and clamp
+    let src_x = clamp((px as f64) - dt * cur_vx, 0.0, max_x);
+    let src_y = clamp((py as f64) - dt * cur_vy, 0.0, max_y);
+
+    // Bilinear interpolation coordinates
+    let fx = floor(src_x);
+    let fy = floor(src_y);
+    let x0 = fx as u32;
+    let y0 = fy as u32;
+    let x1 = min(x0 + 1u32, wm1);
+    let y1 = min(y0 + 1u32, hm1);
+    let s = src_x - fx;
+    let t = src_y - fy;
+
+    // Bilinear: vx
+    let vx00 = buf_load(vx_in, x0, y0);
+    let vx10 = buf_load(vx_in, x1, y0);
+    let vx01 = buf_load(vx_in, x0, y1);
+    let vx11 = buf_load(vx_in, x1, y1);
+    let vx_top = vx00 + s * (vx10 - vx00);
+    let vx_bot = vx01 + s * (vx11 - vx01);
+    let new_vx = vx_top + t * (vx_bot - vx_top);
+
+    // Bilinear: vy
+    let vy00 = buf_load(vy_in, x0, y0);
+    let vy10 = buf_load(vy_in, x1, y0);
+    let vy01 = buf_load(vy_in, x0, y1);
+    let vy11 = buf_load(vy_in, x1, y1);
+    let vy_top = vy00 + s * (vy10 - vy00);
+    let vy_bot = vy01 + s * (vy11 - vy01);
+    let new_vy = vy_top + t * (vy_bot - vy_top);
+
+    // Bilinear: density
+    let d00 = buf_load(den_in, x0, y0);
+    let d10 = buf_load(den_in, x1, y0);
+    let d01 = buf_load(den_in, x0, y1);
+    let d11 = buf_load(den_in, x1, y1);
+    let d_top = d00 + s * (d10 - d00);
+    let d_bot = d01 + s * (d11 - d01);
+    let new_den = d_top + t * (d_bot - d_top);
+
+    // Buoyancy (upward = negative y)
+    let vy_buoy = new_vy - buoyancy * new_den * dt;
+
+    // Dissipation
+    let den_diss = new_den * dissipation;
+
+    // Open boundaries
+    let is_edge = px == 0u32 || px == wm1 || py == 0u32 || py == hm1;
+    let final_vx = select(is_edge, 0.0, new_vx);
+    let final_vy = select(is_edge, 0.0, vy_buoy);
+
+    buf_store(vx_out, px, py, final_vx);
+    buf_store(vy_out, px, py, final_vy);
+    buf_store(den_out, px, py, den_diss);
+
+    emit pack_argb(0u32, 0u32, 0u32);
+}

@@ -13,6 +13,8 @@ struct Lowerer {
     fn_defs: HashMap<String, TFnDef>,
     /// Call counter for unique SSA names in inline expansion.
     call_count: u32,
+    /// Maps buffer names to indices.
+    buf_names: HashMap<String, u32>,
 }
 
 impl Lowerer {
@@ -23,6 +25,7 @@ impl Lowerer {
             var_types: HashMap::new(),
             fn_defs: HashMap::new(),
             call_count: 0,
+            buf_names: HashMap::new(),
         }
     }
 
@@ -534,6 +537,18 @@ impl Lowerer {
             return Some(var);
         }
 
+        // buf_load:buf_name(x, y) — encoded as "buf_load:name" by typechecker
+        if let Some(buf_name) = name.strip_prefix("buf_load:") {
+            let buf = self.buf_names[buf_name];
+            let x = self.lower_expr(&args[0], out);
+            let y = self.lower_expr(&args[1], out);
+            let var = self.auto_var("bld", ValType::F64);
+            let vname = self.binding_name(var);
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                Inst::BufLoad { buf, x, y })));
+            return Some(var);
+        }
+
         // pack_argb(r, g, b)
         if name == "pack_argb" {
             let r = self.lower_expr(&args[0], out);
@@ -856,6 +871,16 @@ impl Lowerer {
                 TStmt::Emit { expr } => {
                     emit_var = Some(self.lower_expr(expr, out));
                 }
+                TStmt::BufStore { buf_name, x, y, val } => {
+                    let buf = self.buf_names[buf_name.as_str()];
+                    let xv = self.lower_expr(x, out);
+                    let yv = self.lower_expr(y, out);
+                    let vv = self.lower_expr(val, out);
+                    let var = self.auto_var("bst", ValType::U32);
+                    let vname = self.binding_name(var);
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
+                        Inst::BufStore { buf, x: xv, y: yv, val: vv })));
+                }
                 TStmt::BreakIf { .. } | TStmt::Yield { .. } => {
                     // These are handled inside lower_while
                     unreachable!("break_if/yield outside while");
@@ -978,6 +1003,14 @@ pub fn lower(program: &TProgram) -> Kernel {
         });
     }
 
+    // Register buffer names → indices
+    let mut buf_decls = Vec::new();
+    for b in &program.kernel.buffers {
+        let idx = buf_decls.len() as u32;
+        lowerer.buf_names.insert(b.name.clone(), idx);
+        buf_decls.push(BufDecl { name: b.name.clone(), is_output: b.is_output });
+    }
+
     // Lower kernel body
     let mut body = Vec::new();
     let emit_var = lowerer.lower_stmts(&program.kernel.body, &mut body);
@@ -990,6 +1023,6 @@ pub fn lower(program: &TProgram) -> Kernel {
         return_ty: program.kernel.return_ty,
         body,
         emit,
-        buffers: vec![],
+        buffers: buf_decls,
     }
 }

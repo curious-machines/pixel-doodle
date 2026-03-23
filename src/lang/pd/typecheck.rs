@@ -108,6 +108,12 @@ pub enum TStmt {
     Emit {
         expr: TExpr,
     },
+    BufStore {
+        buf_name: String,
+        x: TExpr,
+        y: TExpr,
+        val: TExpr,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +129,7 @@ pub struct TKernelDef {
     pub name: String,
     pub params: Vec<Param>,
     pub return_ty: ValType,
+    pub buffers: Vec<BufferParam>,
     pub body: Vec<TStmt>,
 }
 
@@ -137,6 +144,8 @@ struct Checker {
     scopes: Vec<HashMap<String, ValType>>,
     /// Inline function definitions (not yet type-checked body, just signatures).
     fn_sigs: HashMap<String, (Vec<Param>, ValType)>,
+    /// Buffer declarations (name → is_output).
+    buffers: HashMap<String, bool>,
 }
 
 impl Checker {
@@ -144,6 +153,7 @@ impl Checker {
         Self {
             scopes: vec![HashMap::new()],
             fn_sigs: HashMap::new(),
+            buffers: HashMap::new(),
         }
     }
 
@@ -703,6 +713,28 @@ impl Checker {
                 let v = self.check_expr(&args[0], Some(ValType::U32))?;
                 return Ok(Some(TExpr::Call { name: "u32_to_f64".into(), args: vec![v], ty: ValType::F64 }));
             }
+            "buf_load" => {
+                if args.len() != 3 {
+                    return Err(err(span, "buf_load expects 3 arguments: buf_load(buffer, x, y)".into()));
+                }
+                // First arg must be an identifier naming a declared read buffer
+                let buf_name = match &args[0] {
+                    Expr::Ident(name, _) => name.clone(),
+                    _ => return Err(err(span, "buf_load: first argument must be a buffer name".into())),
+                };
+                match self.buffers.get(&buf_name) {
+                    Some(true) => return Err(err(span, format!("buf_load: '{}' is a write buffer, cannot read", buf_name))),
+                    None => return Err(err(span, format!("buf_load: unknown buffer '{}'", buf_name))),
+                    _ => {}
+                }
+                let x = self.check_expr(&args[1], Some(ValType::U32))?;
+                let y = self.check_expr(&args[2], Some(ValType::U32))?;
+                return Ok(Some(TExpr::Call {
+                    name: format!("buf_load:{}", buf_name),
+                    args: vec![x, y],
+                    ty: ValType::F64,
+                }));
+            }
             "select" => {
                 if args.len() != 3 {
                     return Err(err(span, "select expects 3 arguments".into()));
@@ -797,6 +829,18 @@ impl Checker {
                 let texpr = self.check_expr(expr, None)?;
                 Ok(TStmt::Emit { expr: texpr })
             }
+
+            Stmt::BufStore { buf_name, x, y, val, span } => {
+                match self.buffers.get(buf_name) {
+                    Some(false) => return Err(err(span, format!("buf_store: '{}' is a read buffer, cannot write", buf_name))),
+                    None => return Err(err(span, format!("buf_store: unknown buffer '{}'", buf_name))),
+                    _ => {}
+                }
+                let tx = self.check_expr(x, Some(ValType::U32))?;
+                let ty_expr = self.check_expr(y, Some(ValType::U32))?;
+                let tval = self.check_expr(val, Some(ValType::F64))?;
+                Ok(TStmt::BufStore { buf_name: buf_name.clone(), x: tx, y: ty_expr, val: tval })
+            }
         }
     }
 }
@@ -847,6 +891,11 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     for p in &program.kernel.params {
         checker.define(&p.name, p.ty, &program.kernel.span)?;
     }
+    // Register buffers
+    checker.buffers.clear();
+    for b in &program.kernel.buffers {
+        checker.buffers.insert(b.name.clone(), b.is_output);
+    }
     let tbody = checker.check_stmts(&program.kernel.body)?;
 
     Ok(TProgram {
@@ -855,6 +904,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
             name: program.kernel.name.clone(),
             params: program.kernel.params.clone(),
             return_ty: program.kernel.return_ty,
+            buffers: program.kernel.buffers.clone(),
             body: tbody,
         },
     })

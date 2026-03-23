@@ -126,12 +126,25 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    BufStore {
+        buf_name: String,
+        x: Expr,
+        y: Expr,
+        val: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub ty: ValType,
+}
+
+#[derive(Debug, Clone)]
+pub struct BufferParam {
+    pub name: String,
+    pub is_output: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +161,7 @@ pub struct KernelDef {
     pub name: String,
     pub params: Vec<Param>,
     pub return_ty: ValType,
+    pub buffers: Vec<BufferParam>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

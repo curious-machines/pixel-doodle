@@ -1153,19 +1153,19 @@ fn main() {
                     }
                     jit_backend => {
                         let parse = |src: &str, name: &str| -> kernel_ir::Kernel {
-                            lang::parser::parse(src).unwrap_or_else(|e| {
+                            lang::pd::parse(src, None).unwrap_or_else(|e| {
                                 eprintln!("Parse error in smoke/{}: {}", name, e);
                                 std::process::exit(1);
                             })
                         };
                         let advect_k = parse(
-                            include_str!("../examples/sim/smoke/advect.pdl"), "advect.pdl");
+                            include_str!("../examples/sim/smoke/advect.pd"), "advect.pd");
                         let div_k = parse(
-                            include_str!("../examples/sim/smoke/divergence.pdl"), "divergence.pdl");
+                            include_str!("../examples/sim/smoke/divergence.pd"), "divergence.pd");
                         let jacobi_k = parse(
-                            include_str!("../examples/sim/smoke/jacobi.pdl"), "jacobi.pdl");
+                            include_str!("../examples/sim/smoke/jacobi.pd"), "jacobi.pd");
                         let project_k = parse(
-                            include_str!("../examples/sim/smoke/project.pdl"), "project.pdl");
+                            include_str!("../examples/sim/smoke/project.pd"), "project.pd");
 
                         eprintln!("[kernel] smoke: advect({} stmts), divergence({} stmts), jacobi({} stmts), project({} stmts)",
                             advect_k.body.len(), div_k.body.len(), jacobi_k.body.len(), project_k.body.len());

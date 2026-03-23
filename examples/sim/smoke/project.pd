@@ -1,0 +1,42 @@
+// Smoke pressure projection + visualization — PD version
+//
+// Subtracts pressure gradient from velocity to enforce incompressibility.
+// Also reads density for grayscale visualization (this is the final pass).
+
+kernel smoke_project(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(press_in: read, vx_in: read, vy_in: read, den_in: read,
+          vx_out: write, vy_out: write)
+{
+    let wm1 = width - 1u32;
+    let hm1 = height - 1u32;
+    let is_edge = px == 0u32 || px == wm1 || py == 0u32 || py == hm1;
+
+    // Read current velocity
+    let cur_vx = buf_load(vx_in, px, py);
+    let cur_vy = buf_load(vy_in, px, py);
+
+    // Pressure gradient (wrapped neighbor coords)
+    let xl = (px + wm1) % width;
+    let xr = (px + 1u32) % width;
+    let yu = (py + hm1) % height;
+    let yd = (py + 1u32) % height;
+
+    let p_r = buf_load(press_in, xr, py);
+    let p_l = buf_load(press_in, xl, py);
+    let p_d = buf_load(press_in, px, yd);
+    let p_u = buf_load(press_in, px, yu);
+
+    let proj_vx = cur_vx - 0.5 * (p_r - p_l);
+    let proj_vy = cur_vy - 0.5 * (p_d - p_u);
+
+    let final_vx = select(is_edge, 0.0, proj_vx);
+    let final_vy = select(is_edge, 0.0, proj_vy);
+
+    buf_store(vx_out, px, py, final_vx);
+    buf_store(vy_out, px, py, final_vy);
+
+    // Visualization: density -> grayscale
+    let den = clamp(buf_load(den_in, px, py), 0.0, 1.0);
+    let v = (den * 255.0) as u32;
+    emit pack_argb(v, v, v);
+}
