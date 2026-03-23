@@ -215,6 +215,13 @@ enum Backend {
         pixel_buffer: Vec<u32>,
         substeps: u32,
     },
+    ShallowWater {
+        state: simulation::ShallowWaterState,
+        pixel_buffer: Vec<u32>,
+    },
+    GpuShallowWater {
+        gpu: Option<gpu::shallow_water_gpu::GpuShallowWaterBackend>,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
@@ -399,6 +406,15 @@ impl ApplicationHandler for App {
                 WIDTH,
                 HEIGHT,
                 &simulation::GrayScottParams::default(),
+            ));
+        }
+
+        if let Backend::GpuShallowWater { gpu } = &mut self.backend {
+            *gpu = Some(gpu::shallow_water_gpu::GpuShallowWaterBackend::new(
+                &display,
+                WIDTH,
+                HEIGHT,
+                &simulation::ShallowWaterParams::default(),
             ));
         }
 
@@ -614,6 +630,51 @@ impl ApplicationHandler for App {
                             ));
                         }
                     }
+                    Backend::ShallowWater { state, pixel_buffer } => {
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as usize;
+                            let py = self.mouse_pos.1 as usize;
+                            if px < WIDTH as usize && py < HEIGHT as usize {
+                                state.inject(px, py, 10);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        state.step();
+                        state.to_pixels(pixel_buffer);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "shallow-water [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
+                    Backend::GpuShallowWater { gpu } => {
+                        let gpu = gpu.as_mut().unwrap();
+
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as u32;
+                            let py = self.mouse_pos.1 as u32;
+                            if px < WIDTH && py < HEIGHT {
+                                gpu.inject(&display.queue, px, py, 10);
+                            }
+                        }
+
+                        let t0 = Instant::now();
+                        gpu.step_and_render(display, 4);
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "shallow-water [gpu] | {render_ms:.1}ms ({fps:.0} fps)",
+                            ));
+                        }
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -767,8 +828,33 @@ fn main() {
                 let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
                 event_loop.run_app(&mut app).unwrap();
             }
+            "shallow-water" => {
+                let label: &'static str = match args.backend.as_str() {
+                    "gpu" => "gpu",
+                    "native" => "native",
+                    other => {
+                        eprintln!("Unknown backend for shallow-water sim: '{}' (available: native, gpu)", other);
+                        std::process::exit(1);
+                    }
+                };
+                eprintln!("[sim] Shallow water waves ({}x{}) [{}]", WIDTH, HEIGHT, label);
+
+                let backend = match args.backend.as_str() {
+                    "gpu" => Backend::GpuShallowWater { gpu: None },
+                    _ => {
+                        let state = simulation::ShallowWaterState::new(WIDTH as usize, HEIGHT as usize);
+                        let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
+                        Backend::ShallowWater { state, pixel_buffer }
+                    }
+                };
+
+                let event_loop = EventLoop::new().unwrap();
+                event_loop.set_control_flow(ControlFlow::Poll);
+                let mut app = App::new(backend, label, 0.0, None, None, true, args.tile_height);
+                event_loop.run_app(&mut app).unwrap();
+            }
             other => {
-                eprintln!("Unknown simulation: '{}'. Available: gray-scott", other);
+                eprintln!("Unknown simulation: '{}'. Available: gray-scott, shallow-water", other);
                 std::process::exit(1);
             }
         }
@@ -879,7 +965,8 @@ fn main() {
                 let buffer = gpu.readback_pixels(&device, &queue);
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
-            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. } => {
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
+            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -953,7 +1040,8 @@ fn main() {
                     bench::write_ppm(path, &buffer, WIDTH, HEIGHT);
                 }
             }
-            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. } => {
+            Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
+            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }

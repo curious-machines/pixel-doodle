@@ -177,3 +177,205 @@ impl FluidState {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shallow Water simulation
+// ---------------------------------------------------------------------------
+
+pub struct ShallowWaterParams {
+    pub gravity: f32,
+    pub damping: f32,
+    pub dt: f32,
+}
+
+impl Default for ShallowWaterParams {
+    fn default() -> Self {
+        Self {
+            gravity: 9.8,
+            damping: 0.001,
+            dt: 0.02,
+        }
+    }
+}
+
+pub struct ShallowWaterState {
+    pub h: Vec<f32>,
+    pub vx: Vec<f32>,
+    pub vy: Vec<f32>,
+    h_next: Vec<f32>,
+    vx_next: Vec<f32>,
+    vy_next: Vec<f32>,
+    pub width: usize,
+    pub height: usize,
+    pub params: ShallowWaterParams,
+    pub substeps_per_frame: u32,
+}
+
+impl ShallowWaterState {
+    pub fn new(width: usize, height: usize) -> Self {
+        let n = width * height;
+        let mut h = vec![1.0f32; n];
+        let vx = vec![0.0f32; n];
+        let vy = vec![0.0f32; n];
+
+        // Seed a few raised bumps so there's something to see immediately
+        let mut rng = 54321u64;
+        let mut next = || -> u64 {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng
+        };
+        let num_seeds = 5;
+        let radius = 20;
+        for _ in 0..num_seeds {
+            let sx = (next() as usize) % (width - 2 * radius) + radius;
+            let sy = (next() as usize) % (height - 2 * radius) + radius;
+            for dy in -(radius as isize)..=(radius as isize) {
+                for dx in -(radius as isize)..=(radius as isize) {
+                    let d2 = dx * dx + dy * dy;
+                    let r2 = (radius * radius) as isize;
+                    if d2 > r2 {
+                        continue;
+                    }
+                    let x = (sx as isize + dx) as usize;
+                    let y = (sy as isize + dy) as usize;
+                    // Gaussian-ish bump
+                    let t = 1.0 - (d2 as f32 / r2 as f32);
+                    h[y * width + x] += 0.3 * t * t;
+                }
+            }
+        }
+
+        Self {
+            h,
+            vx,
+            vy,
+            h_next: vec![0.0; n],
+            vx_next: vec![0.0; n],
+            vy_next: vec![0.0; n],
+            width,
+            height,
+            params: ShallowWaterParams::default(),
+            substeps_per_frame: 4,
+        }
+    }
+
+    pub fn step(&mut self) {
+        for _ in 0..self.substeps_per_frame {
+            self.step_once();
+            std::mem::swap(&mut self.h, &mut self.h_next);
+            std::mem::swap(&mut self.vx, &mut self.vx_next);
+            std::mem::swap(&mut self.vy, &mut self.vy_next);
+        }
+    }
+
+    fn step_once(&mut self) {
+        let w = self.width;
+        let he = self.height;
+        let g = self.params.gravity;
+        let damp = self.params.damping;
+        let dt = self.params.dt;
+        let h_in = &self.h;
+        let vx_in = &self.vx;
+        let vy_in = &self.vy;
+
+        let h_out = &mut self.h_next;
+        let vx_out = &mut self.vx_next;
+        let vy_out = &mut self.vy_next;
+
+        h_out
+            .par_chunks_mut(w)
+            .zip(vx_out.par_chunks_mut(w))
+            .zip(vy_out.par_chunks_mut(w))
+            .enumerate()
+            .for_each(|(y, ((h_row, vx_row), vy_row))| {
+                let ym = if y == 0 { he - 1 } else { y - 1 };
+                let yp = if y == he - 1 { 0 } else { y + 1 };
+
+                for x in 0..w {
+                    let xm = if x == 0 { w - 1 } else { x - 1 };
+                    let xp = if x == w - 1 { 0 } else { x + 1 };
+
+                    let h_l = h_in[y * w + xm];
+                    let h_r = h_in[y * w + xp];
+                    let h_u = h_in[ym * w + x];
+                    let h_d = h_in[yp * w + x];
+
+                    // Lax-Friedrichs: replace center with neighbor average for stability
+                    let h_avg = (h_l + h_r + h_u + h_d) * 0.25;
+                    let vx_avg = (vx_in[y * w + xm] + vx_in[y * w + xp]
+                        + vx_in[ym * w + x] + vx_in[yp * w + x]) * 0.25;
+                    let vy_avg = (vy_in[y * w + xm] + vy_in[y * w + xp]
+                        + vy_in[ym * w + x] + vy_in[yp * w + x]) * 0.25;
+
+                    // Central differences for height gradient
+                    let dh_dx = (h_r - h_l) * 0.5;
+                    let dh_dy = (h_d - h_u) * 0.5;
+
+                    // Update velocity (Lax-Friedrichs): pressure gradient + damping
+                    vx_row[x] = vx_avg - dt * g * dh_dx - dt * damp * vx_avg;
+                    vy_row[x] = vy_avg - dt * g * dh_dy - dt * damp * vy_avg;
+
+                    // Flux divergence for height update (Lax-Friedrichs)
+                    let flux_x = (h_r * vx_in[y * w + xp]
+                        - h_l * vx_in[y * w + xm]) * 0.5;
+                    let flux_y = (h_d * vy_in[yp * w + x]
+                        - h_u * vy_in[ym * w + x]) * 0.5;
+                    h_row[x] = h_avg - dt * (flux_x + flux_y);
+                }
+            });
+    }
+
+    /// Inject a height bump at position (px, py) with a given radius.
+    pub fn inject(&mut self, px: usize, py: usize, radius: usize) {
+        let r2 = (radius * radius) as isize;
+        let r = radius as isize;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let d2 = dx * dx + dy * dy;
+                if d2 > r2 {
+                    continue;
+                }
+                let x = (px as isize + dx).rem_euclid(self.width as isize) as usize;
+                let y = (py as isize + dy).rem_euclid(self.height as isize) as usize;
+                let idx = y * self.width + x;
+                let t = 1.0 - (d2 as f32 / r2 as f32);
+                self.h[idx] += 0.15 * t * t;
+            }
+        }
+    }
+
+    /// Convert water height to ARGB pixel buffer.
+    pub fn to_pixels(&self, output: &mut [u32]) {
+        for (i, pixel) in output.iter_mut().enumerate() {
+            // Height deviation from rest level (1.0)
+            let deviation = self.h[i] - 1.0;
+
+            // Map deviation to color: deep blue (low) → mid blue (rest) → white (peak)
+            let (r, g, b) = if deviation < -0.1 {
+                // Deep trough: dark blue
+                (0.0_f32, 0.0, 0.3)
+            } else if deviation < 0.0 {
+                // Below rest: dark blue → mid blue
+                let t = (deviation + 0.1) / 0.1;
+                (0.0, 0.1 * t, 0.3 + 0.4 * t)
+            } else if deviation < 0.05 {
+                // Near rest: mid blue → light blue
+                let t = deviation / 0.05;
+                (0.1 * t, 0.1 + 0.3 * t, 0.7 + 0.15 * t)
+            } else if deviation < 0.15 {
+                // Rising: light blue → white
+                let t = (deviation - 0.05) / 0.1;
+                (0.1 + 0.9 * t, 0.4 + 0.6 * t, 0.85 + 0.15 * t)
+            } else {
+                // Peak: white
+                (1.0, 1.0, 1.0)
+            };
+
+            let rb = (r.clamp(0.0, 1.0) * 255.0) as u32;
+            let gb = (g.clamp(0.0, 1.0) * 255.0) as u32;
+            let bb = (b.clamp(0.0, 1.0) * 255.0) as u32;
+            *pixel = 0xFF000000 | (rb << 16) | (gb << 8) | bb;
+        }
+    }
+}
+
