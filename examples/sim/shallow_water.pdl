@@ -1,0 +1,209 @@
+# Shallow water wave simulation kernel (Lax-Friedrichs scheme)
+#
+# Buffers: h_in/vx_in/vy_in are the previous frame's fields.
+#          h_out/vx_out/vy_out are where we write the new values.
+#
+# Parameters: gravity=9.8, damping=0.001, dt=0.02
+
+kernel shallow_water(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(h_in: read, vx_in: read, vy_in: read, h_out: write, vx_out: write, vy_out: write)
+{
+    # Wrap neighbor coordinates (toroidal boundary)
+    one: u32 = const 1
+    wm1: u32 = sub width one
+    hm1: u32 = sub height one
+
+    px_plus_wm1: u32 = add px wm1
+    xm: u32 = rem px_plus_wm1 width
+    px_plus_one: u32 = add px one
+    xp: u32 = rem px_plus_one width
+    py_plus_hm1: u32 = add py hm1
+    ym: u32 = rem py_plus_hm1 height
+    py_plus_one: u32 = add py one
+    yp: u32 = rem py_plus_one height
+
+    # Load 5-point stencil for H
+    h_c: f64 = buf_load h_in px py
+    h_l: f64 = buf_load h_in xm py
+    h_r: f64 = buf_load h_in xp py
+    h_u: f64 = buf_load h_in px ym
+    h_d: f64 = buf_load h_in px yp
+
+    # Load neighbor velocities for Lax-Friedrichs averaging
+    vx_l: f64 = buf_load vx_in xm py
+    vx_r: f64 = buf_load vx_in xp py
+    vx_u: f64 = buf_load vx_in px ym
+    vx_d: f64 = buf_load vx_in px yp
+
+    vy_l: f64 = buf_load vy_in xm py
+    vy_r: f64 = buf_load vy_in xp py
+    vy_u: f64 = buf_load vy_in px ym
+    vy_d: f64 = buf_load vy_in px yp
+
+    # Lax-Friedrichs: average neighbors instead of using center
+    quarter: f64 = const 0.25
+    h_sum_lr: f64 = add h_l h_r
+    h_sum_ud: f64 = add h_u h_d
+    h_sum: f64 = add h_sum_lr h_sum_ud
+    h_avg: f64 = mul h_sum quarter
+
+    vx_sum_lr: f64 = add vx_l vx_r
+    vx_sum_ud: f64 = add vx_u vx_d
+    vx_sum: f64 = add vx_sum_lr vx_sum_ud
+    vx_avg: f64 = mul vx_sum quarter
+
+    vy_sum_lr: f64 = add vy_l vy_r
+    vy_sum_ud: f64 = add vy_u vy_d
+    vy_sum: f64 = add vy_sum_lr vy_sum_ud
+    vy_avg: f64 = mul vy_sum quarter
+
+    # Central differences for height gradient
+    half: f64 = const 0.5
+    dh_dx_raw: f64 = sub h_r h_l
+    dh_dx: f64 = mul dh_dx_raw half
+    dh_dy_raw: f64 = sub h_d h_u
+    dh_dy: f64 = mul dh_dy_raw half
+
+    # Parameters
+    gravity: f64 = const 9.8
+    damping: f64 = const 0.001
+    dt: f64 = const 0.02
+
+    # Update velocity: vx_new = vx_avg - dt*g*dh_dx - dt*damping*vx_avg
+    dt_g: f64 = mul dt gravity
+    pressure_x: f64 = mul dt_g dh_dx
+    dt_damp: f64 = mul dt damping
+    drag_x: f64 = mul dt_damp vx_avg
+    vx_sub1: f64 = sub vx_avg pressure_x
+    new_vx: f64 = sub vx_sub1 drag_x
+
+    pressure_y: f64 = mul dt_g dh_dy
+    drag_y: f64 = mul dt_damp vy_avg
+    vy_sub1: f64 = sub vy_avg pressure_y
+    new_vy: f64 = sub vy_sub1 drag_y
+
+    # Flux divergence for height: h_new = h_avg - dt*(flux_x + flux_y)
+    # flux_x = (h_r*vx_r - h_l*vx_l) * 0.5
+    h_r_vx_r: f64 = mul h_r vx_r
+    h_l_vx_l: f64 = mul h_l vx_l
+    flux_x_raw: f64 = sub h_r_vx_r h_l_vx_l
+    flux_x: f64 = mul flux_x_raw half
+
+    # flux_y = (h_d*vy_d - h_u*vy_u) * 0.5
+    h_d_vy_d: f64 = mul h_d vy_d
+    h_u_vy_u: f64 = mul h_u vy_u
+    flux_y_raw: f64 = sub h_d_vy_d h_u_vy_u
+    flux_y: f64 = mul flux_y_raw half
+
+    flux_total: f64 = add flux_x flux_y
+    dt_flux: f64 = mul dt flux_total
+    new_h: f64 = sub h_avg dt_flux
+
+    # Store results
+    _s0: u32 = buf_store h_out px py new_h
+    _s1: u32 = buf_store vx_out px py new_vx
+    _s2: u32 = buf_store vy_out px py new_vy
+
+    # Visualization: map height deviation to color ramp
+    # deviation = h - 1.0
+    rest: f64 = const 1.0
+    deviation: f64 = sub new_h rest
+    zero_f: f64 = const 0.0
+    c255: f64 = const 255.0
+
+    # Thresholds
+    neg_01: f64 = const -0.1
+    pos_005: f64 = const 0.05
+    pos_01: f64 = const 0.1
+    pos_015: f64 = const 0.15
+
+    # Deep trough (deviation < -0.1): r=0, g=0, b=0.3
+    c0_3: f64 = const 0.3
+    r_deep: f64 = const 0.0
+    g_deep: f64 = const 0.0
+    b_deep_f: f64 = mul c0_3 c255
+
+    # Below rest (-0.1 <= deviation < 0): dark blue -> mid blue
+    # t = (deviation + 0.1) / 0.1
+    dev_plus_01: f64 = add deviation pos_01
+    t_below: f64 = div dev_plus_01 pos_01
+    t_below_cl: f64 = max t_below zero_f
+    c0_1: f64 = const 0.1
+    c0_4: f64 = const 0.4
+    g_below_f: f64 = mul c0_1 t_below_cl
+    g_below: f64 = mul g_below_f c255
+    b_below_base: f64 = mul c0_4 t_below_cl
+    b_below_sum: f64 = add c0_3 b_below_base
+    b_below: f64 = mul b_below_sum c255
+
+    # Near rest (0 <= deviation < 0.05): mid blue -> light blue
+    # t = deviation / 0.05
+    t_near: f64 = div deviation pos_005
+    t_near_cl: f64 = max t_near zero_f
+    r_near_f: f64 = mul c0_1 t_near_cl
+    r_near: f64 = mul r_near_f c255
+    c0_7: f64 = const 0.7
+    c0_15: f64 = const 0.15
+    g_near_base: f64 = mul c0_3 t_near_cl
+    g_near_sum: f64 = add c0_1 g_near_base
+    g_near: f64 = mul g_near_sum c255
+    b_near_base: f64 = mul c0_15 t_near_cl
+    b_near_sum: f64 = add c0_7 b_near_base
+    b_near: f64 = mul b_near_sum c255
+
+    # Rising (0.05 <= deviation < 0.15): light blue -> white
+    # t = (deviation - 0.05) / 0.1
+    dev_minus_005: f64 = sub deviation pos_005
+    t_rise: f64 = div dev_minus_005 pos_01
+    t_rise_cl: f64 = max t_rise zero_f
+    c0_9: f64 = const 0.9
+    c0_6: f64 = const 0.6
+    c0_85: f64 = const 0.85
+    r_rise_base: f64 = mul c0_9 t_rise_cl
+    r_rise_sum: f64 = add c0_1 r_rise_base
+    r_rise: f64 = mul r_rise_sum c255
+    g_rise_base: f64 = mul c0_6 t_rise_cl
+    g_rise_sum: f64 = add c0_4 g_rise_base
+    g_rise: f64 = mul g_rise_sum c255
+    b_rise_base: f64 = mul c0_15 t_rise_cl
+    b_rise_sum: f64 = add c0_85 b_rise_base
+    b_rise: f64 = mul b_rise_sum c255
+
+    # Peak (deviation >= 0.15): white
+    r_peak: f64 = const 255.0
+    g_peak: f64 = const 255.0
+    b_peak: f64 = const 255.0
+
+    # Select based on deviation thresholds
+    is_deep: bool = lt deviation neg_01
+    is_below: bool = lt deviation zero_f
+    is_near: bool = lt deviation pos_005
+    is_rise: bool = lt deviation pos_015
+
+    # Nested selects: deep vs below
+    r_01: f64 = select is_deep r_deep zero_f
+    g_01: f64 = select is_deep g_deep g_below
+    b_01: f64 = select is_deep b_deep_f b_below
+
+    # near vs rise
+    r_23: f64 = select is_near r_near r_rise
+    g_23: f64 = select is_near g_near g_rise
+    b_23: f64 = select is_near b_near b_rise
+
+    # rise vs peak
+    r_234: f64 = select is_rise r_23 r_peak
+    g_234: f64 = select is_rise g_23 g_peak
+    b_234: f64 = select is_rise b_23 b_peak
+
+    # below vs rest+
+    r_f: f64 = select is_below r_01 r_234
+    g_f: f64 = select is_below g_01 g_234
+    b_f: f64 = select is_below b_01 b_234
+
+    r_u: u32 = f64_to_u32 r_f
+    g_u: u32 = f64_to_u32 g_f
+    b_u: u32 = f64_to_u32 b_f
+
+    pixel: u32 = pack_argb r_u g_u b_u
+    emit pixel
+}

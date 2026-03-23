@@ -222,6 +222,17 @@ enum Backend {
     GpuShallowWater {
         gpu: Option<gpu::shallow_water_gpu::GpuShallowWaterBackend>,
     },
+    JitShallowWater {
+        sim_fn: jit::SimTileKernelFn,
+        h: Vec<f64>,
+        vx: Vec<f64>,
+        vy: Vec<f64>,
+        h_next: Vec<f64>,
+        vx_next: Vec<f64>,
+        vy_next: Vec<f64>,
+        pixel_buffer: Vec<u32>,
+        substeps: u32,
+    },
 }
 
 fn with_pool<F: FnOnce() + Send>(pool: &Option<rayon::ThreadPool>, f: F) {
@@ -675,6 +686,50 @@ impl ApplicationHandler for App {
                             ));
                         }
                     }
+                    Backend::JitShallowWater { sim_fn, h, vx, vy, h_next, vx_next, vy_next, pixel_buffer, substeps } => {
+                        if self.mouse_down {
+                            let px = self.mouse_pos.0 as isize;
+                            let py = self.mouse_pos.1 as isize;
+                            let w = WIDTH as isize;
+                            let he = HEIGHT as isize;
+                            let radius: isize = 10;
+                            let r2 = radius * radius;
+                            for dy in -radius..=radius {
+                                for dx in -radius..=radius {
+                                    let d2 = dx * dx + dy * dy;
+                                    if d2 > r2 { continue; }
+                                    let x = (px + dx).rem_euclid(w) as usize;
+                                    let y = (py + dy).rem_euclid(he) as usize;
+                                    let t = 1.0 - (d2 as f64 / r2 as f64);
+                                    h[y * WIDTH as usize + x] += 0.15 * t * t;
+                                }
+                            }
+                        }
+
+                        let t0 = Instant::now();
+
+                        for _ in 0..*substeps {
+                            let bufs_in = [h.as_ptr(), vx.as_ptr(), vy.as_ptr()];
+                            let bufs_out = [h_next.as_mut_ptr(), vx_next.as_mut_ptr(), vy_next.as_mut_ptr()];
+                            render::render_sim(
+                                pixel_buffer, WIDTH as usize, HEIGHT as usize, *sim_fn,
+                                &bufs_in, &bufs_out, self.tile_height,
+                            );
+                            std::mem::swap(h, h_next);
+                            std::mem::swap(vx, vx_next);
+                            std::mem::swap(vy, vy_next);
+                        }
+
+                        let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                        let fps = 1000.0 / render_ms;
+                        if let Some(window) = &self.window {
+                            window.set_title(&format!(
+                                "shallow-water [{}] | {render_ms:.1}ms ({fps:.0} fps)",
+                                self.label
+                            ));
+                        }
+                        display.upload_and_present(pixel_buffer);
+                    }
                     Backend::Gpu { gpu_backend, sample_count, max_samples } => {
                         let gpu = gpu_backend.as_ref().unwrap();
                         if moved {
@@ -832,8 +887,10 @@ fn main() {
                 let label: &'static str = match args.backend.as_str() {
                     "gpu" => "gpu",
                     "native" => "native",
+                    "cranelift" => "cranelift",
+                    "llvm" => "llvm",
                     other => {
-                        eprintln!("Unknown backend for shallow-water sim: '{}' (available: native, gpu)", other);
+                        eprintln!("Unknown backend for shallow-water sim: '{}' (available: native, gpu, cranelift, llvm)", other);
                         std::process::exit(1);
                     }
                 };
@@ -841,10 +898,72 @@ fn main() {
 
                 let backend = match args.backend.as_str() {
                     "gpu" => Backend::GpuShallowWater { gpu: None },
-                    _ => {
+                    "native" => {
                         let state = simulation::ShallowWaterState::new(WIDTH as usize, HEIGHT as usize);
                         let pixel_buffer = vec![0u32; (WIDTH * HEIGHT) as usize];
                         Backend::ShallowWater { state, pixel_buffer }
+                    }
+                    jit_backend => {
+                        let kernel_path = args.kernel_path.as_deref().unwrap_or_else(|| {
+                            eprintln!("--kernel required for JIT sim backend");
+                            std::process::exit(1);
+                        });
+                        let src = std::fs::read_to_string(kernel_path).unwrap_or_else(|e| {
+                            eprintln!("Failed to read kernel file '{}': {}", kernel_path, e);
+                            std::process::exit(1);
+                        });
+                        let kernel = lang::parser::parse(&src).unwrap_or_else(|e| {
+                            eprintln!("Parse error in '{}': {}", kernel_path, e);
+                            std::process::exit(1);
+                        });
+                        eprintln!("[kernel] loaded '{}' ({} statements, {} buffers)",
+                            kernel.name, kernel.body.len(), kernel.buffers.len());
+
+                        let sim_fn = compile_sim_kernel(jit_backend, &kernel);
+
+                        let n = (WIDTH * HEIGHT) as usize;
+                        let mut h = vec![1.0f64; n];
+                        let vx = vec![0.0f64; n];
+                        let vy = vec![0.0f64; n];
+
+                        // Seed bumps (same as native)
+                        let mut rng = 54321u64;
+                        let mut next = || -> u64 {
+                            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                            rng
+                        };
+                        let w = WIDTH as usize;
+                        let he = HEIGHT as usize;
+                        let radius = 20usize;
+                        for _ in 0..5 {
+                            let sx = (next() as usize) % (w - 2 * radius) + radius;
+                            let sy = (next() as usize) % (he - 2 * radius) + radius;
+                            for dy in -(radius as isize)..=(radius as isize) {
+                                for dx in -(radius as isize)..=(radius as isize) {
+                                    let d2 = dx * dx + dy * dy;
+                                    let r2 = (radius * radius) as isize;
+                                    if d2 > r2 {
+                                        continue;
+                                    }
+                                    let x = (sx as isize + dx) as usize;
+                                    let y = (sy as isize + dy) as usize;
+                                    let t = 1.0 - (d2 as f64 / r2 as f64);
+                                    h[y * w + x] += 0.3 * t * t;
+                                }
+                            }
+                        }
+
+                        Backend::JitShallowWater {
+                            sim_fn,
+                            h,
+                            vx,
+                            vy,
+                            h_next: vec![0.0; n],
+                            vx_next: vec![0.0; n],
+                            vy_next: vec![0.0; n],
+                            pixel_buffer: vec![0u32; n],
+                            substeps: 4,
+                        }
                     }
                 };
 
@@ -966,7 +1085,8 @@ fn main() {
                 bench::write_ppm(args.output.as_ref().unwrap(), &buffer, WIDTH, HEIGHT);
             }
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
-            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. } => {
+            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
+            | Backend::JitShallowWater { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }
@@ -1041,7 +1161,8 @@ fn main() {
                 }
             }
             Backend::Simulation { .. } | Backend::GpuSimulation { .. } | Backend::JitSimulation { .. }
-            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. } => {
+            | Backend::ShallowWater { .. } | Backend::GpuShallowWater { .. }
+            | Backend::JitShallowWater { .. } => {
                 unreachable!("--sim uses its own path")
             }
         }

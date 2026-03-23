@@ -1,4 +1,10 @@
-# Fluid Simulation: Gray-Scott Reaction-Diffusion
+# Fluid Simulations
+
+Two grid-based simulations share the same infrastructure (double-buffered fields, rayon tile parallelism, GPU ping-pong compute, mouse injection).
+
+---
+
+# Gray-Scott Reaction-Diffusion
 
 ## Overview
 
@@ -131,3 +137,100 @@ Three `Backend` variants for simulation:
 | `src/jit/llvm.rs` | LLVM sim kernel compilation |
 | `src/render.rs` | `render_sim()` rayon tile dispatch |
 | `src/main.rs` | CLI integration, backend selection |
+
+---
+
+# Shallow Water Waves
+
+## Overview
+
+2D shallow water equations modeling wave propagation on a height field. Three fields per cell: water height (h), x-velocity (vx), y-velocity (vy). Implemented with native CPU and GPU compute backends.
+
+## Algorithm
+
+Uses the **Lax-Friedrichs scheme** — the center cell value is replaced with the average of its 4 neighbors before applying the update. This adds numerical diffusion that prevents the checkerboard instability inherent in central differences on hyperbolic PDEs.
+
+Per-cell update each timestep:
+
+```
+# Lax-Friedrichs averaging (stability)
+h_avg  = (h[x-1,y] + h[x+1,y] + h[x,y-1] + h[x,y+1]) / 4
+vx_avg = (same for vx neighbors)
+vy_avg = (same for vy neighbors)
+
+# Central differences for pressure gradient
+dh_dx = (h[x+1,y] - h[x-1,y]) / 2
+dh_dy = (h[x,y+1] - h[x,y-1]) / 2
+
+# Velocity update
+vx_new = vx_avg - dt * g * dh_dx - dt * damping * vx_avg
+vy_new = vy_avg - dt * g * dh_dy - dt * damping * vy_avg
+
+# Height update (flux divergence)
+flux_x = (h[x+1,y]*vx[x+1,y] - h[x-1,y]*vx[x-1,y]) / 2
+flux_y = (h[x,y+1]*vy[x,y+1] - h[x,y-1]*vy[x,y-1]) / 2
+h_new = h_avg - dt * (flux_x + flux_y)
+```
+
+Parameters: g=9.8, damping=0.001, dt=0.02. Toroidal boundary conditions. 4 substeps per frame. 5 Gaussian-ish bumps (radius 20) seeded with a deterministic LCG.
+
+## Running
+
+```bash
+# Native CPU (rayon parallelism)
+cargo run --release -- --sim shallow-water
+
+# GPU compute shader (wgpu/WGSL)
+cargo run --release -- --sim shallow-water --backend gpu
+
+# Cranelift JIT (PDL kernel)
+cargo run --release -- --sim shallow-water --backend cranelift --kernel examples/sim/shallow_water.pdl
+
+# LLVM JIT (PDL kernel, requires llvm-backend feature)
+cargo run --release --features llvm-backend -- --sim shallow-water --backend llvm --kernel examples/sim/shallow_water.pdl
+```
+
+Mouse click/drag injects height bumps at the cursor position (all backends).
+
+## Architecture
+
+### Backend 1: Native Rust (`src/simulation.rs`)
+
+- `ShallowWaterState` struct with double-buffered `Vec<f32>` fields (h/vx/vy and h_next/vx_next/vy_next)
+- `step()` runs N substeps, each using `rayon::par_chunks_mut` zipped across all three output fields
+- `to_pixels()` maps height deviation from rest level (h=1.0) to a color ramp (dark blue → mid blue → light blue → white)
+- `inject()` adds a smooth height bump (Gaussian-ish profile)
+
+### Backend 2: GPU compute shader
+
+- `src/gpu/shallow_water.wgsl` — WGSL compute shader with two entry points:
+  - `step`: reads 5-point stencil from `field_in` (vec4: h, vx, vy, _), writes to `field_out`
+  - `visualize`: converts height deviation to ARGB pixels
+- `src/gpu/shallow_water_gpu.rs` — `GpuShallowWaterBackend` manages ping-pong `vec4<f32>` storage buffers
+- Same dispatch pattern as Gray-Scott: multiple substeps + visualization in one command encoder
+- `inject()` writes height bumps directly via `queue.write_buffer`
+
+### Backend 3: PDL/JIT (`examples/sim/shallow_water.pdl`)
+
+- PDL kernel with 6 buffers: `h_in`, `vx_in`, `vy_in` (read) + `h_out`, `vx_out`, `vy_out` (write)
+- Same Lax-Friedrichs scheme as native — neighbor averaging, central differences, flux divergence
+- Visualization color ramp computed inline via nested `select` instructions
+- 141 SSA statements; compiles via existing `compile_sim_kernel()` (Cranelift or LLVM)
+- No changes to parser, IR, or JIT backends — the existing buffer infrastructure handled 6 buffers without modification
+
+### Main integration (`src/main.rs`)
+
+Three `Backend` variants:
+- `Backend::ShallowWater` — native CPU
+- `Backend::GpuShallowWater` — GPU (initialized in `resumed()`)
+- `Backend::JitShallowWater` — Cranelift/LLVM with double-buffered `Vec<f64>` fields (h/vx/vy × 2)
+
+## Key files
+
+| File | Role |
+|------|------|
+| `src/simulation.rs` | `ShallowWaterState` — CPU step, inject, visualization |
+| `src/gpu/shallow_water_gpu.rs` | GPU backend (buffer management, dispatch) |
+| `src/gpu/shallow_water.wgsl` | WGSL compute shader (step + visualize) |
+| `examples/sim/shallow_water.pdl` | Shallow water kernel in PDL |
+| `src/main.rs` | CLI integration (`--sim shallow-water`) |
