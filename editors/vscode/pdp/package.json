@@ -1,0 +1,35 @@
+{
+  "name": "pdp",
+  "displayName": "PDP (Pixel Doodle Pipeline)",
+  "description": "Syntax highlighting for PDP (.pdp) pipeline files",
+  "version": "0.1.0",
+  "publisher": "curious-machines",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "pdp",
+        "aliases": [
+          "PDP",
+          "Pixel Doodle Pipeline"
+        ],
+        "extensions": [
+          ".pdp"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "pdp",
+        "scopeName": "source.pdp",
+        "path": "./syntaxes/pdp.tmLanguage.json"
+      }
+    ]
+  }
+}
