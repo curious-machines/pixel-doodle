@@ -257,6 +257,32 @@ impl Parser {
         let span = self.span();
         self.expect(&Token::Buffer)?;
         let name = self.expect_ident()?;
+
+        // Optional GPU type annotation: `: gpu(vec2f)`
+        let gpu_type = if self.at(&Token::Colon) {
+            self.advance();
+            self.expect(&Token::Gpu)?;
+            self.expect(&Token::LParen)?;
+            let type_name = self.expect_ident()?;
+            let gt = match type_name.as_str() {
+                "f32" => GpuElementType::F32,
+                "vec2f" => GpuElementType::Vec2f,
+                "vec3f" => GpuElementType::Vec3f,
+                "vec4f" => GpuElementType::Vec4f,
+                "i32" => GpuElementType::I32,
+                "u32" => GpuElementType::U32,
+                other => {
+                    return Err(self.error(format!(
+                        "unknown GPU element type '{other}'. Expected: f32, vec2f, vec3f, vec4f, i32, u32"
+                    )))
+                }
+            };
+            self.expect(&Token::RParen)?;
+            Some(gt)
+        } else {
+            None
+        };
+
         self.expect(&Token::Eq)?;
 
         let init = if self.at(&Token::Constant) {
@@ -276,7 +302,7 @@ impl Parser {
             BufferInit::InitKernel { kernel_name, args }
         };
 
-        Ok(BufferDecl { name, init, span })
+        Ok(BufferDecl { name, gpu_type, init, span })
     }
 
     // ── Variable declarations ──
@@ -469,6 +495,10 @@ impl Parser {
         } else if let Token::Ident(name) = self.peek().clone() {
             self.advance();
             Some(name)
+        } else if self.at(&Token::Gpu) {
+            // 'gpu' is a keyword token but valid as a pipeline name
+            self.advance();
+            Some("gpu".to_string())
         } else {
             None
         };

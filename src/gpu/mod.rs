@@ -1,9 +1,11 @@
+pub mod sim_runner;
+
 use crate::display::Display;
 
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
 /// Round up bytes_per_row to the required wgpu alignment.
-fn aligned_bytes_per_row(width: u32) -> u32 {
+pub(crate) fn aligned_bytes_per_row(width: u32) -> u32 {
     let unaligned = width * 4;
     let align = COPY_BYTES_PER_ROW_ALIGNMENT;
     (unaligned + align - 1) / align * align

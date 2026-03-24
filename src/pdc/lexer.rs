@@ -105,6 +105,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "settings" => Token::Settings,
                 "title" => Token::Title,
                 "range" => Token::Range,
+                "gpu" => Token::Gpu,
                 "true" => Token::True,
                 "false" => Token::False,
                 _ => Token::Ident(text),

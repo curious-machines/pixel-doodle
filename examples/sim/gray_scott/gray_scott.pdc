@@ -1,18 +1,18 @@
 title = "Gray-Scott Reaction Diffusion"
 
-sim kernel "gray_scott.pd"
-init kernel init_u = "init/gray_scott_u.pd"
-init kernel init_v = "init/gray_scott_v.pd"
-
-buffer u = init_u()
-buffer v = init_v()
-buffer u_next = constant(0.0)
-buffer v_next = constant(0.0)
-
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline {
+pipeline cpu {
+  sim kernel "gray_scott.pd"
+  init kernel init_u = "init/gray_scott_u.pd"
+  init kernel init_v = "init/gray_scott_v.pd"
+
+  buffer u = init_u()
+  buffer v = init_v()
+  buffer u_next = constant(0.0)
+  buffer v_next = constant(0.0)
+
   on click(continuous: true) {
     v = run inject(value: 0.5, radius: 5)
   }
@@ -21,4 +21,22 @@ pipeline {
     swap u <-> u_next
     swap v <-> v_next
   }
+}
+
+pipeline gpu {
+  sim kernel step = "gray_scott_step.wgsl"
+  sim kernel vis = "gray_scott_vis.wgsl"
+
+  buffer field: gpu(vec2f) = constant(0.0)
+  buffer field_next: gpu(vec2f) = constant(0.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+
+  on click(continuous: true) {
+    field = run inject(value: 0.5, radius: 5)
+  }
+  loop(iterations: 8) {
+    field_next = run step { field_in: field, field_out: field_next }
+    swap field <-> field_next
+  }
+  display vis { field_in: field, pixels: pixels }
 }

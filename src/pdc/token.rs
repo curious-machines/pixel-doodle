@@ -25,6 +25,7 @@ pub enum Token {
     Settings,
     Title,
     Range,
+    Gpu,
     // Literals
     True,
     False,
@@ -80,6 +81,7 @@ impl fmt::Display for Token {
             Token::Settings => write!(f, "settings"),
             Token::Title => write!(f, "title"),
             Token::Range => write!(f, "range"),
+            Token::Gpu => write!(f, "gpu"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
             Token::FloatLit(v) => write!(f, "{v}"),

@@ -5,6 +5,7 @@ use winit::keyboard::KeyCode;
 
 use crate::display::Display;
 use crate::gpu::GpuBackend;
+use crate::gpu::sim_runner::GpuSimRunner;
 use crate::jit::{self, SimTileKernelFn, TileKernelFn};
 use crate::kernel_ir::Kernel;
 use crate::progressive::AccumulationBuffer;
@@ -28,6 +29,10 @@ enum CompiledKernelEntry {
     },
     /// GPU pixel kernel — renders directly to display texture.
     Gpu {
+        wgsl_source: String,
+    },
+    /// GPU simulation kernel — dispatched via GpuSimRunner.
+    GpuSim {
         wgsl_source: String,
     },
 }
@@ -71,12 +76,16 @@ pub struct Runtime {
     pub animated: bool,
     backend_name: String,
     base_dir: std::path::PathBuf,
-    /// GPU backend, initialized lazily when display is available.
+    /// GPU pixel kernel backend, initialized lazily when display is available.
     gpu_backend: Option<GpuBackend>,
-    /// Whether this config has any GPU kernels.
+    /// GPU simulation runner, initialized lazily when display is available.
+    gpu_sim_runner: Option<GpuSimRunner>,
+    /// Whether this config has any GPU kernels (pixel or sim).
     pub has_gpu_kernels: bool,
     /// Tracks whether GPU rendered directly to display this frame.
     gpu_rendered_this_frame: bool,
+    /// Name of the GPU pixel buffer for sim display steps.
+    gpu_pixel_buffer_name: Option<String>,
 }
 
 impl Runtime {
@@ -126,8 +135,10 @@ impl Runtime {
             backend_name: "cranelift".into(),
             base_dir: base_dir.to_path_buf(),
             gpu_backend: None,
+            gpu_sim_runner: None,
             has_gpu_kernels: false,
             gpu_rendered_this_frame: false,
+            gpu_pixel_buffer_name: None,
         }
     }
 
@@ -226,14 +237,16 @@ impl Runtime {
             if path.extension().is_some_and(|e| e == "wgsl") {
                 let src = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read kernel '{}': {}", path.display(), e))?;
-                // WGSL kernels with time uniform are animated
                 if src.contains("params.time") {
                     self.animated = true;
                 }
-                self.kernels.insert(
-                    decl.name.clone(),
-                    CompiledKernelEntry::Gpu { wgsl_source: src },
-                );
+                // Sim kernels go through GpuSimRunner, pixel kernels through GpuBackend
+                let entry = if decl.kind == KernelKind::Sim {
+                    CompiledKernelEntry::GpuSim { wgsl_source: src }
+                } else {
+                    CompiledKernelEntry::Gpu { wgsl_source: src }
+                };
+                self.kernels.insert(decl.name.clone(), entry);
                 self.has_gpu_kernels = true;
                 continue;
             }
@@ -401,19 +414,66 @@ impl Runtime {
 
     /// Initialize the GPU backend. Must be called after the display is created.
     pub fn init_gpu(&mut self, display: &Display) {
-        if !self.has_gpu_kernels || self.gpu_backend.is_some() {
+        if !self.has_gpu_kernels {
             return;
         }
-        // Find the first GPU kernel's WGSL source
-        let wgsl = self.kernels.values().find_map(|entry| {
-            if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
-                Some(wgsl_source.clone())
-            } else {
-                None
+
+        // Check for GPU pixel kernels
+        if self.gpu_backend.is_none() {
+            let wgsl = self.kernels.values().find_map(|entry| {
+                if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
+                    Some(wgsl_source.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(source) = wgsl {
+                self.gpu_backend = Some(GpuBackend::new(
+                    display, self.width, self.height, 256, &source,
+                ));
             }
-        });
-        if let Some(source) = wgsl {
-            self.gpu_backend = Some(GpuBackend::new(display, self.width, self.height, 256, &source));
+        }
+
+        // Check for GPU sim kernels — create GpuSimRunner
+        let has_gpu_sim = self.kernels.values().any(|e| matches!(e, CompiledKernelEntry::GpuSim { .. }));
+        if has_gpu_sim && self.gpu_sim_runner.is_none() {
+            let mut runner = GpuSimRunner::new(display, self.width, self.height);
+
+            // Add GPU buffers from the selected pipeline
+            let pipeline_buffers: Vec<BufferDecl> = self
+                .selected_pipeline()
+                .map(|p| p.buffers.clone())
+                .unwrap_or_default();
+            let all_buffers: Vec<BufferDecl> = self.config.buffers.iter()
+                .chain(pipeline_buffers.iter())
+                .cloned()
+                .collect();
+
+            for buf_decl in &all_buffers {
+                if let Some(gpu_type) = buf_decl.gpu_type {
+                    runner.add_buffer(&buf_decl.name, gpu_type.byte_size());
+                    if let BufferInit::Constant(val) = &buf_decl.init {
+                        runner.init_buffer_constant(&buf_decl.name, *val);
+                    }
+                }
+            }
+
+            // Compile GPU sim pipelines
+            let kernel_entries: Vec<(String, String)> = self.kernels.iter().filter_map(|(name, entry)| {
+                if let CompiledKernelEntry::GpuSim { wgsl_source } = entry {
+                    Some((name.clone(), wgsl_source.clone()))
+                } else {
+                    None
+                }
+            }).collect();
+
+            for (name, source) in &kernel_entries {
+                if let Err(e) = runner.add_pipeline(name, source) {
+                    eprintln!("warning: failed to compile GPU pipeline '{}': {}", name, e);
+                }
+            }
+
+            self.gpu_sim_runner = Some(runner);
         }
     }
 
@@ -474,11 +534,16 @@ impl Runtime {
                 }
                 PipelineStep::Swap { pairs, .. } => {
                     for (a, b) in pairs {
-                        let mut buf_a = self.buffers.remove(a).unwrap();
-                        let mut buf_b = self.buffers.remove(b).unwrap();
-                        std::mem::swap(&mut buf_a, &mut buf_b);
-                        self.buffers.insert(a.clone(), buf_a);
-                        self.buffers.insert(b.clone(), buf_b);
+                        // Try CPU buffers first, then GPU
+                        if self.buffers.contains_key(a) {
+                            let mut buf_a = self.buffers.remove(a).unwrap();
+                            let mut buf_b = self.buffers.remove(b).unwrap();
+                            std::mem::swap(&mut buf_a, &mut buf_b);
+                            self.buffers.insert(a.clone(), buf_a);
+                            self.buffers.insert(b.clone(), buf_b);
+                        } else if let Some(runner) = &mut self.gpu_sim_runner {
+                            runner.swap_buffers(a, b);
+                        }
                     }
                 }
                 PipelineStep::Loop { iterations, body, .. } => {
@@ -591,9 +656,28 @@ impl Runtime {
                 render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th);
             }
             Some(CompiledKernelEntry::Gpu { .. }) => {
-                // GPU kernels render directly to the display texture.
-                // Set a flag so PdcApp knows to call render_gpu_frame().
+                // GPU pixel kernels render directly to the display texture.
                 self.gpu_rendered_this_frame = true;
+            }
+            Some(CompiledKernelEntry::GpuSim { .. }) => {
+                // GPU sim kernel — dispatch via GpuSimRunner
+                if let Some(runner) = &self.gpu_sim_runner {
+                    let mut bindings: Vec<(&str, &str)> = Vec::new();
+                    for binding in input_bindings {
+                        bindings.push((&binding.param_name, &binding.buffer_name));
+                    }
+                    // Output buffer names map directly to WGSL var names
+                    for out_name in outputs {
+                        bindings.push((out_name, out_name));
+                    }
+                    runner.dispatch(kernel_name, &bindings);
+                }
+                if is_display {
+                    self.gpu_rendered_this_frame = true;
+                    if let Some(out) = outputs.first() {
+                        self.gpu_pixel_buffer_name = Some(out.clone());
+                    }
+                }
             }
             None => {
                 if is_display {
@@ -837,6 +921,7 @@ impl Runtime {
         if !self.gpu_rendered_this_frame {
             return false;
         }
+        // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
             gpu.render(
                 display,
@@ -848,6 +933,13 @@ impl Runtime {
                 self.time,
             );
             return true;
+        }
+        // GPU sim kernel path — present the pixel buffer from the runner
+        if let Some(ref runner) = self.gpu_sim_runner {
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name {
+                runner.present_pixels(display, buf_name);
+                return true;
+            }
         }
         false
     }

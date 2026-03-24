@@ -41,6 +41,31 @@ pub struct KernelDecl {
 
 // ── Buffer declarations ──
 
+/// GPU buffer element type for storage buffer allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuElementType {
+    F32,    // 4 bytes
+    Vec2f,  // 8 bytes
+    Vec3f,  // 12 bytes (padded to 16 in practice)
+    Vec4f,  // 16 bytes
+    I32,    // 4 bytes
+    U32,    // 4 bytes
+}
+
+impl GpuElementType {
+    /// Size in bytes per element.
+    pub fn byte_size(self) -> u32 {
+        match self {
+            GpuElementType::F32 => 4,
+            GpuElementType::Vec2f => 8,
+            GpuElementType::Vec3f => 16, // padded to 16 for alignment
+            GpuElementType::Vec4f => 16,
+            GpuElementType::I32 => 4,
+            GpuElementType::U32 => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum BufferInit {
     /// `constant(value)` — built-in fill.
@@ -55,6 +80,9 @@ pub enum BufferInit {
 #[derive(Debug, Clone)]
 pub struct BufferDecl {
     pub name: String,
+    /// GPU element type annotation, e.g. `buffer field: gpu(vec2f) = ...`.
+    /// None for CPU buffers (f64 arrays).
+    pub gpu_type: Option<GpuElementType>,
     pub init: BufferInit,
     pub span: Span,
 }
