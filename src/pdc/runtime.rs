@@ -333,18 +333,25 @@ impl Runtime {
         let size = (self.width * self.height) as usize;
 
         for decl in &buf_decls {
+            // Skip GPU buffers — they're initialized in init_gpu()
+            if decl.gpu_type.is_some() {
+                continue;
+            }
+
             let data = match &decl.init {
                 BufferInit::Constant(val) => {
                     vec![*val; size]
                 }
                 BufferInit::InitKernel { kernel_name, .. } => {
-                    // Compile and run the init kernel
+                    // Compile and run the init kernel on CPU
                     let ir = self
                         .kernel_ir
                         .get(kernel_name)
                         .ok_or_else(|| format!("init kernel '{}' not found", kernel_name))?;
 
-                    let compiled = compile_sim_kernel(&self.backend_name, ir)?;
+                    // Init kernels always compile with a CPU backend
+                    let cpu_backend = if self.backend_name == "gpu" { "cranelift" } else { &self.backend_name };
+                    let compiled = compile_sim_kernel(cpu_backend, ir)?;
                     let func = compiled.function_ptr();
 
                     let mut output_buf = vec![0.0f64; size];
@@ -452,8 +459,42 @@ impl Runtime {
             for buf_decl in &all_buffers {
                 if let Some(gpu_type) = buf_decl.gpu_type {
                     runner.add_buffer(&buf_decl.name, gpu_type.byte_size());
-                    if let BufferInit::Constant(val) = &buf_decl.init {
-                        runner.init_buffer_constant(&buf_decl.name, *val);
+                    match &buf_decl.init {
+                        BufferInit::Constant(val) => {
+                            runner.init_buffer_constant(&buf_decl.name, *val);
+                        }
+                        BufferInit::InitKernel { kernel_name, .. } => {
+                            // Run init kernel on CPU, then upload to GPU
+                            if let Some(ir) = self.kernel_ir.get(kernel_name) {
+                                let cpu_backend = if self.backend_name == "gpu" {
+                                    "cranelift"
+                                } else {
+                                    &self.backend_name
+                                };
+                                if let Ok(compiled) = compile_sim_kernel(cpu_backend, ir) {
+                                    let func = compiled.function_ptr();
+                                    let size = (self.width * self.height) as usize;
+                                    let mut output_buf = vec![0.0f64; size];
+                                    let mut pixel_buf = vec![0u32; size];
+                                    let bufs_in: &[*const f64] = &[];
+                                    let bufs_out: &[*mut f64] = &[output_buf.as_mut_ptr()];
+                                    render::render_sim(
+                                        &mut pixel_buf,
+                                        self.width as usize,
+                                        self.height as usize,
+                                        func,
+                                        bufs_in,
+                                        bufs_out,
+                                        self.tile_height,
+                                    );
+                                    runner.upload_f64_data(&buf_decl.name, &output_buf);
+                                    eprintln!(
+                                        "[gpu] initialized buffer '{}' via init kernel '{}'",
+                                        buf_decl.name, kernel_name
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -793,6 +834,21 @@ impl Runtime {
         let mx = self.mouse_x as isize;
         let my = self.mouse_y as isize;
         let r = radius as isize;
+
+        // Check if this is a GPU buffer
+        if let Some(runner) = &self.gpu_sim_runner {
+            if !self.buffers.contains_key(buf_name) {
+                // GPU buffer — inject via runner
+                runner.inject_value(
+                    buf_name,
+                    mx.max(0) as u32,
+                    my.max(0) as u32,
+                    r as u32,
+                    value,
+                );
+                return;
+            }
+        }
 
         if let Some(buf) = self.buffers.get_mut(buf_name) {
             for dy in -r..=r {

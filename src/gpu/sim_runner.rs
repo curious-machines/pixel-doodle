@@ -310,8 +310,8 @@ impl GpuSimRunner {
     }
 
     /// Write injection data to a GPU buffer around a position.
-    #[allow(dead_code)]
-    pub fn inject(
+    /// `value` is the raw bytes for one element.
+    pub fn inject_raw(
         &self,
         buffer_name: &str,
         px: u32,
@@ -343,6 +343,99 @@ impl GpuSimRunner {
                 }
             }
         }
+    }
+
+    /// Inject a f64 value into a GPU buffer, converting to the buffer's element type.
+    /// For vec types, the value is written to the first component; others are zeroed.
+    pub fn inject_value(
+        &self,
+        buffer_name: &str,
+        px: u32,
+        py: u32,
+        radius: u32,
+        value: f64,
+    ) {
+        let gpu_buf = match self.buffers.get(buffer_name) {
+            Some(b) => b,
+            None => return,
+        };
+        let elem_size = gpu_buf.element_size as usize;
+        let mut bytes = vec![0u8; elem_size];
+        let val_f32 = value as f32;
+
+        match elem_size {
+            4 => {
+                // f32, i32, or u32
+                bytes.copy_from_slice(&val_f32.to_le_bytes());
+            }
+            8 => {
+                // vec2f — write value to both components for reaction-diffusion (u,v)
+                // For gray-scott: inject v=value → vec2(0, value)
+                // Default: write to second component (v channel)
+                let zero_bytes = 0.0f32.to_le_bytes();
+                let val_bytes = val_f32.to_le_bytes();
+                bytes[0..4].copy_from_slice(&zero_bytes);
+                bytes[4..8].copy_from_slice(&val_bytes);
+            }
+            16 => {
+                // vec4f — write value to density (4th component) for smoke
+                let val_bytes = val_f32.to_le_bytes();
+                bytes[12..16].copy_from_slice(&val_bytes);
+            }
+            _ => {
+                bytes[0..4].copy_from_slice(&val_f32.to_le_bytes());
+            }
+        }
+
+        self.inject_raw(buffer_name, px, py, radius, &bytes);
+    }
+
+    /// Upload CPU-side f64 data to a GPU buffer, converting to the buffer's element type.
+    pub fn upload_f64_data(
+        &self,
+        buffer_name: &str,
+        data: &[f64],
+    ) {
+        let gpu_buf = match self.buffers.get(buffer_name) {
+            Some(b) => b,
+            None => return,
+        };
+        let elem_size = gpu_buf.element_size as usize;
+        let stride = self.stride as usize;
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        // Allocate stride-aligned GPU buffer
+        let mut gpu_data = vec![0u8; stride * h * elem_size];
+
+        for row in 0..h {
+            for col in 0..w {
+                let src_idx = row * w + col;
+                let dst_idx = row * stride + col;
+                let dst_offset = dst_idx * elem_size;
+                let val = data.get(src_idx).copied().unwrap_or(0.0) as f32;
+                let val_bytes = val.to_le_bytes();
+
+                match elem_size {
+                    4 => {
+                        gpu_data[dst_offset..dst_offset + 4].copy_from_slice(&val_bytes);
+                    }
+                    8 => {
+                        // vec2f: put value in first component
+                        gpu_data[dst_offset..dst_offset + 4].copy_from_slice(&val_bytes);
+                    }
+                    16 => {
+                        // vec4f: put value in first component
+                        gpu_data[dst_offset..dst_offset + 4].copy_from_slice(&val_bytes);
+                    }
+                    _ => {
+                        gpu_data[dst_offset..dst_offset + 4].copy_from_slice(&val_bytes);
+                    }
+                }
+            }
+        }
+
+        self.queue.write_buffer(&gpu_buf.buffer, 0, &gpu_data);
     }
 
     /// Initialize a buffer with constant data (zero-fill or value-fill).
