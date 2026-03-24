@@ -95,9 +95,9 @@ mod tests {
     #[test]
     fn pd_roundtrip_via_printer() {
         let kernel = parse_file("examples/basic/gradient/gradient.pd");
-        // Print to PDL text — should produce valid PDL
+        // Print to PDIR text — should produce valid PDIR
         let pdl = crate::lang::printer::print(&kernel);
-        // Re-parse the PDL output
+        // Re-parse the PDIR output
         let kernel2 = crate::lang::parser::parse(&pdl).unwrap();
         assert_eq!(kernel2.name, kernel.name);
         assert_eq!(kernel2.params.len(), kernel.params.len());

@@ -1,6 +1,6 @@
 use crate::kernel_ir::*;
 
-/// Print a Kernel IR back to .pdl text format.
+/// Print a Kernel IR back to .pdir text format.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn print(kernel: &Kernel) -> String {
     let mut out = String::new();

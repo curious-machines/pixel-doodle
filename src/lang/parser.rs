@@ -394,7 +394,7 @@ fn lex(input: &str) -> Result<Vec<Spanned>, ParseError> {
 
 // ── Parser ──────────────────────────────────────────────────────────
 
-/// Parse a .pdl source file into a Kernel IR.
+/// Parse a .pdir source file into a Kernel IR.
 pub fn parse(input: &str) -> Result<Kernel, ParseError> {
     let tokens = lex(input)?;
     let mut parser = Parser::new(tokens);
@@ -1887,7 +1887,7 @@ kernel carry_test(x: f64, y: f64) -> u32 {
 
     #[test]
     fn test_parse_mandelbrot() {
-        let src = include_str!("../../examples/basic/mandelbrot/mandelbrot.pdl");
+        let src = include_str!("../../examples/basic/mandelbrot/mandelbrot.pdir");
         let kernel = parse(src).unwrap();
         assert_eq!(kernel.name, "mandelbrot");
         // Verify roundtrip
@@ -1898,7 +1898,7 @@ kernel carry_test(x: f64, y: f64) -> u32 {
 
     #[test]
     fn test_parse_sdf_flower() {
-        let src = include_str!("../../examples/sdf/sdf_flower/sdf_flower.pdl");
+        let src = include_str!("../../examples/sdf/sdf_flower/sdf_flower.pdir");
         let kernel = parse(src).unwrap();
         assert_eq!(kernel.name, "sdf_flower");
         // Verify roundtrip: expanded flat form should re-parse successfully

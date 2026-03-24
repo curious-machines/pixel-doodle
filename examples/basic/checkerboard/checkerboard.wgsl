@@ -1,5 +1,5 @@
 // Checkerboard pattern using floor + modulo to create alternating squares.
-// WGSL equivalent of checkerboard.pdl
+// WGSL equivalent of checkerboard.pdir
 
 struct Params {
     width: u32,

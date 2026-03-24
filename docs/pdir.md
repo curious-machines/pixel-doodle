@@ -1,6 +1,6 @@
-# PDL — Pixel Doodle Language
+# PDIR — Pixel Doodle Intermediate Representation
 
-PDL is a small language for writing per-pixel compute kernels. It uses SSA form (every value assigned once), explicit types, and a flat sequence of named assignments. Kernels are JIT-compiled and run in parallel across tiles of the output image.
+PDIR is the textual representation of the pixel-doodle kernel IR. It uses SSA form (every value assigned once), explicit types, and a flat sequence of named assignments. Kernels are JIT-compiled and run in parallel across tiles of the output image.
 
 ## Kernel structure
 
@@ -399,4 +399,4 @@ kernel sdf(x: f64, y: f64) -> u32 {
 }
 ```
 
-Note: the example above shows the intent. PDL does not support nested expressions like `sqrt(add cx2 cy2)` or reassignment of `intensity` — every value needs its own unique name and each operation is a separate statement. See `examples/sdf/sdf/sdf.pdl` for the working version.
+Note: the example above shows the intent. PDIR does not support nested expressions like `sqrt(add cx2 cy2)` or reassignment of `intensity` — every value needs its own unique name and each operation is a separate statement. See `examples/sdf/sdf/sdf.pdir` for the working version.

@@ -8,12 +8,12 @@ type: project
 
 ## Overview
 
-IR-first architecture: the SSA IR (`Kernel` in `kernel_ir.rs`) is the central artifact. The text format (`.pdl` files) is a readable, writable serialization — designed to look like a language you'd want to write, not ugly machine format. A higher-level language may be added later as a second frontend targeting the same IR without changing backends.
+IR-first architecture: the SSA IR (`Kernel` in `kernel_ir.rs`) is the central artifact. The text format (`.pdir` files) is a readable, writable serialization — designed to look like a language you'd want to write, not ugly machine format. A higher-level language may be added later as a second frontend targeting the same IR without changing backends.
 
 The custom language is designed to be easy for an AI to generate and verify, not for humans to write directly. Optimizing for AI reasoning correctness (explicit, flat, regular) over human ergonomics is the right tradeoff.
 
 ```
-[ .pdl source ]  ──parse──>  [ Kernel IR ]  ──lower──>  [ Cranelift / LLVM ]
+[ .pdir source ]  ──parse──>  [ Kernel IR ]  ──lower──>  [ Cranelift / LLVM ]
                                    ^
                   [ built-in kernels ]  (programmatic construction)
                                    ^
@@ -351,7 +351,7 @@ Handles while loops with proper indentation and carry var formatting.
 
 **Status:** Discussed, deferred for future implementation.
 
-A `--dump-ir --annotate` flag (or similar) would include original PD source lines as comments in the generated PDL output, making it easier for humans to understand the relationship between PD source and lowered IR.
+A `--dump-ir --annotate` flag (or similar) would include original PD source lines as comments in the generated PDIR output, making it easier for humans to understand the relationship between PD source and lowered IR.
 
 **Design considerations:**
 - Preferred approach: side-channel — pass original PD source text to the printer rather than adding annotations to the IR (keeps the IR syntax-independent).

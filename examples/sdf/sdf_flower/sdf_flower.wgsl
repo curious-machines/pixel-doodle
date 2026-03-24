@@ -1,7 +1,7 @@
 // SDF scene: six-petal flower + concentric ring, blended with smooth min.
 // Uses polar coords (atan2, sqrt), sinusoidal modulation (sin, cos),
 // exponential smooth min (exp, log), glow falloff (exp), gamma (pow).
-// WGSL equivalent of sdf_flower.pdl
+// WGSL equivalent of sdf_flower.pdir
 
 struct Params {
     width: u32,

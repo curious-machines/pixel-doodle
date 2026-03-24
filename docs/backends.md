@@ -1,6 +1,6 @@
 # JIT Backends
 
-pixel-doodle compiles PD/PDL kernel source into machine code at startup via a JIT backend. The backend is selected in the `.pdp` settings block or via `--set backend=<name>`.
+pixel-doodle compiles PD/PDIR kernel source into machine code at startup via a JIT backend. The backend is selected in the `.pdp` settings block or via `--set backend=<name>`.
 
 ## Available Backends
 
@@ -82,16 +82,16 @@ LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backe
 cargo build --release --no-default-features
 ```
 
-Without a JIT backend, `.pdp` files that reference `.pd` or `.pdl` kernels will fail at compile time.
+Without a JIT backend, `.pdp` files that reference `.pd` or `.pdir` kernels will fail at compile time.
 
 ## Compilation Pipeline
 
 ```
-.pd file  →  PD parser  →  Kernel IR (SSA)  →  JIT backend  →  machine code
-.pdl file →  PDL parser →  Kernel IR (SSA)  →  JIT backend  →  machine code
+.pd file    →  PD parser    →  Kernel IR (SSA)  →  JIT backend  →  machine code
+.pdir file  →  PDIR parser  →  Kernel IR (SSA)  →  JIT backend  →  machine code
 ```
 
-Both PD and PDL produce the same Kernel IR. The JIT backend lowers this IR to native machine code. The compiled function is called per-tile by the parallel render loop.
+Both PD and PDIR produce the same Kernel IR. The JIT backend lowers this IR to native machine code. The compiled function is called per-tile by the parallel render loop.
 
 ### Two Kernel ABIs
 

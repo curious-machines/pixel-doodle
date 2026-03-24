@@ -24,14 +24,14 @@ Level 1 is the foundation — accumulation buffer, hash-based jitter, progressiv
 
 ### Per-Pixel Jitter (Level 1)
 
-The JIT tile loop (not the host, not the PDL kernel) computes jitter per pixel:
+The JIT tile loop (not the host, not the PDIR kernel) computes jitter per pixel:
 
 1. Host passes `sample_index: u32` — one value per frame, identifying which sample this is
 2. Tile loop hashes `(col, row, sample_index)` to get two pseudo-random values in [0, 1)
 3. Jitter is applied: `cx += jitter_x * x_step`, `cy += jitter_y * y_step`
 4. Kernel body evaluates at the jittered position — it doesn't know about the jitter
 
-This keeps PDL kernels simple. For Level 2/3, kernel-side RNG ops will be added so the kernel can generate random ray directions internally.
+This keeps PDIR kernels simple. For Level 2/3, kernel-side RNG ops will be added so the kernel can generate random ray directions internally.
 
 ### Hash Function
 
@@ -88,7 +88,7 @@ Without `--samples`, behavior is pixel-identical to current:
 
 ## Scene Description
 
-Initially: SDF scenes are hardcoded in PDL kernels. The kernel receives `(x, y)` and evaluates its built-in scene.
+Initially: SDF scenes are hardcoded in PDIR kernels. The kernel receives `(x, y)` and evaluates its built-in scene.
 
 Future: Pass scene data to the kernel (e.g., as a read-only buffer of shape descriptors). This enables animation and dynamic scene changes without recompiling the kernel. The TileKernelFn ABI would gain a `scene_data: *const u8` parameter.
 

@@ -1,7 +1,7 @@
 {
-  "name": "pdl",
-  "displayName": "PDL (Pixel Doodle Language)",
-  "description": "Syntax highlighting for PDL (.pdl) files",
+  "name": "pdir",
+  "displayName": "PDIR (Pixel Doodle Intermediate Representation)",
+  "description": "Syntax highlighting for PDIR (.pdir) files",
   "version": "0.1.0",
   "publisher": "curious-machines",
   "engines": {
@@ -13,22 +13,22 @@
   "contributes": {
     "languages": [
       {
-        "id": "pdl",
+        "id": "pdir",
         "aliases": [
-          "PDL",
-          "Pixel Doodle Language"
+          "PDIR",
+          "Pixel Doodle Intermediate Representation"
         ],
         "extensions": [
-          ".pdl"
+          ".pdir"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "pdl",
-        "scopeName": "source.pdl",
-        "path": "./syntaxes/pdl.tmLanguage.json"
+        "language": "pdir",
+        "scopeName": "source.pdir",
+        "path": "./syntaxes/pdir.tmLanguage.json"
       }
     ]
   }

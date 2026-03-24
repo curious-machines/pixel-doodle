@@ -1,6 +1,6 @@
 # PD — Pixel Doodle (Higher-Level Language)
 
-PD is a higher-level language for writing per-pixel compute kernels. It compiles to the same Kernel IR as PDL but uses conventional infix syntax, expression nesting, and type inference for local variables. Kernels are JIT-compiled and run in parallel across tiles of the output image.
+PD is a higher-level language for writing per-pixel compute kernels. It compiles to the same Kernel IR as PDIR but uses conventional infix syntax, expression nesting, and type inference for local variables. Kernels are JIT-compiled and run in parallel across tiles of the output image.
 
 ## Includes
 
@@ -413,11 +413,11 @@ kernel ray_march_ao(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -> u32 
 }
 ```
 
-## PD vs PDL
+## PD vs PDIR
 
-PD and PDL both compile to the same Kernel IR. PD is designed for readability and ease of writing; PDL is the lower-level SSA text format.
+PD and PDIR both compile to the same Kernel IR. PD is designed for readability and ease of writing; PDIR is the lower-level SSA text format.
 
-| Feature              | PD                         | PDL                          |
+| Feature              | PD                         | PDIR                         |
 |----------------------|----------------------------|------------------------------|
 | Syntax style         | Infix expressions          | `name: type = op args`       |
 | Type annotations     | Optional on `let`          | Required on every statement  |

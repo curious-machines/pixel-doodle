@@ -1,5 +1,5 @@
 // Solid red — simplest possible kernel.
-// WGSL equivalent of solid_red.pdl
+// WGSL equivalent of solid_red.pdir
 
 struct Params {
     width: u32,

@@ -1,6 +1,6 @@
 // Distance field: circle centered at origin, radius 1.
 // Inside = blue, outside = black.
-// WGSL equivalent of circle.pdl
+// WGSL equivalent of circle.pdir
 
 struct Params {
     width: u32,

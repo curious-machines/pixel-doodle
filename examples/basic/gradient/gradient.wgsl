@@ -1,5 +1,5 @@
 // Gradient: maps x to red, y to green, constant blue.
-// WGSL equivalent of gradient.pdl
+// WGSL equivalent of gradient.pdir
 
 struct Params {
     width: u32,

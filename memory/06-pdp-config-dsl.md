@@ -47,7 +47,7 @@ init kernel init_random = "init/random.pd"
 
 - Type is required (`pixel`, `sim`, `init`) — no auto-detection
 - Runtime validates kernel signature matches declared type
-- Backend inferred from file extension: `.pd`/`.pdl` → CPU/JIT, `.wgsl` → GPU
+- Backend inferred from file extension: `.pd`/`.pdir` → CPU/JIT, `.wgsl` → GPU
 - Unnamed kernels get a default name from the file's base name (must be valid identifier)
 - Named kernels use `name = "path"` syntax
 

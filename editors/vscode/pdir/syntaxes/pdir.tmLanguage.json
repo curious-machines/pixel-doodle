@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "PDL",
-  "scopeName": "source.pdl",
+  "name": "PDIR",
+  "scopeName": "source.pdir",
   "patterns": [
     { "include": "#comment" },
     { "include": "#use-directive" },
@@ -14,45 +14,45 @@
   "repository": {
     "comment": {
       "match": "#.*$",
-      "name": "comment.line.number-sign.pdl"
+      "name": "comment.line.number-sign.pdir"
     },
     "use-directive": {
       "match": "\\b(use)\\s+(\"[^\"]*\")",
       "captures": {
-        "1": { "name": "keyword.control.import.pdl" },
-        "2": { "name": "string.quoted.double.pdl" }
+        "1": { "name": "keyword.control.import.pdir" },
+        "2": { "name": "string.quoted.double.pdir" }
       }
     },
     "inline-def": {
       "match": "\\b(inline)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
       "captures": {
-        "1": { "name": "keyword.declaration.function.pdl" },
-        "2": { "name": "entity.name.function.pdl" }
+        "1": { "name": "keyword.declaration.function.pdir" },
+        "2": { "name": "entity.name.function.pdir" }
       }
     },
     "kernel": {
       "match": "\\b(kernel)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
       "captures": {
-        "1": { "name": "keyword.declaration.kernel.pdl" },
-        "2": { "name": "entity.name.function.pdl" }
+        "1": { "name": "keyword.declaration.kernel.pdir" },
+        "2": { "name": "entity.name.function.pdir" }
       }
     },
     "while-carry": {
       "match": "\\b(while)\\s+(carry)\\s*\\(",
       "captures": {
-        "1": { "name": "keyword.control.while.pdl" },
-        "2": { "name": "keyword.control.carry.pdl" }
+        "1": { "name": "keyword.control.while.pdir" },
+        "2": { "name": "keyword.control.carry.pdir" }
       }
     },
     "control": {
       "patterns": [
         {
           "match": "\\b(emit|cond|yield|return)\\b",
-          "name": "keyword.control.pdl"
+          "name": "keyword.control.pdir"
         },
         {
           "match": "->",
-          "name": "keyword.operator.arrow.pdl"
+          "name": "keyword.operator.arrow.pdir"
         }
       ]
     },
@@ -69,64 +69,64 @@
     },
     "type": {
       "match": "\\b(f64|u32|bool|vec2|vec3)\\b",
-      "name": "storage.type.pdl"
+      "name": "storage.type.pdir"
     },
     "operator": {
       "patterns": [
         {
           "match": "(?<==\\s*)\\b(add|sub|mul|div|rem|min|max|neg|abs|sqrt|floor|ceil|sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|log10|pow|round|trunc|fract)\\b",
-          "name": "support.function.arithmetic.pdl"
+          "name": "support.function.arithmetic.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(bit_and|bit_or|bit_xor|shl|shr)\\b",
-          "name": "support.function.bitwise.pdl"
+          "name": "support.function.bitwise.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(and|or|not)\\b",
-          "name": "support.function.logical.pdl"
+          "name": "support.function.logical.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(eq|ne|lt|le|gt|ge)\\b",
-          "name": "support.function.comparison.pdl"
+          "name": "support.function.comparison.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(f64_to_u32|u32_to_f64)\\b",
-          "name": "support.function.conversion.pdl"
+          "name": "support.function.conversion.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(const|select|pack_argb)\\b",
-          "name": "support.function.builtin.pdl"
+          "name": "support.function.builtin.pdir"
         },
         {
           "match": "(?<==\\s*)\\b(make_vec2|make_vec3|extract_x|extract_y|extract_z|vec_add|vec_sub|vec_mul|vec_div|vec_min|vec_max|vec_neg|vec_abs|vec_normalize|vec_scale|vec_dot|vec_length|vec_cross)\\b",
-          "name": "support.function.vector.pdl"
+          "name": "support.function.vector.pdir"
         }
       ]
     },
     "string": {
       "match": "\"[^\"]*\"",
-      "name": "string.quoted.double.pdl"
+      "name": "string.quoted.double.pdir"
     },
     "number": {
       "patterns": [
         {
           "match": "\\b\\d+\\.\\d+\\b",
-          "name": "constant.numeric.float.pdl"
+          "name": "constant.numeric.float.pdir"
         },
         {
           "match": "\\b\\d+\\b",
-          "name": "constant.numeric.integer.pdl"
+          "name": "constant.numeric.integer.pdir"
         }
       ]
     },
     "boolean": {
       "match": "\\b(true|false)\\b",
-      "name": "constant.language.boolean.pdl"
+      "name": "constant.language.boolean.pdir"
     },
     "variable-def": {
       "match": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*:",
       "captures": {
-        "1": { "name": "variable.other.pdl" }
+        "1": { "name": "variable.other.pdir" }
       }
     }
   }

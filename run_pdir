@@ -28,11 +28,11 @@ fi
 case "$backend" in
     cranelift)
         features="cranelift-backend"
-        kernel="examples/${example}.pdl"
+        kernel="examples/${example}.pdir"
         ;;
     llvm)
         features="llvm-backend"
-        kernel="examples/${example}.pdl"
+        kernel="examples/${example}.pdir"
         ;;
     gpu)
         features="cranelift-backend"  # need some default backend to compile

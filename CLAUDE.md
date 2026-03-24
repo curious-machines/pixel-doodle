@@ -24,9 +24,9 @@ Two viable stacks were evaluated:
 
 Key JIT tradeoff: LLVM provides auto-vectorization; Cranelift does not but compiles faster. AsmJIT supports both x86_64 and AArch64.
 
-## Custom Language (PDL — Pixel Doodle Language)
+## Custom Language (PDIR — Pixel Doodle Intermediate Representation)
 
-The project includes a small custom language called **PDL** (Pixel Doodle Language), designed for AI-assisted generation. Design principles:
+The project includes a small custom language called **PDIR** (Pixel Doodle Intermediate Representation), designed for AI-assisted generation. Design principles:
 - SSA form (every value assigned once, named)
 - Explicit types everywhere — no inference, no implicit conversions
 - Flat over nested — sequence of named assignments over deep expression trees
@@ -35,13 +35,13 @@ The project includes a small custom language called **PDL** (Pixel Doodle Langua
 
 ### IR-First Architecture
 
-The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text format (`.pdl` files) is a readable, writable serialization — not ugly machine format. A higher-level language may be added later as a second frontend targeting the same IR, so keep the IR clean and syntax-independent.
+The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text format (`.pdir` files) is a readable, writable serialization — not ugly machine format. A higher-level language may be added later as a second frontend targeting the same IR, so keep the IR clean and syntax-independent.
 
 ### Kernel Model
 
 A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel declares explicit parameters and a return type, and produces a value via `emit`.
 
-### Text Format (.pdl)
+### Text Format (.pdir)
 
 ```
 kernel gradient(x: f64, y: f64) -> u32 {

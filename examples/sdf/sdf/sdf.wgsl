@@ -1,6 +1,6 @@
 // SDF scene: circle + axis-aligned box, union'd.
 // Distance-based coloring with glow/falloff.
-// WGSL equivalent of sdf.pdl
+// WGSL equivalent of sdf.pdir
 
 struct Params {
     width: u32,
