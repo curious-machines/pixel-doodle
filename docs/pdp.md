@@ -1,4 +1,4 @@
-# PDP — Pixel Doodle Config Reference
+# PDP — Pixel Doodle Pipeline Reference
 
 PDP is a declarative configuration language that describes how to run pixel-doodle examples. A `.pdp` file specifies what kernels to load, how to initialize buffers, what pipeline of steps to execute each frame, and how user input maps to actions.
 
