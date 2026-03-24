@@ -32,54 +32,15 @@ const INTRINSICS: &[&str] = &[
 pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
-    let mut kernel_names = HashSet::new();
-    let mut buffer_names = HashSet::new();
     let mut var_names: HashSet<String> = INTRINSICS.iter().map(|s| (*s).to_string()).collect();
 
-    // Check kernel declarations for duplicates
-    for k in &config.kernels {
-        if !kernel_names.insert(k.name.clone()) {
-            errors.push(ValidationError {
-                line: k.span.line,
-                col: k.span.col,
-                message: format!("duplicate kernel name '{}'", k.name),
-            });
-        }
-    }
-
-    // Check buffer declarations for duplicates
-    for b in &config.buffers {
-        if !buffer_names.insert(b.name.clone()) {
-            errors.push(ValidationError {
-                line: b.span.line,
-                col: b.span.col,
-                message: format!("duplicate buffer name '{}'", b.name),
-            });
-        }
-        // Check that init kernel references exist
-        if let BufferInit::InitKernel { kernel_name, .. } = &b.init {
-            if !kernel_names.contains(kernel_name) {
-                errors.push(ValidationError {
-                    line: b.span.line,
-                    col: b.span.col,
-                    message: format!(
-                        "buffer '{}' references undeclared init kernel '{kernel_name}'",
-                        b.name
-                    ),
-                });
-            }
-        }
-    }
-
-    // Check variable declarations for duplicates and conflicts
+    // Check variable declarations for duplicates
     for v in &config.variables {
-        if kernel_names.contains(&v.name)
-            || buffer_names.contains(&v.name)
-        {
+        if var_names.contains(&v.name) {
             errors.push(ValidationError {
                 line: v.span.line,
                 col: v.span.col,
-                message: format!("variable '{}' conflicts with a kernel or buffer name", v.name),
+                message: format!("duplicate variable name '{}'", v.name),
             });
         }
         var_names.insert(v.name.clone());
@@ -105,9 +66,8 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
 
     // Validate each pipeline
     for pipeline in &config.pipelines {
-        // Merge top-level and pipeline-scoped kernel/buffer names
-        let mut pipe_kernels = kernel_names.clone();
-        let mut pipe_buffers = buffer_names.clone();
+        let mut pipe_kernels = HashSet::new();
+        let mut pipe_buffers = HashSet::new();
 
         for k in &pipeline.kernels {
             if !pipe_kernels.insert(k.name.clone()) {
@@ -305,8 +265,10 @@ mod tests {
     fn valid_gradient() {
         parse_and_validate(
             r#"
-            pixel kernel "gradient.pd"
-            pipeline { display gradient }
+            pipeline {
+              pixel kernel "gradient.pd"
+              display gradient
+            }
             "#,
         )
         .unwrap();
@@ -316,8 +278,10 @@ mod tests {
     fn undeclared_kernel_in_pipeline() {
         let result = parse_and_validate(
             r#"
-            pixel kernel "gradient.pd"
-            pipeline { display nonexistent }
+            pipeline {
+              pixel kernel "gradient.pd"
+              display nonexistent
+            }
             "#,
         );
         assert!(result.is_err());
@@ -329,9 +293,9 @@ mod tests {
     fn undeclared_buffer_in_swap() {
         let result = parse_and_validate(
             r#"
-            pixel kernel "test.pd"
-            buffer a = constant(0.0)
             pipeline {
+              pixel kernel "test.pd"
+              buffer a = constant(0.0)
               display test
               swap a <-> b
             }
@@ -346,9 +310,9 @@ mod tests {
     fn no_display_step() {
         let result = parse_and_validate(
             r#"
-            sim kernel "test.pd"
-            buffer a = constant(0.0)
             pipeline {
+              sim kernel "test.pd"
+              buffer a = constant(0.0)
               run test
             }
             "#,
@@ -362,9 +326,11 @@ mod tests {
     fn undeclared_var_in_key_binding() {
         let result = parse_and_validate(
             r#"
-            pixel kernel "test.pd"
             on key(space) nonexistent = !nonexistent
-            pipeline { display test }
+            pipeline {
+              pixel kernel "test.pd"
+              display test
+            }
             "#,
         );
         assert!(result.is_err());
@@ -372,12 +338,13 @@ mod tests {
 
     #[test]
     fn intrinsic_var_in_key_binding() {
-        // paused is an intrinsic, should be valid
         parse_and_validate(
             r#"
-            pixel kernel "test.pd"
             on key(space) paused = !paused
-            pipeline { display test }
+            pipeline {
+              pixel kernel "test.pd"
+              display test
+            }
             "#,
         )
         .unwrap();
@@ -385,12 +352,11 @@ mod tests {
 
     #[test]
     fn inject_is_builtin() {
-        // 'inject' should not require a kernel declaration
         parse_and_validate(
             r#"
-            sim kernel "test.pd"
-            buffer state = constant(0.0)
             pipeline {
+              sim kernel "test.pd"
+              buffer state = constant(0.0)
               on click(continuous: true) {
                 state = run inject(value: 1.0, radius: 3)
               }
@@ -405,9 +371,11 @@ mod tests {
     fn duplicate_kernel_name() {
         let result = parse_and_validate(
             r#"
-            pixel kernel "a.pd"
-            pixel kernel a = "b.pd"
-            pipeline { display a }
+            pipeline {
+              pixel kernel "a.pd"
+              pixel kernel a = "b.pd"
+              display a
+            }
             "#,
         );
         assert!(result.is_err());

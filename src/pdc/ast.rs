@@ -234,10 +234,6 @@ pub struct Pipeline {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub title: Option<String>,
-    /// Top-level kernel declarations (shared or for single-pipeline configs).
-    pub kernels: Vec<KernelDecl>,
-    /// Top-level buffer declarations (shared or for single-pipeline configs).
-    pub buffers: Vec<BufferDecl>,
     pub variables: Vec<VarDecl>,
     pub settings: Settings,
     pub key_bindings: Vec<KeyBinding>,

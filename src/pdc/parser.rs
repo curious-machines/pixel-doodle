@@ -155,8 +155,6 @@ impl Parser {
     pub fn parse_config(&mut self) -> Result<Config, ParseError> {
         let mut config = Config {
             title: None,
-            kernels: Vec::new(),
-            buffers: Vec::new(),
             variables: Vec::new(),
             settings: Settings::default(),
             key_bindings: Vec::new(),
@@ -166,10 +164,14 @@ impl Parser {
         while !self.at(&Token::Eof) {
             match self.peek().clone() {
                 Token::Pixel | Token::Sim | Token::Init => {
-                    config.kernels.push(self.parse_kernel_decl()?);
+                    return Err(self.error(
+                        "kernel declarations must be inside a pipeline block".into(),
+                    ));
                 }
                 Token::Buffer => {
-                    config.buffers.push(self.parse_buffer_decl()?);
+                    return Err(self.error(
+                        "buffer declarations must be inside a pipeline block".into(),
+                    ));
                 }
                 Token::Title => {
                     self.advance();
@@ -882,20 +884,19 @@ mod tests {
     fn parse_gradient() {
         let config = parse_str(
             r#"
-            pixel kernel "gradient.pd"
-
             pipeline {
+              pixel kernel "gradient.pd"
               display gradient
             }
             "#,
         )
         .unwrap();
 
-        assert_eq!(config.kernels.len(), 1);
-        assert_eq!(config.kernels[0].kind, KernelKind::Pixel);
-        assert_eq!(config.kernels[0].name, "gradient");
-        assert_eq!(config.kernels[0].path, "gradient.pd");
         assert_eq!(config.pipelines.len(), 1);
+        assert_eq!(config.pipelines[0].kernels.len(), 1);
+        assert_eq!(config.pipelines[0].kernels[0].kind, KernelKind::Pixel);
+        assert_eq!(config.pipelines[0].kernels[0].name, "gradient");
+        assert_eq!(config.pipelines[0].kernels[0].path, "gradient.pd");
         let steps = &config.pipelines[0].steps;
         assert_eq!(steps.len(), 1);
         assert!(matches!(&steps[0], PipelineStep::Display { kernel_name, .. } if kernel_name == "gradient"));
@@ -905,13 +906,12 @@ mod tests {
     fn parse_mandelbrot_progressive() {
         let config = parse_str(
             r#"
-            pixel kernel "mandelbrot.pd"
-
             on key(left) center_x -= 0.1
             on key(right) center_x += 0.1
             on key(plus) zoom *= 1.1
 
             pipeline {
+              pixel kernel "mandelbrot.pd"
               accumulate(samples: 256) {
                 display mandelbrot
               }
@@ -920,7 +920,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.kernels.len(), 1);
+        assert_eq!(config.pipelines[0].kernels.len(), 1);
         assert_eq!(config.key_bindings.len(), 3);
         let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 1);
@@ -933,19 +933,19 @@ mod tests {
             r#"
             title = "Gray-Scott"
 
-            sim kernel "gray_scott.pd"
-            init kernel init_u = "init/gray_scott_u.pd"
-            init kernel init_v = "init/gray_scott_v.pd"
-
-            buffer u = init_u()
-            buffer v = init_v()
-            buffer u_next = constant(0.0)
-            buffer v_next = constant(0.0)
-
             on key(space) paused = !paused
             on key(period) frame += 1
 
             pipeline {
+              sim kernel "gray_scott.pd"
+              init kernel init_u = "init/gray_scott_u.pd"
+              init kernel init_v = "init/gray_scott_v.pd"
+
+              buffer u = init_u()
+              buffer v = init_v()
+              buffer u_next = constant(0.0)
+              buffer v_next = constant(0.0)
+
               on click(continuous: true) {
                 v = run inject(value: 0.5, radius: 5)
               }
@@ -960,10 +960,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.title.as_deref(), Some("Gray-Scott"));
-        assert_eq!(config.kernels.len(), 3);
-        assert_eq!(config.buffers.len(), 4);
-        assert!(matches!(&config.buffers[0].init, BufferInit::InitKernel { kernel_name, .. } if kernel_name == "init_u"));
-        assert!(matches!(&config.buffers[2].init, BufferInit::Constant(v) if *v == 0.0));
+        assert_eq!(config.pipelines[0].kernels.len(), 3);
+        assert_eq!(config.pipelines[0].buffers.len(), 4);
+        assert!(matches!(&config.pipelines[0].buffers[0].init, BufferInit::InitKernel { kernel_name, .. } if kernel_name == "init_u"));
+        assert!(matches!(&config.pipelines[0].buffers[2].init, BufferInit::Constant(v) if *v == 0.0));
         assert_eq!(config.key_bindings.len(), 2);
 
         let pipeline = config.pipelines.into_iter().next().unwrap();
@@ -982,22 +982,22 @@ mod tests {
             r#"
             title = "Smoke Simulation"
 
-            sim kernel advect = "smoke/advect.pd"
-            sim kernel divergence = "smoke/divergence.pd"
-            sim kernel jacobi = "smoke/jacobi.pd"
-            sim kernel project = "smoke/project.pd"
-
-            buffer vx = constant(0.0)
-            buffer vy = constant(0.0)
-            buffer density = constant(0.0)
-            buffer vx0 = constant(0.0)
-            buffer vy0 = constant(0.0)
-            buffer density0 = constant(0.0)
-            buffer pressure = constant(0.0)
-            buffer pressure_tmp = constant(0.0)
-            buffer divergence = constant(0.0)
-
             pipeline {
+              sim kernel advect = "smoke/advect.pd"
+              sim kernel divergence = "smoke/divergence.pd"
+              sim kernel jacobi = "smoke/jacobi.pd"
+              sim kernel project = "smoke/project.pd"
+
+              buffer vx = constant(0.0)
+              buffer vy = constant(0.0)
+              buffer density = constant(0.0)
+              buffer vx0 = constant(0.0)
+              buffer vy0 = constant(0.0)
+              buffer density0 = constant(0.0)
+              buffer pressure = constant(0.0)
+              buffer pressure_tmp = constant(0.0)
+              buffer divergence = constant(0.0)
+
               swap vx <-> vx0, vy <-> vy0, density <-> density0
               vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
               divergence = run divergence { vx_in: vx, vy_in: vy }
@@ -1012,8 +1012,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.kernels.len(), 4);
-        assert_eq!(config.buffers.len(), 9);
+        assert_eq!(config.pipelines[0].kernels.len(), 4);
+        assert_eq!(config.pipelines[0].buffers.len(), 9);
         let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 6); // swap, run, run, loop, display, swap
     }
@@ -1022,14 +1022,6 @@ mod tests {
     fn parse_game_of_life() {
         let config = parse_str(
             r#"
-            sim kernel "game_of_life.pd"
-            init kernel init_state = "init/random_binary.pd"
-
-            buffer state = init_state(density: 0.3, seed: 42)
-            buffer age = constant(0.0)
-            buffer state_next = constant(0.0)
-            buffer age_next = constant(0.0)
-
             iterations: range(1..10) = 1
 
             on key(space) paused = !paused
@@ -1038,6 +1030,14 @@ mod tests {
             on key(bracket_left) iterations -= 1
 
             pipeline {
+              sim kernel "game_of_life.pd"
+              init kernel init_state = "init/random_binary.pd"
+
+              buffer state = init_state(density: 0.3, seed: 42)
+              buffer age = constant(0.0)
+              buffer state_next = constant(0.0)
+              buffer age_next = constant(0.0)
+
               on click(continuous: true) {
                 state = run inject(value: 1.0, radius: 3)
                 age = run inject(value: 0.0, radius: 3)
@@ -1074,8 +1074,10 @@ mod tests {
               tile_height = 8
             }
 
-            pixel kernel "gradient.pd"
-            pipeline { display gradient }
+            pipeline {
+              pixel kernel "gradient.pd"
+              display gradient
+            }
             "#,
         )
         .unwrap();
@@ -1090,8 +1092,10 @@ mod tests {
         let config = parse_str(
             r#"
             mode: range(0..3, wrap: true) = 0
-            pixel kernel "test.pd"
-            pipeline { display test }
+            pipeline {
+              pixel kernel "test.pd"
+              display test
+            }
             "#,
         )
         .unwrap();
@@ -1145,9 +1149,6 @@ mod tests {
         assert_eq!(config.pipelines[1].buffers.len(), 2);
         // Shared key bindings at top level
         assert_eq!(config.key_bindings.len(), 1);
-        // No top-level kernels or buffers
-        assert_eq!(config.kernels.len(), 0);
-        assert_eq!(config.buffers.len(), 0);
     }
 
     #[test]

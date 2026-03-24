@@ -211,7 +211,7 @@ impl Runtime {
     /// Parse and compile all declared kernels (top-level + selected pipeline).
     pub fn compile_kernels(&mut self) -> Result<(), String> {
         // Collect kernel declarations from top-level AND selected pipeline
-        let mut kernel_decls: Vec<KernelDecl> = self.config.kernels.clone();
+        let mut kernel_decls: Vec<KernelDecl> = Vec::new();
         // Find the selected pipeline's kernels
         let pipelines = self.config.pipelines.clone();
         let selected_name = if pipelines.len() == 1 {
@@ -315,7 +315,7 @@ impl Runtime {
 
     /// Initialize all declared buffers (top-level + selected pipeline).
     pub fn init_buffers(&mut self) -> Result<(), String> {
-        let mut buf_decls: Vec<BufferDecl> = self.config.buffers.clone();
+        let mut buf_decls: Vec<BufferDecl> = Vec::new();
         // Add pipeline-scoped buffers
         let pipelines = self.config.pipelines.clone();
         let selected_name = if pipelines.len() == 1 {
@@ -447,14 +447,10 @@ impl Runtime {
             let mut runner = GpuSimRunner::new(display, self.width, self.height);
 
             // Add GPU buffers from the selected pipeline
-            let pipeline_buffers: Vec<BufferDecl> = self
+            let all_buffers: Vec<BufferDecl> = self
                 .selected_pipeline()
                 .map(|p| p.buffers.clone())
                 .unwrap_or_default();
-            let all_buffers: Vec<BufferDecl> = self.config.buffers.iter()
-                .chain(pipeline_buffers.iter())
-                .cloned()
-                .collect();
 
             for buf_decl in &all_buffers {
                 if let Some(gpu_type) = buf_decl.gpu_type {
