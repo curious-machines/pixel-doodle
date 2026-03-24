@@ -1,0 +1,5 @@
+pixel kernel "solid_red.pd"
+
+pipeline {
+  display solid_red
+}

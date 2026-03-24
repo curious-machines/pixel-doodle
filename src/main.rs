@@ -8,6 +8,8 @@ mod kernels;
 #[allow(dead_code)]
 mod lang;
 mod native_kernel;
+#[allow(dead_code)]
+mod pdc;
 mod progressive;
 mod render;
 mod simulation;
@@ -131,6 +133,10 @@ fn parse_args() -> CliArgs {
                         std::process::exit(1);
                     }));
                 }
+            }
+            arg if arg.ends_with(".pdc") || arg.ends_with(".pd") || arg.ends_with(".pdl") || arg.ends_with(".wgsl") => {
+                // Positional argument: treat as kernel/config path
+                kernel_path = Some(args[i].clone());
             }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
@@ -1144,8 +1150,245 @@ impl ApplicationHandler for App {
     }
 }
 
+// ── PDC config runner ──
+
+fn run_pdc(config_path: &str, args: &CliArgs) {
+    let src = std::fs::read_to_string(config_path).unwrap_or_else(|e| {
+        eprintln!("Failed to read config file '{}': {}", config_path, e);
+        std::process::exit(1);
+    });
+    let base_dir = std::path::Path::new(config_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    let config = pdc::parse(&src, base_dir).unwrap_or_else(|e| {
+        eprintln!("Config error in '{}':\n{}", config_path, e);
+        std::process::exit(1);
+    });
+
+    let mut runtime = pdc::runtime::Runtime::new(config, WIDTH, HEIGHT, base_dir);
+    runtime.apply_settings();
+
+    // Apply CLI overrides
+    let overrides = Vec::new();
+    runtime.apply_overrides(&overrides);
+
+    // Compile and init
+    let compile_start = Instant::now();
+    runtime.compile_kernels().unwrap_or_else(|e| {
+        eprintln!("Compilation error: {}", e);
+        std::process::exit(1);
+    });
+    let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("[pdc] compile: {compile_ms:.1}ms");
+
+    runtime.init_buffers().unwrap_or_else(|e| {
+        eprintln!("Buffer init error: {}", e);
+        std::process::exit(1);
+    });
+
+    runtime.setup_progressive();
+
+    // Build thread pool
+    let thread_pool = runtime.thread_count().or(args.threads).map(|n| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .expect("failed to create thread pool")
+    });
+
+    // Output-only mode
+    if let Some(ref output_path) = args.output {
+        if !args.bench {
+            runtime.execute_frame(0.0, &thread_pool);
+            bench::write_ppm(output_path, runtime.display_pixels(), runtime.width, runtime.height);
+            eprintln!("[pdc] wrote {}", output_path);
+            return;
+        }
+    }
+
+    // Bench mode
+    if args.bench {
+        let warmup = 5;
+        let frames = args.bench_frames;
+        eprintln!("[bench] warmup {} frames...", warmup);
+        for i in 0..warmup {
+            runtime.execute_frame(i as f64 * 0.016, &thread_pool);
+        }
+        eprintln!("[bench] timing {} frames...", frames);
+        let mut times = Vec::with_capacity(frames as usize);
+        for i in 0..frames {
+            let t0 = Instant::now();
+            runtime.execute_frame((warmup + i) as f64 * 0.016, &thread_pool);
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        if let Some(ref output_path) = args.output {
+            bench::write_ppm(output_path, runtime.display_pixels(), runtime.width, runtime.height);
+        }
+        let min = times.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        let variance = times.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / times.len() as f64;
+        let stddev = variance.sqrt();
+        eprintln!("[bench] {frames} frames: min={min:.2}ms max={max:.2}ms mean={mean:.2}ms stddev={stddev:.2}ms");
+        return;
+    }
+
+    // Interactive mode
+    let event_loop = EventLoop::new().unwrap();
+    if runtime.needs_continuous_redraw() {
+        event_loop.set_control_flow(ControlFlow::Poll);
+    } else {
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
+    let mut app = PdcApp {
+        runtime,
+        thread_pool,
+        window: None,
+        display: None,
+        keys_down: Vec::new(),
+        start_time: Instant::now(),
+    };
+    event_loop.run_app(&mut app).unwrap();
+}
+
+// ── PDC-driven app ──
+
+struct PdcApp {
+    runtime: pdc::runtime::Runtime,
+    thread_pool: Option<rayon::ThreadPool>,
+    window: Option<Arc<Window>>,
+    display: Option<Display>,
+    keys_down: Vec<KeyCode>,
+    start_time: Instant,
+}
+
+impl ApplicationHandler for PdcApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let win_attrs = Window::default_attributes()
+            .with_title(self.runtime.title())
+            .with_inner_size(winit::dpi::PhysicalSize::new(
+                self.runtime.width,
+                self.runtime.height,
+            ));
+        let window = Arc::new(event_loop.create_window(win_attrs).unwrap());
+        let display = Display::new(
+            Arc::clone(&window),
+            self.runtime.width,
+            self.runtime.height,
+        );
+        self.display = Some(display);
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                if let PhysicalKey::Code(code) = key_event.physical_key {
+                    if key_event.state == ElementState::Pressed {
+                        if code == KeyCode::Escape || code == KeyCode::KeyQ {
+                            event_loop.exit();
+                            return;
+                        }
+                        if !self.keys_down.contains(&code) {
+                            self.keys_down.push(code);
+                        }
+                        // Fire key binding on press
+                        if let Some(name) = pdc::runtime::key_code_to_name(code) {
+                            self.runtime.handle_key_press(name);
+                        }
+                    } else {
+                        self.keys_down.retain(|k| *k != code);
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.runtime.mouse_x = position.x;
+                self.runtime.mouse_y = position.y;
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.runtime.mouse_down = state == ElementState::Pressed;
+            }
+            WindowEvent::RedrawRequested => {
+                // Handle held keys for continuous pan/zoom
+                for code in &self.keys_down.clone() {
+                    if let Some(name) = pdc::runtime::key_code_to_name(*code) {
+                        // Only re-fire for pan/zoom keys (held down behavior)
+                        match name {
+                            "left" | "right" | "up" | "down" | "plus" | "minus" => {
+                                self.runtime.handle_key_press(name);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let time = self.start_time.elapsed().as_secs_f64();
+                let t0 = Instant::now();
+                let updated = self.runtime.execute_frame(time, &self.thread_pool);
+                let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+                if updated {
+                    let display = self.display.as_ref().unwrap();
+                    let pixels = self.runtime.display_pixels();
+                    display.upload_and_present(pixels);
+
+                    if let Some(window) = &self.window {
+                        let title = self.runtime.title();
+                        if let Some((current, max)) = self.runtime.accumulation_info() {
+                            window.set_title(&format!(
+                                "{title} | {render_ms:.1}ms | sample {current}/{max}"
+                            ));
+                        } else {
+                            let fps = if render_ms > 0.0 {
+                                1000.0 / render_ms
+                            } else {
+                                0.0
+                            };
+                            window.set_title(&format!(
+                                "{title} | {render_ms:.1}ms ({fps:.0} fps)"
+                            ));
+                        }
+                    }
+                } else if self.display.is_some() {
+                    // Re-present existing buffer even if not updated
+                    let display = self.display.as_ref().unwrap();
+                    display.upload_and_present(self.runtime.display_pixels());
+                }
+
+                if self.runtime.needs_continuous_redraw() {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let args = parse_args();
+
+    // PDC config mode: if the first positional arg (kernel_path) ends in .pdc
+    if let Some(ref path) = args.kernel_path {
+        if path.ends_with(".pdc") {
+            run_pdc(path, &args);
+            return;
+        }
+    }
 
     // Simulation mode: separate path from kernel rendering
     if let Some(ref sim_name) = args.sim {

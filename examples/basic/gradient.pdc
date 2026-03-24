@@ -1,0 +1,6 @@
+# Gradient — simplest pixel kernel
+pixel kernel "gradient.pd"
+
+pipeline {
+  display gradient
+}

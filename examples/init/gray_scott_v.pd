@@ -1,0 +1,17 @@
+// Initialize Gray-Scott V field: 0.0 everywhere with random spots of 0.25
+
+kernel init_gray_scott_v(px: u32, py: u32, width: u32, height: u32) -> u32
+  buffers(out: write)
+{
+    // Hash position (same as U but shifted so spots overlap)
+    let h1 = px * 374761393u32 + py * 668265263u32;
+    let h2 = h1 ^ (h1 >> 13u32);
+    let h3 = h2 * 1274126177u32;
+    let h4 = h3 ^ (h3 >> 16u32);
+    let hf = (h4 & 65535u32) as f64 / 65536.0;
+
+    // Same 2% pixels as U
+    let val = if hf < 0.02 { 0.25 } else { 0.0 };
+    buf_store(out, px, py, val);
+    emit 0u32;
+}

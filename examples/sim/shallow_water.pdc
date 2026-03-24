@@ -1,0 +1,26 @@
+title = "Shallow Water Simulation"
+
+sim kernel "shallow_water.pd"
+init kernel init_h = "../init/shallow_water_h.pd"
+
+buffer h = init_h()
+buffer vx = constant(0.0)
+buffer vy = constant(0.0)
+buffer h_next = constant(0.0)
+buffer vx_next = constant(0.0)
+buffer vy_next = constant(0.0)
+
+on key(space) paused = !paused
+on key(period) frame += 1
+
+pipeline {
+  on click(continuous: true) {
+    h = run inject(value: 0.3, radius: 10, falloff: "quadratic")
+  }
+  loop(iterations: 4) {
+    h_next, vx_next, vy_next = display shallow_water { h_in: h, vx_in: vx, vy_in: vy }
+    swap h <-> h_next
+    swap vx <-> vx_next
+    swap vy <-> vy_next
+  }
+}
