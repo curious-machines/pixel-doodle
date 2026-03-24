@@ -211,7 +211,17 @@ impl Display {
             },
         );
 
-        let output = self.surface.get_current_texture().unwrap();
+        let output = match self.surface.get_current_texture() {
+            Ok(output) => output,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                return;
+            }
+            Err(e) => {
+                eprintln!("surface error: {e}");
+                return;
+            }
+        };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -248,7 +258,19 @@ impl Display {
     /// Present a frame using a pre-recorded command buffer (for GPU compute path).
     /// The caller is responsible for copying pixel data into self.texture before calling this.
     pub fn present_with_commands(&self, command_buffer: wgpu::CommandBuffer) {
-        let output = self.surface.get_current_texture().unwrap();
+        let output = match self.surface.get_current_texture() {
+            Ok(output) => output,
+            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                self.surface.configure(&self.device, &self.surface_config);
+                self.queue.submit(std::iter::once(command_buffer));
+                return;
+            }
+            Err(e) => {
+                eprintln!("surface error: {e}");
+                self.queue.submit(std::iter::once(command_buffer));
+                return;
+            }
+        };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());

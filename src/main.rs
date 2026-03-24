@@ -315,6 +315,11 @@ impl ApplicationHandler for PdcApp {
     ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(display) = &mut self.display {
+                    display.resize(size.width, size.height);
+                }
+            }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
