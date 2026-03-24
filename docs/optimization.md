@@ -45,7 +45,9 @@ Scaling is near-linear up to 4 threads, good at 8, then diminishing returns. Two
 - **Branch misprediction:** Under 0.4% for Mandelbrot. The branch predictor handles the escape-check well.
 - **Memory bandwidth:** Gradient kernel (memory-bound, trivial compute) scales well even at 20 threads, confirming bandwidth is not saturated.
 
-### 4. GPU Comparison
+### 4. GPU Comparison (historical)
+
+These numbers were collected when a GPU compute backend existed (since removed). They remain useful as a reference point.
 
 | Backend | Avg ms | Mpix/s | vs 1-thread CPU |
 |---------|--------|--------|-----------------|
@@ -53,7 +55,7 @@ Scaling is near-linear up to 4 threads, good at 8, then diminishing returns. Two
 | LLVM 20t| 10.5   | 103    | 9.3x            |
 | GPU     | 0.74   | 1464   | 132x            |
 
-The GPU is ~14x faster than the best CPU configuration. This is expected — the GPU runs thousands of pixels simultaneously with dedicated hardware scheduling for divergent workloads.
+The GPU was ~14x faster than the best CPU configuration. GPUs run thousands of pixels simultaneously with dedicated hardware scheduling for divergent workloads.
 
 ## Vectorization (SIMD) — Not Yet Implemented
 
@@ -110,14 +112,14 @@ Vectorization should be opt-in via a flag (e.g., `--simd-width 2`) so it can be 
 | `--bench` | Headless benchmark mode (no window) |
 | `--bench-frames N` | Number of frames to time (default 100) |
 | `--threads N` | Limit CPU thread count |
-| `--tile-height N` | Rows per work unit (default 1) |
+| `--set tile_height=N` | Rows per work unit (default 1) |
 | `--output path.ppm` | Save rendered frame as PPM image |
 
 ### Thread scaling sweep example
 
 ```bash
 for t in 1 2 4 8 10 12 16 20; do
-  ./run_pd llvm basic/mandelbrot --bench --threads $t
+  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdc --bench --threads $t
 done
 ```
 
@@ -125,7 +127,7 @@ done
 
 ```bash
 for th in 1 2 4 8 16; do
-  ./run_pd llvm basic/mandelbrot --bench --tile-height $th
+  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdc --bench --set tile_height=$th
 done
 ```
 

@@ -7,8 +7,8 @@ PD is a higher-level language for writing per-pixel compute kernels. It compiles
 Use `use` to import function definitions from other PD files:
 
 ```
-use "sdf/helpers.pd";
-use "sdf/shapes.pd";
+use "helpers.pd";
+use "shapes.pd";
 
 kernel my_kernel(x: f64, y: f64) -> u32 {
     let d = sd_circle(vec2(x, y), 0.5);

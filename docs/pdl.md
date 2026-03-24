@@ -399,4 +399,4 @@ kernel sdf(x: f64, y: f64) -> u32 {
 }
 ```
 
-Note: the example above shows the intent. PDL does not support nested expressions like `sqrt(add cx2 cy2)` or reassignment of `intensity` — every value needs its own unique name and each operation is a separate statement. See `examples/sdf.pdl` for the working version.
+Note: the example above shows the intent. PDL does not support nested expressions like `sqrt(add cx2 cy2)` or reassignment of `intensity` — every value needs its own unique name and each operation is a separate statement. See `examples/sdf/sdf/sdf.pdl` for the working version.
