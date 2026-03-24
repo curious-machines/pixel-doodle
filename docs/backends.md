@@ -1,6 +1,6 @@
 # JIT Backends
 
-pixel-doodle compiles PD/PDL kernel source into machine code at startup via a JIT backend. The backend is selected in the `.pdc` settings block or via `--set backend=<name>`.
+pixel-doodle compiles PD/PDL kernel source into machine code at startup via a JIT backend. The backend is selected in the `.pdp` settings block or via `--set backend=<name>`.
 
 ## Available Backends
 
@@ -13,7 +13,7 @@ Cranelift is the default. It compiles fast and produces good code. LLVM compiles
 
 ## Selecting a Backend
 
-### In the .pdc file
+### In the .pdp file
 
 ```
 settings {
@@ -24,7 +24,7 @@ settings {
 ### Via CLI override
 
 ```bash
-cargo run --release -- example.pdc --set backend=llvm
+cargo run --release -- example.pdp --set backend=llvm
 ```
 
 ### Via .pds settings file
@@ -35,7 +35,7 @@ backend = "llvm"
 ```
 
 ```bash
-cargo run --release -- example.pdc --settings my_machine.pds
+cargo run --release -- example.pdp --settings my_machine.pds
 ```
 
 ## Building
@@ -82,7 +82,7 @@ LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backe
 cargo build --release --no-default-features
 ```
 
-Without a JIT backend, `.pdc` files that reference `.pd` or `.pdl` kernels will fail at compile time.
+Without a JIT backend, `.pdp` files that reference `.pd` or `.pdl` kernels will fail at compile time.
 
 ## Compilation Pipeline
 

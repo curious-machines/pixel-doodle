@@ -37,7 +37,7 @@ enum CompiledKernelEntry {
     },
 }
 
-/// The PDC execution engine. Holds all state for running a config-driven example.
+/// The PDP execution engine. Holds all state for running a config-driven example.
 pub struct Runtime {
     config: Config,
     kernels: HashMap<String, CompiledKernelEntry>,
@@ -1143,7 +1143,7 @@ fn compile_sim_kernel(
     }
 }
 
-/// Map a winit KeyCode to the string name used in .pdc files.
+/// Map a winit KeyCode to the string name used in .pdp files.
 pub fn key_code_to_name(code: KeyCode) -> Option<&'static str> {
     Some(match code {
         KeyCode::Space => "space",

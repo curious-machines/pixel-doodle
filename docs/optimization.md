@@ -119,7 +119,7 @@ Vectorization should be opt-in via a flag (e.g., `--simd-width 2`) so it can be 
 
 ```bash
 for t in 1 2 4 8 10 12 16 20; do
-  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdc --bench --threads $t
+  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdp --bench --threads $t
 done
 ```
 
@@ -127,7 +127,7 @@ done
 
 ```bash
 for th in 1 2 4 8 16; do
-  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdc --bench --set tile_height=$th
+  cargo run --release -- examples/basic/mandelbrot/mandelbrot.pdp --bench --set tile_height=$th
 done
 ```
 

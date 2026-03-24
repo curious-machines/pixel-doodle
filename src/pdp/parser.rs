@@ -868,7 +868,7 @@ fn derive_kernel_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdc::lexer::lex;
+    use crate::pdp::lexer::lex;
 
     fn parse_str(input: &str) -> Result<Config, ParseError> {
         let tokens = lex(input).map_err(|e| ParseError {

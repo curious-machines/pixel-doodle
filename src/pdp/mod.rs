@@ -11,7 +11,7 @@ use std::path::Path;
 use ast::Config;
 use parser::ParseError;
 
-/// Parse a `.pdc` configuration file.
+/// Parse a `.pdp` configuration file.
 ///
 /// `source` is the file content. `base_dir` is the directory of the config file,
 /// used for resolving relative kernel paths.
@@ -34,13 +34,13 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn parse_pdc(input: &str) -> Result<Config, String> {
+    fn parse_pdp(input: &str) -> Result<Config, String> {
         parse(input, &PathBuf::from("."))
     }
 
     #[test]
     fn end_to_end_gradient() {
-        let config = parse_pdc(
+        let config = parse_pdp(
             r#"
             pipeline {
               pixel kernel "gradient.pd"
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn end_to_end_full_example() {
-        let config = parse_pdc(
+        let config = parse_pdp(
             r#"
             title = "Game of Life"
 
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn end_to_end_smoke() {
-        let config = parse_pdc(
+        let config = parse_pdp(
             r#"
             title = "Smoke Simulation"
 
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn validation_error_reported() {
-        let result = parse_pdc(
+        let result = parse_pdp(
             r#"
             pipeline {
               pixel kernel "test.pd"
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn toplevel_kernel_rejected() {
-        let result = parse_pdc(
+        let result = parse_pdp(
             r#"
             pixel kernel "test.pd"
             pipeline { display test }

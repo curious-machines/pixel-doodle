@@ -1,14 +1,14 @@
-# PDC — Pixel Doodle Config Reference
+# PDP — Pixel Doodle Config Reference
 
-PDC is a declarative configuration language that describes how to run pixel-doodle examples. A `.pdc` file specifies what kernels to load, how to initialize buffers, what pipeline of steps to execute each frame, and how user input maps to actions.
+PDP is a declarative configuration language that describes how to run pixel-doodle examples. A `.pdp` file specifies what kernels to load, how to initialize buffers, what pipeline of steps to execute each frame, and how user input maps to actions.
 
-## Running a PDC File
+## Running a PDP File
 
 ```bash
-cargo run --release -- examples/basic/gradient/gradient.pdc
-cargo run --release -- examples/sim/smoke/smoke.pdc --output frame.ppm
-cargo run --release -- examples/sim/gray_scott/gray_scott.pdc --bench
-cargo run --release -- examples/sim/gray_scott/gray_scott.pdc --set backend=gpu
+cargo run --release -- examples/basic/gradient/gradient.pdp
+cargo run --release -- examples/sim/smoke/smoke.pdp --output frame.ppm
+cargo run --release -- examples/sim/gray_scott/gray_scott.pdp --bench
+cargo run --release -- examples/sim/gray_scott/gray_scott.pdp --set backend=gpu
 ```
 
 Additional CLI flags:
@@ -23,7 +23,7 @@ Additional CLI flags:
 
 ## File Structure
 
-A `.pdc` file has top-level directives (title, variables, settings, key bindings) and one or more `pipeline` blocks. Kernel and buffer declarations go inside pipeline blocks. Lines starting with `#` are comments.
+A `.pdp` file has top-level directives (title, variables, settings, key bindings) and one or more `pipeline` blocks. Kernel and buffer declarations go inside pipeline blocks. Lines starting with `#` are comments.
 
 ```
 # This is a comment
@@ -39,7 +39,7 @@ pipeline {
 
 ## Pipeline Blocks
 
-Every `.pdc` file must have at least one `pipeline` block. Pipelines contain kernel declarations, buffer declarations, and execution steps.
+Every `.pdp` file must have at least one `pipeline` block. Pipelines contain kernel declarations, buffer declarations, and execution steps.
 
 ### Single pipeline (unnamed)
 
@@ -240,7 +240,7 @@ Variables with `range()` are automatically clamped or wrapped after modification
 
 ### Key names
 
-| PDC name | Key |
+| PDP name | Key |
 |----------|-----|
 | `space` | Space bar |
 | `period` | Period (.) |
@@ -348,7 +348,7 @@ Settings and variables can be overridden from multiple sources. Precedence (high
 
 1. `--set key=value` (CLI)
 2. `--settings file.pds` (external file)
-3. PDC file defaults
+3. PDP file defaults
 
 ### `.pds` file format
 

@@ -31,7 +31,7 @@ struct GpuPipeline {
     num_bindings: u32,
 }
 
-/// Generic GPU simulation runner driven by PDC pipeline steps.
+/// Generic GPU simulation runner driven by PDP pipeline steps.
 ///
 /// Holds named GPU storage buffers and compiled compute pipelines.
 /// Dispatches compute shaders with buffer bindings resolved by name.
@@ -191,7 +191,7 @@ impl GpuSimRunner {
 
     /// Dispatch a compute shader with named buffer bindings.
     ///
-    /// `bindings` maps WGSL variable names to PDC buffer names.
+    /// `bindings` maps WGSL variable names to PDP buffer names.
     /// The uniform buffer (binding 0) is always bound automatically.
     pub fn dispatch(
         &self,

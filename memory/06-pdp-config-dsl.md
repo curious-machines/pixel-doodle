@@ -1,4 +1,4 @@
-# PDC Configuration DSL Design
+# PDP Configuration DSL Design
 
 ## Problem
 
@@ -6,7 +6,7 @@
 
 ## Goal
 
-A custom DSL (`.pdc` — Pixel Doodle Config) that declaratively describes everything needed to run any kernel example, eliminating per-example Rust code. The app should be able to define and execute kernels at runtime with runtime-adjustable settings (threads, backend, tile height, etc.) rather than CLI-only arguments.
+A custom DSL (`.pdp` — Pixel Doodle Config) that declaratively describes everything needed to run any kernel example, eliminating per-example Rust code. The app should be able to define and execute kernels at runtime with runtime-adjustable settings (threads, backend, tile height, etc.) rather than CLI-only arguments.
 
 ## Design Principles
 
@@ -29,7 +29,7 @@ A custom DSL (`.pdc` — Pixel Doodle Config) that declaratively describes every
 
 ---
 
-## PDC Language Specification
+## PDP Language Specification
 
 ### Syntax Overview
 
@@ -98,14 +98,14 @@ paused = false
 
 ### Intrinsic Globals
 
-Runtime-provided variables, always available, modifiable by both the controller and the PDC:
+Runtime-provided variables, always available, modifiable by both the controller and the PDP:
 
 - `width`, `height` — canvas dimensions
 - `center_x`, `center_y`, `zoom` — viewport state
 - `mouse_x`, `mouse_y` — mouse position
 - `time` — elapsed seconds
 - `paused` — whether `frame` auto-increments
-- `frame` — current frame number, controller-maintained; auto-increments each display refresh when not paused; PDC can modify (e.g., `frame += 1` for single-step)
+- `frame` — current frame number, controller-maintained; auto-increments each display refresh when not paused; PDP can modify (e.g., `frame += 1` for single-step)
 
 These exist without declaration. The config can set initial values and modify them via key bindings.
 
@@ -248,7 +248,7 @@ Position in pipeline is significant — determines execution order relative to o
 Precedence (highest to lowest):
 1. `--set key=value` — CLI one-off overrides
 2. `--settings file.pds` — external settings/variable overrides
-3. PDC file — `settings { }` block and variable declarations
+3. PDP file — `settings { }` block and variable declarations
 
 The `.pds` file is a flat key-value file parsed by `parse_settings_body`. Can override both settings and intrinsic globals:
 
@@ -422,7 +422,7 @@ pipeline {
 
 ## What Remains in main.rs
 
-- PDC parser invocation and config loading
+- PDP parser invocation and config loading
 - Generic `App` struct with one `ExecutionPlan` field
 - One `RedrawRequested` handler dispatching through the plan
 - Controller logic: auto-increment `frame` when not paused, run pipeline when frame advances

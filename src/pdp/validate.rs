@@ -251,8 +251,8 @@ fn validate_buffer_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdc::lexer::lex;
-    use crate::pdc::parser::Parser;
+    use crate::pdp::lexer::lex;
+    use crate::pdp::parser::Parser;
 
     fn parse_and_validate(input: &str) -> Result<(), Vec<ValidationError>> {
         let tokens = lex(input).unwrap();

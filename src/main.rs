@@ -7,7 +7,7 @@ mod jit;
 mod kernel_ir;
 #[allow(dead_code)]
 mod lang;
-mod pdc;
+mod pdp;
 mod progressive;
 mod render;
 
@@ -90,7 +90,7 @@ fn parse_args() -> CliArgs {
                 }
             }
             "--help" | "-h" => {
-                eprintln!("Usage: pixel-doodle <config.pdc> [options]");
+                eprintln!("Usage: pixel-doodle <config.pdp> [options]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --output <file.ppm>    Render one frame and save (no window)");
@@ -102,7 +102,7 @@ fn parse_args() -> CliArgs {
                 eprintln!("  --help                 Show this help");
                 std::process::exit(0);
             }
-            arg if arg.ends_with(".pdc") => {
+            arg if arg.ends_with(".pdp") => {
                 config_path = Some(args[i].clone());
             }
             _ => {
@@ -124,9 +124,9 @@ fn parse_args() -> CliArgs {
     }
 }
 
-// ── PDC config runner ──
+// ── PDP config runner ──
 
-fn run_pdc(config_path: &str, args: &CliArgs) {
+fn run_pdp(config_path: &str, args: &CliArgs) {
     let src = std::fs::read_to_string(config_path).unwrap_or_else(|e| {
         eprintln!("Failed to read config file '{}': {}", config_path, e);
         std::process::exit(1);
@@ -134,12 +134,12 @@ fn run_pdc(config_path: &str, args: &CliArgs) {
     let base_dir = std::path::Path::new(config_path)
         .parent()
         .unwrap_or(std::path::Path::new("."));
-    let config = pdc::parse(&src, base_dir).unwrap_or_else(|e| {
+    let config = pdp::parse(&src, base_dir).unwrap_or_else(|e| {
         eprintln!("Config error in '{}':\n{}", config_path, e);
         std::process::exit(1);
     });
 
-    let mut runtime = pdc::runtime::Runtime::new(config, WIDTH, HEIGHT, base_dir);
+    let mut runtime = pdp::runtime::Runtime::new(config, WIDTH, HEIGHT, base_dir);
     runtime.apply_settings();
 
     // Apply .pds file overrides
@@ -167,7 +167,7 @@ fn run_pdc(config_path: &str, args: &CliArgs) {
         std::process::exit(1);
     });
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("[pdc] compile: {compile_ms:.1}ms");
+    eprintln!("[pdp] compile: {compile_ms:.1}ms");
 
     runtime.init_buffers().unwrap_or_else(|e| {
         eprintln!("Buffer init error: {}", e);
@@ -198,7 +198,7 @@ fn run_pdc(config_path: &str, args: &CliArgs) {
                 runtime.width,
                 runtime.height,
             );
-            eprintln!("[pdc] wrote {}", output_path);
+            eprintln!("[pdp] wrote {}", output_path);
             return;
         }
     }
@@ -245,7 +245,7 @@ fn run_pdc(config_path: &str, args: &CliArgs) {
     } else {
         event_loop.set_control_flow(ControlFlow::Wait);
     }
-    let mut app = PdcApp {
+    let mut app = PdpApp {
         runtime,
         thread_pool,
         window: None,
@@ -273,10 +273,10 @@ fn parse_pds(src: &str) -> Vec<(String, String)> {
     overrides
 }
 
-// ── PDC-driven app ──
+// ── PDP-driven app ──
 
-struct PdcApp {
-    runtime: pdc::runtime::Runtime,
+struct PdpApp {
+    runtime: pdp::runtime::Runtime,
     thread_pool: Option<rayon::ThreadPool>,
     window: Option<Arc<Window>>,
     display: Option<Display>,
@@ -284,7 +284,7 @@ struct PdcApp {
     start_time: Instant,
 }
 
-impl ApplicationHandler for PdcApp {
+impl ApplicationHandler for PdpApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -333,7 +333,7 @@ impl ApplicationHandler for PdcApp {
                             self.keys_down.push(code);
                         }
                         // Fire key binding on press
-                        if let Some(name) = pdc::runtime::key_code_to_name(code) {
+                        if let Some(name) = pdp::runtime::key_code_to_name(code) {
                             self.runtime.handle_key_press(name);
                         }
                     } else {
@@ -355,7 +355,7 @@ impl ApplicationHandler for PdcApp {
             WindowEvent::RedrawRequested => {
                 // Handle held keys for continuous pan/zoom
                 for code in &self.keys_down.clone() {
-                    if let Some(name) = pdc::runtime::key_code_to_name(*code) {
+                    if let Some(name) = pdp::runtime::key_code_to_name(*code) {
                         // Only re-fire for pan/zoom keys (held down behavior)
                         match name {
                             "left" | "right" | "up" | "down" | "plus" | "minus" => {
@@ -419,9 +419,9 @@ fn main() {
     let args = parse_args();
 
     match &args.config_path {
-        Some(path) => run_pdc(path, &args),
+        Some(path) => run_pdp(path, &args),
         None => {
-            eprintln!("Usage: pixel-doodle <config.pdc> [options]");
+            eprintln!("Usage: pixel-doodle <config.pdp> [options]");
             eprintln!();
             eprintln!("Run with --help for details.");
             std::process::exit(1);
