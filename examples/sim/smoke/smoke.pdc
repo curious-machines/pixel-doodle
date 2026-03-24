@@ -1,24 +1,24 @@
 title = "Smoke Simulation"
 
-sim kernel advect = "advect.pd"
-sim kernel divergence = "divergence.pd"
-sim kernel jacobi = "jacobi.pd"
-sim kernel project = "project.pd"
-
-buffer vx = constant(0.0)
-buffer vy = constant(0.0)
-buffer density = constant(0.0)
-buffer vx0 = constant(0.0)
-buffer vy0 = constant(0.0)
-buffer density0 = constant(0.0)
-buffer pressure = constant(0.0)
-buffer pressure_tmp = constant(0.0)
-buffer divergence = constant(0.0)
-
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline {
+pipeline cpu {
+  sim kernel advect = "advect.pd"
+  sim kernel divergence = "divergence.pd"
+  sim kernel jacobi = "jacobi.pd"
+  sim kernel project = "project.pd"
+
+  buffer vx = constant(0.0)
+  buffer vy = constant(0.0)
+  buffer density = constant(0.0)
+  buffer vx0 = constant(0.0)
+  buffer vy0 = constant(0.0)
+  buffer density0 = constant(0.0)
+  buffer pressure = constant(0.0)
+  buffer pressure_tmp = constant(0.0)
+  buffer divergence = constant(0.0)
+
   on click(continuous: true) {
     vy = run inject(value: -3.0, radius: 15, falloff: "quadratic")
     density = run inject(value: 0.5, radius: 15, falloff: "quadratic")
@@ -32,4 +32,33 @@ pipeline {
   }
   vx0, vy0 = display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
   swap vx <-> vx0, vy <-> vy0
+}
+
+pipeline gpu {
+  sim kernel advect = "smoke_advect.wgsl"
+  sim kernel divergence = "smoke_divergence.wgsl"
+  sim kernel jacobi = "smoke_jacobi.wgsl"
+  sim kernel project = "smoke_project.wgsl"
+  sim kernel vis = "smoke_vis.wgsl"
+
+  buffer field: gpu(vec4f) = constant(0.0)
+  buffer field_next: gpu(vec4f) = constant(0.0)
+  buffer div_buf: gpu(f32) = constant(0.0)
+  buffer press_a: gpu(f32) = constant(0.0)
+  buffer press_b: gpu(f32) = constant(0.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+
+  on click(continuous: true) {
+    field = run inject(value: 0.5, radius: 15)
+  }
+  field_next = run advect { field_in: field, field_out: field_next }
+  swap field <-> field_next
+  div_buf = run divergence { field_in: field, div_out: div_buf }
+  loop(iterations: 40) {
+    press_b = run jacobi { div_in: div_buf, press_in: press_a, press_out: press_b }
+    swap press_a <-> press_b
+  }
+  field_next = run project { pressure: press_a, field_in: field, field_out: field_next }
+  swap field <-> field_next
+  display vis { field_in: field, pixels: pixels }
 }

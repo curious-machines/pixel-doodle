@@ -1,19 +1,19 @@
 title = "Shallow Water Simulation"
 
-sim kernel "shallow_water.pd"
-init kernel init_h = "init/shallow_water_h.pd"
-
-buffer h = init_h()
-buffer vx = constant(0.0)
-buffer vy = constant(0.0)
-buffer h_next = constant(0.0)
-buffer vx_next = constant(0.0)
-buffer vy_next = constant(0.0)
-
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline {
+pipeline cpu {
+  sim kernel "shallow_water.pd"
+  init kernel init_h = "init/shallow_water_h.pd"
+
+  buffer h = init_h()
+  buffer vx = constant(0.0)
+  buffer vy = constant(0.0)
+  buffer h_next = constant(0.0)
+  buffer vx_next = constant(0.0)
+  buffer vy_next = constant(0.0)
+
   on click(continuous: true) {
     h = run inject(value: 0.3, radius: 10, falloff: "quadratic")
   }
@@ -23,4 +23,22 @@ pipeline {
     swap vx <-> vx_next
     swap vy <-> vy_next
   }
+}
+
+pipeline gpu {
+  sim kernel step = "shallow_water_step.wgsl"
+  sim kernel vis = "shallow_water_vis.wgsl"
+
+  buffer field: gpu(vec4f) = constant(0.0)
+  buffer field_next: gpu(vec4f) = constant(0.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+
+  on click(continuous: true) {
+    field = run inject(value: 0.3, radius: 10)
+  }
+  loop(iterations: 4) {
+    field_next = run step { field_in: field, field_out: field_next }
+    swap field <-> field_next
+  }
+  display vis { field_in: field, pixels: pixels }
 }

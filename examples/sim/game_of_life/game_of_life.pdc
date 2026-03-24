@@ -1,13 +1,5 @@
 title = "Game of Life"
 
-sim kernel "game_of_life.pd"
-init kernel init_state = "init/random_binary.pd"
-
-buffer state = init_state()
-buffer age = constant(0.0)
-buffer state_next = constant(0.0)
-buffer age_next = constant(0.0)
-
 iterations: range(1..10) = 1
 
 on key(space) paused = !paused
@@ -15,7 +7,15 @@ on key(period) frame += 1
 on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
-pipeline {
+pipeline cpu {
+  sim kernel "game_of_life.pd"
+  init kernel init_state = "init/random_binary.pd"
+
+  buffer state = init_state()
+  buffer age = constant(0.0)
+  buffer state_next = constant(0.0)
+  buffer age_next = constant(0.0)
+
   on click(continuous: true) {
     state = run inject(value: 1.0, radius: 3)
     age = run inject(value: 0.0, radius: 3)
@@ -25,4 +25,22 @@ pipeline {
     swap state <-> state_next
     swap age <-> age_next
   }
+}
+
+pipeline gpu {
+  sim kernel step = "game_of_life_step.wgsl"
+  sim kernel vis = "game_of_life_vis.wgsl"
+
+  buffer grid: gpu(i32) = constant(0.0)
+  buffer grid_next: gpu(i32) = constant(0.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+
+  on click(continuous: true) {
+    grid = run inject(value: 1.0, radius: 3)
+  }
+  loop(iterations: iterations) {
+    grid_next = run step { grid_in: grid, grid_out: grid_next }
+    swap grid <-> grid_next
+  }
+  display vis { grid_in: grid, pixels: pixels }
 }
