@@ -160,7 +160,7 @@ impl Parser {
             variables: Vec::new(),
             settings: Settings::default(),
             key_bindings: Vec::new(),
-            pipeline: None,
+            pipelines: Vec::new(),
         };
 
         while !self.at(&Token::Eof) {
@@ -180,7 +180,7 @@ impl Parser {
                     config.settings = self.parse_settings()?;
                 }
                 Token::Pipeline => {
-                    config.pipeline = Some(self.parse_pipeline()?);
+                    config.pipelines.push(self.parse_pipeline()?);
                 }
                 Token::On => {
                     config.key_bindings.push(self.parse_key_binding()?);
@@ -462,10 +462,46 @@ impl Parser {
     fn parse_pipeline(&mut self) -> Result<Pipeline, ParseError> {
         let span = self.span();
         self.expect(&Token::Pipeline)?;
+
+        // Optional pipeline name: `pipeline cpu {` or `pipeline gpu {` or `pipeline {`
+        let name = if self.at(&Token::LBrace) {
+            None
+        } else if let Token::Ident(name) = self.peek().clone() {
+            self.advance();
+            Some(name)
+        } else {
+            None
+        };
+
         self.expect(&Token::LBrace)?;
-        let steps = self.parse_pipeline_steps()?;
+
+        // Pipeline body can contain kernel/buffer declarations AND pipeline steps
+        let mut kernels = Vec::new();
+        let mut buffers = Vec::new();
+        let mut steps = Vec::new();
+
+        while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
+            match self.peek().clone() {
+                Token::Pixel | Token::Sim | Token::Init => {
+                    kernels.push(self.parse_kernel_decl()?);
+                }
+                Token::Buffer => {
+                    buffers.push(self.parse_buffer_decl()?);
+                }
+                _ => {
+                    steps.push(self.parse_pipeline_step()?);
+                }
+            }
+        }
+
         self.expect(&Token::RBrace)?;
-        Ok(Pipeline { steps, span })
+        Ok(Pipeline {
+            name,
+            kernels,
+            buffers,
+            steps,
+            span,
+        })
     }
 
     fn parse_pipeline_steps(&mut self) -> Result<Vec<PipelineStep>, ParseError> {
@@ -829,8 +865,8 @@ mod tests {
         assert_eq!(config.kernels[0].kind, KernelKind::Pixel);
         assert_eq!(config.kernels[0].name, "gradient");
         assert_eq!(config.kernels[0].path, "gradient.pd");
-        assert!(config.pipeline.is_some());
-        let steps = &config.pipeline.unwrap().steps;
+        assert_eq!(config.pipelines.len(), 1);
+        let steps = &config.pipelines[0].steps;
         assert_eq!(steps.len(), 1);
         assert!(matches!(&steps[0], PipelineStep::Display { kernel_name, .. } if kernel_name == "gradient"));
     }
@@ -856,7 +892,7 @@ mod tests {
 
         assert_eq!(config.kernels.len(), 1);
         assert_eq!(config.key_bindings.len(), 3);
-        let pipeline = config.pipeline.unwrap();
+        let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 1);
         assert!(matches!(&pipeline.steps[0], PipelineStep::Accumulate { samples: 256, .. }));
     }
@@ -900,7 +936,7 @@ mod tests {
         assert!(matches!(&config.buffers[2].init, BufferInit::Constant(v) if *v == 0.0));
         assert_eq!(config.key_bindings.len(), 2);
 
-        let pipeline = config.pipeline.unwrap();
+        let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 2); // on click, loop
         assert!(matches!(&pipeline.steps[0], PipelineStep::OnClick { continuous: true, .. }));
         if let PipelineStep::Loop { body, .. } = &pipeline.steps[1] {
@@ -948,7 +984,7 @@ mod tests {
 
         assert_eq!(config.kernels.len(), 4);
         assert_eq!(config.buffers.len(), 9);
-        let pipeline = config.pipeline.unwrap();
+        let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 6); // swap, run, run, loop, display, swap
     }
 
@@ -1032,6 +1068,56 @@ mod tests {
 
         let var = &config.variables[0];
         assert!(var.range.as_ref().unwrap().wrap);
+    }
+
+    #[test]
+    fn parse_named_pipelines() {
+        let config = parse_str(
+            r#"
+            title = "Gray-Scott"
+
+            on key(space) paused = !paused
+
+            pipeline cpu {
+              sim kernel "gray_scott.pd"
+              buffer u = constant(1.0)
+              buffer v = constant(0.0)
+
+              loop(iterations: 8) {
+                u, v = display gray_scott { u_in: u, v_in: v }
+              }
+            }
+
+            pipeline gpu {
+              sim kernel step = "gray_scott_step.wgsl"
+              sim kernel vis = "gray_scott_vis.wgsl"
+              buffer field = constant(0.0)
+              buffer field_next = constant(0.0)
+
+              loop(iterations: 8) {
+                field_next = run step { field_in: field }
+                swap field <-> field_next
+              }
+              display vis { field_in: field }
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.pipelines.len(), 2);
+        assert_eq!(config.pipelines[0].name.as_deref(), Some("cpu"));
+        assert_eq!(config.pipelines[1].name.as_deref(), Some("gpu"));
+        // CPU pipeline has its own kernels and buffers
+        assert_eq!(config.pipelines[0].kernels.len(), 1);
+        assert_eq!(config.pipelines[0].buffers.len(), 2);
+        // GPU pipeline has its own kernels and buffers
+        assert_eq!(config.pipelines[1].kernels.len(), 2);
+        assert_eq!(config.pipelines[1].buffers.len(), 2);
+        // Shared key bindings at top level
+        assert_eq!(config.key_bindings.len(), 1);
+        // No top-level kernels or buffers
+        assert_eq!(config.kernels.len(), 0);
+        assert_eq!(config.buffers.len(), 0);
     }
 
     #[test]

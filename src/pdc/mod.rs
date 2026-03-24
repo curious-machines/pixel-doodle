@@ -51,7 +51,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.kernels.len(), 1);
-        assert!(config.pipeline.is_some());
+        assert_eq!(config.pipelines.len(), 1);
     }
 
     #[test]

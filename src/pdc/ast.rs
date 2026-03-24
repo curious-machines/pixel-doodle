@@ -190,6 +190,13 @@ pub enum PipelineStep {
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
+    /// Pipeline name: None for unnamed, Some("cpu") or Some("gpu") for named.
+    pub name: Option<String>,
+    /// Kernels scoped to this pipeline.
+    pub kernels: Vec<KernelDecl>,
+    /// Buffers scoped to this pipeline.
+    pub buffers: Vec<BufferDecl>,
+    /// Pipeline execution steps.
     pub steps: Vec<PipelineStep>,
     pub span: Span,
 }
@@ -199,10 +206,13 @@ pub struct Pipeline {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub title: Option<String>,
+    /// Top-level kernel declarations (shared or for single-pipeline configs).
     pub kernels: Vec<KernelDecl>,
+    /// Top-level buffer declarations (shared or for single-pipeline configs).
     pub buffers: Vec<BufferDecl>,
     pub variables: Vec<VarDecl>,
     pub settings: Settings,
     pub key_bindings: Vec<KeyBinding>,
-    pub pipeline: Option<Pipeline>,
+    /// One or more pipelines. Unnamed (single) or named (cpu/gpu).
+    pub pipelines: Vec<Pipeline>,
 }

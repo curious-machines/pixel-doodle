@@ -197,10 +197,25 @@ impl Runtime {
         None
     }
 
-    /// Parse and compile all declared kernels.
+    /// Parse and compile all declared kernels (top-level + selected pipeline).
     pub fn compile_kernels(&mut self) -> Result<(), String> {
-        // Clone what we need to avoid borrow issues
-        let kernel_decls: Vec<KernelDecl> = self.config.kernels.clone();
+        // Collect kernel declarations from top-level AND selected pipeline
+        let mut kernel_decls: Vec<KernelDecl> = self.config.kernels.clone();
+        // Find the selected pipeline's kernels
+        let pipelines = self.config.pipelines.clone();
+        let selected_name = if pipelines.len() == 1 {
+            pipelines[0].name.clone()
+        } else if self.backend_name == "gpu" {
+            Some("gpu".to_string())
+        } else {
+            Some("cpu".to_string())
+        };
+        for p in &pipelines {
+            if pipelines.len() == 1 || p.name == selected_name {
+                kernel_decls.extend(p.kernels.iter().cloned());
+            }
+        }
+
         let backend_name = self.backend_name.clone();
         let base_dir = self.base_dir.clone();
 
@@ -285,9 +300,23 @@ impl Runtime {
         Ok(())
     }
 
-    /// Initialize all declared buffers.
+    /// Initialize all declared buffers (top-level + selected pipeline).
     pub fn init_buffers(&mut self) -> Result<(), String> {
-        let buf_decls: Vec<BufferDecl> = self.config.buffers.clone();
+        let mut buf_decls: Vec<BufferDecl> = self.config.buffers.clone();
+        // Add pipeline-scoped buffers
+        let pipelines = self.config.pipelines.clone();
+        let selected_name = if pipelines.len() == 1 {
+            pipelines[0].name.clone()
+        } else if self.backend_name == "gpu" {
+            Some("gpu".to_string())
+        } else {
+            Some("cpu".to_string())
+        };
+        for p in &pipelines {
+            if pipelines.len() == 1 || p.name == selected_name {
+                buf_decls.extend(p.buffers.iter().cloned());
+            }
+        }
         let size = (self.width * self.height) as usize;
 
         for decl in &buf_decls {
@@ -327,9 +356,29 @@ impl Runtime {
         Ok(())
     }
 
+    /// Select which pipeline to use based on backend setting.
+    /// Rules:
+    /// - One pipeline (named or unnamed): use it
+    /// - Multiple pipelines: backend=gpu selects "gpu", otherwise selects "cpu"
+    fn selected_pipeline(&self) -> Option<&Pipeline> {
+        let pipelines = &self.config.pipelines;
+        if pipelines.is_empty() {
+            return None;
+        }
+        if pipelines.len() == 1 {
+            return Some(&pipelines[0]);
+        }
+        // Multiple pipelines — select by backend
+        let target = if self.backend_name == "gpu" { "gpu" } else { "cpu" };
+        pipelines
+            .iter()
+            .find(|p| p.name.as_deref() == Some(target))
+            .or_else(|| pipelines.first())
+    }
+
     /// Check if the pipeline has an accumulate step.
     fn has_accumulate(&self) -> bool {
-        if let Some(pipeline) = &self.config.pipeline {
+        if let Some(pipeline) = self.selected_pipeline() {
             has_accumulate_step(&pipeline.steps)
         } else {
             false
@@ -339,7 +388,8 @@ impl Runtime {
     /// Set up progressive rendering if needed.
     pub fn setup_progressive(&mut self) {
         if self.has_accumulate() {
-            let max = find_accumulate_samples(&self.config.pipeline.as_ref().unwrap().steps);
+            let pipeline = self.selected_pipeline().unwrap();
+            let max = find_accumulate_samples(&pipeline.steps);
             self.display_buffer = Some(vec![0u32; (self.width * self.height) as usize]);
             self.accum = Some(AccumulationBuffer::new(
                 self.width as usize,
@@ -387,8 +437,10 @@ impl Runtime {
             return false;
         }
 
-        if let Some(pipeline) = &self.config.pipeline.clone() {
-            self.execute_steps(&pipeline.steps, pool);
+        // Get selected pipeline's steps (clone to avoid borrow issues)
+        let steps = self.selected_pipeline().map(|p| p.steps.clone());
+        if let Some(steps) = steps {
+            self.execute_steps(&steps, pool);
         }
 
         self.frames_executed = self.frame;
@@ -582,7 +634,7 @@ impl Runtime {
 
         // For accumulate, we need to run pixel kernels with the sample index
         // Override the pixel rendering to use progressive mode
-        if let Some(pipeline) = &self.config.pipeline.clone() {
+        {
             // Find the display step inside body and run it with sample_index
             for step in body {
                 match step {
@@ -607,7 +659,6 @@ impl Runtime {
                     }
                 }
             }
-            let _ = pipeline; // suppress unused
         }
 
         let accum = self.accum.as_mut().unwrap();
@@ -852,7 +903,8 @@ impl Runtime {
             return !accum.is_converged();
         }
         // Simulations always animate (they have buffers/loops)
-        !self.config.buffers.is_empty()
+        // Simulations always animate (they have buffers)
+        !self.buffers.is_empty()
     }
 
     pub fn accumulation_info(&self) -> Option<(u32, u32)> {

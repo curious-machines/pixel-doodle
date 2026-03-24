@@ -103,13 +103,48 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
         }
     }
 
-    // Validate pipeline
-    if let Some(pipeline) = &config.pipeline {
+    // Validate each pipeline
+    for pipeline in &config.pipelines {
+        // Merge top-level and pipeline-scoped kernel/buffer names
+        let mut pipe_kernels = kernel_names.clone();
+        let mut pipe_buffers = buffer_names.clone();
+
+        for k in &pipeline.kernels {
+            if !pipe_kernels.insert(k.name.clone()) {
+                errors.push(ValidationError {
+                    line: k.span.line,
+                    col: k.span.col,
+                    message: format!("duplicate kernel name '{}'", k.name),
+                });
+            }
+        }
+        for b in &pipeline.buffers {
+            if !pipe_buffers.insert(b.name.clone()) {
+                errors.push(ValidationError {
+                    line: b.span.line,
+                    col: b.span.col,
+                    message: format!("duplicate buffer name '{}'", b.name),
+                });
+            }
+            if let BufferInit::InitKernel { kernel_name, .. } = &b.init {
+                if !pipe_kernels.contains(kernel_name) {
+                    errors.push(ValidationError {
+                        line: b.span.line,
+                        col: b.span.col,
+                        message: format!(
+                            "buffer '{}' references undeclared init kernel '{kernel_name}'",
+                            b.name
+                        ),
+                    });
+                }
+            }
+        }
+
         let mut has_display = false;
         validate_steps(
             &pipeline.steps,
-            &kernel_names,
-            &buffer_names,
+            &pipe_kernels,
+            &pipe_buffers,
             &var_names,
             &mut has_display,
             &mut errors,
@@ -118,7 +153,10 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
             errors.push(ValidationError {
                 line: pipeline.span.line,
                 col: pipeline.span.col,
-                message: "pipeline has no 'display' step".into(),
+                message: format!(
+                    "pipeline{} has no 'display' step",
+                    pipeline.name.as_ref().map(|n| format!(" '{n}'")).unwrap_or_default()
+                ),
             });
         }
     }
