@@ -1,5 +1,3 @@
-pixel kernel "gears.pd"
-
 on key(left) center_x -= 0.1
 on key(right) center_x += 0.1
 on key(up) center_y -= 0.1
@@ -7,6 +5,12 @@ on key(down) center_y += 0.1
 on key(plus) zoom *= 1.1
 on key(minus) zoom /= 1.1
 
-pipeline {
+pipeline cpu {
+  pixel kernel "gears.pd"
+  display gears
+}
+
+pipeline gpu {
+  pixel kernel "gears.wgsl"
   display gears
 }

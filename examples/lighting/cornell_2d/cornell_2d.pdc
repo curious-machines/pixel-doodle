@@ -1,5 +1,3 @@
-pixel kernel "cornell_2d.pd"
-
 on key(left) center_x -= 0.1
 on key(right) center_x += 0.1
 on key(up) center_y -= 0.1
@@ -7,8 +5,14 @@ on key(down) center_y += 0.1
 on key(plus) zoom *= 1.1
 on key(minus) zoom /= 1.1
 
-pipeline {
+pipeline cpu {
+  pixel kernel "cornell_2d.pd"
   accumulate(samples: 512) {
     display cornell_2d
   }
+}
+
+pipeline gpu {
+  pixel kernel "cornell_2d.wgsl"
+  display cornell_2d
 }

@@ -1,5 +1,9 @@
-pixel kernel "solid_red.pd"
+pipeline cpu {
+  pixel kernel "solid_red.pd"
+  display solid_red
+}
 
-pipeline {
+pipeline gpu {
+  pixel kernel "solid_red.wgsl"
   display solid_red
 }

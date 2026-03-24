@@ -1,6 +1,11 @@
 # Gradient — simplest pixel kernel
-pixel kernel "gradient.pd"
 
-pipeline {
+pipeline cpu {
+  pixel kernel "gradient.pd"
+  display gradient
+}
+
+pipeline gpu {
+  pixel kernel "gradient.wgsl"
   display gradient
 }

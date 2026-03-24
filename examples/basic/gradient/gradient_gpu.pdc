@@ -1,5 +1,0 @@
-pixel kernel "gradient.wgsl"
-
-pipeline {
-  display gradient
-}
