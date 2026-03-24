@@ -109,7 +109,7 @@ impl Runtime {
             frame: 0,
             frames_executed: 0,
             mouse_down: false,
-            tile_height: 1,
+            tile_height: render::DEFAULT_TILE_HEIGHT,
             animated: false,
             backend_name: "cranelift".into(),
             base_dir: base_dir.to_path_buf(),
