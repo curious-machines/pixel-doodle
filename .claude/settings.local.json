@@ -37,7 +37,8 @@
       "Bash(for t:*)",
       "Bash(do cargo:*)",
       "Bash(done)",
-      "Bash(./run_pd cranelift:*)"
+      "Bash(./run_pd cranelift:*)",
+      "Bash(echo \"Exit code: $?\")"
     ]
   }
 }
