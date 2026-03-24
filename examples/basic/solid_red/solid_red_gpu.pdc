@@ -1,0 +1,5 @@
+pixel kernel "solid_red.wgsl"
+
+pipeline {
+  display solid_red
+}

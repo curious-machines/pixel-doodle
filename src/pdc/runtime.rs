@@ -3,6 +3,8 @@ use std::path::Path;
 
 use winit::keyboard::KeyCode;
 
+use crate::display::Display;
+use crate::gpu::GpuBackend;
 use crate::jit::{self, SimTileKernelFn, TileKernelFn};
 use crate::kernel_ir::Kernel;
 use crate::progressive::AccumulationBuffer;
@@ -23,6 +25,10 @@ enum CompiledKernelEntry {
         read_slots: Vec<String>,
         /// Write buffer slot names in order.
         write_slots: Vec<String>,
+    },
+    /// GPU pixel kernel — renders directly to display texture.
+    Gpu {
+        wgsl_source: String,
     },
 }
 
@@ -65,6 +71,12 @@ pub struct Runtime {
     pub animated: bool,
     backend_name: String,
     base_dir: std::path::PathBuf,
+    /// GPU backend, initialized lazily when display is available.
+    gpu_backend: Option<GpuBackend>,
+    /// Whether this config has any GPU kernels.
+    pub has_gpu_kernels: bool,
+    /// Tracks whether GPU rendered directly to display this frame.
+    gpu_rendered_this_frame: bool,
 }
 
 impl Runtime {
@@ -113,6 +125,9 @@ impl Runtime {
             animated: false,
             backend_name: "cranelift".into(),
             base_dir: base_dir.to_path_buf(),
+            gpu_backend: None,
+            has_gpu_kernels: false,
+            gpu_rendered_this_frame: false,
         }
     }
 
@@ -191,6 +206,23 @@ impl Runtime {
 
         for decl in &kernel_decls {
             let path = resolve_path(&decl.path, &base_dir);
+
+            // GPU kernels (.wgsl) — defer compilation until display is available
+            if path.extension().is_some_and(|e| e == "wgsl") {
+                let src = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("failed to read kernel '{}': {}", path.display(), e))?;
+                // WGSL kernels with time uniform are animated
+                if src.contains("params.time") {
+                    self.animated = true;
+                }
+                self.kernels.insert(
+                    decl.name.clone(),
+                    CompiledKernelEntry::Gpu { wgsl_source: src },
+                );
+                self.has_gpu_kernels = true;
+                continue;
+            }
+
             let src = std::fs::read_to_string(&path)
                 .map_err(|e| format!("failed to read kernel '{}': {}", path.display(), e))?;
 
@@ -317,13 +349,33 @@ impl Runtime {
         }
     }
 
+    /// Initialize the GPU backend. Must be called after the display is created.
+    pub fn init_gpu(&mut self, display: &Display) {
+        if !self.has_gpu_kernels || self.gpu_backend.is_some() {
+            return;
+        }
+        // Find the first GPU kernel's WGSL source
+        let wgsl = self.kernels.values().find_map(|entry| {
+            if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
+                Some(wgsl_source.clone())
+            } else {
+                None
+            }
+        });
+        if let Some(source) = wgsl {
+            self.gpu_backend = Some(GpuBackend::new(display, self.width, self.height, 256, &source));
+        }
+    }
+
     /// Execute one frame. Returns true if pixels were updated.
+    /// For GPU kernels, `display` must be provided.
     pub fn execute_frame(
         &mut self,
         time: f64,
         pool: &Option<rayon::ThreadPool>,
     ) -> bool {
         self.time = time;
+        self.gpu_rendered_this_frame = false;
 
         // Auto-increment frame when not paused
         if !self.paused {
@@ -485,6 +537,11 @@ impl Runtime {
 
                 let pixel_buf = &mut self.pixel_buffer;
                 render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th);
+            }
+            Some(CompiledKernelEntry::Gpu { .. }) => {
+                // GPU kernels render directly to the display texture.
+                // Set a flag so PdcApp knows to call render_gpu_frame().
+                self.gpu_rendered_this_frame = true;
             }
             None => {
                 if is_display {
@@ -723,6 +780,53 @@ impl Runtime {
     }
 
     /// Get the pixel buffer to display.
+    /// If the last frame used GPU rendering, dispatch the GPU and present.
+    /// Returns true if GPU rendered (caller should NOT upload_and_present).
+    pub fn render_gpu_frame(&self, display: &Display) -> bool {
+        if !self.gpu_rendered_this_frame {
+            return false;
+        }
+        if let Some(ref gpu) = self.gpu_backend {
+            gpu.render(
+                display,
+                self.center_x,
+                self.center_y,
+                self.zoom,
+                0xFFFFFFFF,
+                0,
+                self.time,
+            );
+            return true;
+        }
+        false
+    }
+
+    /// For headless GPU rendering (--output, --bench): render to CPU pixel buffer.
+    pub fn execute_gpu_headless(&mut self) {
+        if !self.has_gpu_kernels {
+            return;
+        }
+        // Find the WGSL source
+        let wgsl = self.kernels.values().find_map(|entry| {
+            if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
+                Some(wgsl_source.clone())
+            } else {
+                None
+            }
+        });
+        if let Some(source) = wgsl {
+            let (gpu, device, queue) = GpuBackend::new_headless(
+                self.width, self.height, 256, &source,
+            );
+            gpu.dispatch_compute(
+                &device, &queue,
+                self.center_x, self.center_y, self.zoom,
+                0xFFFFFFFF, 0, self.time,
+            );
+            self.pixel_buffer = gpu.readback_pixels(&device, &queue);
+        }
+    }
+
     pub fn display_pixels(&self) -> &[u32] {
         if let Some(ref disp) = self.display_buffer {
             if self.accum.is_some() {

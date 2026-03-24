@@ -1,6 +1,7 @@
 mod bench;
 #[allow(dead_code)]
 mod display;
+mod gpu;
 mod jit;
 #[allow(dead_code)]
 mod kernel_ir;
@@ -186,7 +187,11 @@ fn run_pdc(config_path: &str, args: &CliArgs) {
     // Output-only mode
     if let Some(ref output_path) = args.output {
         if !args.bench {
-            runtime.execute_frame(0.0, &thread_pool);
+            if runtime.has_gpu_kernels {
+                runtime.execute_gpu_headless();
+            } else {
+                runtime.execute_frame(0.0, &thread_pool);
+            }
             bench::write_ppm(
                 output_path,
                 runtime.display_pixels(),
@@ -296,6 +301,8 @@ impl ApplicationHandler for PdcApp {
             self.runtime.width,
             self.runtime.height,
         );
+        // Initialize GPU backend if needed (requires display device/queue)
+        self.runtime.init_gpu(&display);
         self.display = Some(display);
         self.window = Some(window);
     }
@@ -361,8 +368,13 @@ impl ApplicationHandler for PdcApp {
 
                 if updated {
                     let display = self.display.as_ref().unwrap();
-                    let pixels = self.runtime.display_pixels();
-                    display.upload_and_present(pixels);
+
+                    // GPU kernels render directly to display — don't upload CPU pixels
+                    let gpu_rendered = self.runtime.render_gpu_frame(display);
+                    if !gpu_rendered {
+                        let pixels = self.runtime.display_pixels();
+                        display.upload_and_present(pixels);
+                    }
 
                     if let Some(window) = &self.window {
                         let title = self.runtime.title();
