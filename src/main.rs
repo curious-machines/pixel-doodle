@@ -1,22 +1,14 @@
 mod bench;
+#[allow(dead_code)]
 mod display;
-#[allow(dead_code)]
-mod gpu;
-#[allow(dead_code)]
 mod jit;
 #[allow(dead_code)]
 mod kernel_ir;
 #[allow(dead_code)]
-mod kernels;
-#[allow(dead_code)]
 mod lang;
-#[allow(dead_code)]
-mod native_kernel;
 mod pdc;
 mod progressive;
 mod render;
-#[allow(dead_code)]
-mod simulation;
 
 use display::Display;
 use std::sync::Arc;
