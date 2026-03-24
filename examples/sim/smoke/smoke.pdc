@@ -1,9 +1,9 @@
 title = "Smoke Simulation"
 
-sim kernel advect = "smoke/advect.pd"
-sim kernel divergence = "smoke/divergence.pd"
-sim kernel jacobi = "smoke/jacobi.pd"
-sim kernel project = "smoke/project.pd"
+sim kernel advect = "advect.pd"
+sim kernel divergence = "divergence.pd"
+sim kernel jacobi = "jacobi.pd"
+sim kernel project = "project.pd"
 
 buffer vx = constant(0.0)
 buffer vy = constant(0.0)

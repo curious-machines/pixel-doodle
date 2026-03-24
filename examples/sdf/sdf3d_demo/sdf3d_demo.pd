@@ -1,4 +1,4 @@
-use "sdf3d_library.pd";
+use "../lib/sdf3d_library.pd";
 
 kernel sdf3d_demo(x: f64, y: f64, time: f64) -> u32 {
     let p = vec2(x, y);

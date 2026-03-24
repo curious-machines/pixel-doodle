@@ -1,8 +1,8 @@
 title = "Gray-Scott Reaction Diffusion"
 
 sim kernel "gray_scott.pd"
-init kernel init_u = "../init/gray_scott_u.pd"
-init kernel init_v = "../init/gray_scott_v.pd"
+init kernel init_u = "init/gray_scott_u.pd"
+init kernel init_v = "init/gray_scott_v.pd"
 
 buffer u = init_u()
 buffer v = init_v()

@@ -1887,7 +1887,7 @@ kernel carry_test(x: f64, y: f64) -> u32 {
 
     #[test]
     fn test_parse_mandelbrot() {
-        let src = include_str!("../../examples/basic/mandelbrot.pdl");
+        let src = include_str!("../../examples/basic/mandelbrot/mandelbrot.pdl");
         let kernel = parse(src).unwrap();
         assert_eq!(kernel.name, "mandelbrot");
         // Verify roundtrip
@@ -1898,7 +1898,7 @@ kernel carry_test(x: f64, y: f64) -> u32 {
 
     #[test]
     fn test_parse_sdf_flower() {
-        let src = include_str!("../../examples/sdf/sdf_flower.pdl");
+        let src = include_str!("../../examples/sdf/sdf_flower/sdf_flower.pdl");
         let kernel = parse(src).unwrap();
         assert_eq!(kernel.name, "sdf_flower");
         // Verify roundtrip: expanded flat form should re-parse successfully

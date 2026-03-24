@@ -1,4 +1,4 @@
-use "sdf2d_library.pd";
+use "../lib/sdf2d_library.pd";
 
 kernel sdf2d_demo(x: f64, y: f64, time: f64) -> u32 {
 //kernel sdf2d_demo(x: f64, y: f64) -> u32 {

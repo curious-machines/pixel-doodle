@@ -1642,7 +1642,7 @@ fn main() {
                 let backend = match args.backend.as_str() {
                     "gpu" => Backend::GpuGameOfLife { gpu: None, density },
                     jit_backend => {
-                        let src = include_str!("../examples/sim/game_of_life.pd");
+                        let src = include_str!("../examples/sim/game_of_life/game_of_life.pd");
                         let kernel = lang::pd::parse(src, None).unwrap_or_else(|e| {
                             eprintln!("Parse error in game_of_life.pd: {}", e);
                             std::process::exit(1);

@@ -1,7 +1,7 @@
 title = "Shallow Water Simulation"
 
 sim kernel "shallow_water.pd"
-init kernel init_h = "../init/shallow_water_h.pd"
+init kernel init_h = "init/shallow_water_h.pd"
 
 buffer h = init_h()
 buffer vx = constant(0.0)
