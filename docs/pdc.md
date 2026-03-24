@@ -5,9 +5,10 @@ PDC is a declarative configuration language that describes how to run pixel-dood
 ## Running a PDC File
 
 ```bash
-cargo run --release -- examples/basic/gradient.pdc
-cargo run --release -- examples/sim/smoke.pdc --output frame.ppm
-cargo run --release -- examples/sim/gray_scott.pdc --bench
+cargo run --release -- examples/basic/gradient/gradient.pdc
+cargo run --release -- examples/sim/smoke/smoke.pdc --output frame.ppm
+cargo run --release -- examples/sim/gray_scott/gray_scott.pdc --bench
+cargo run --release -- examples/sim/gray_scott/gray_scott.pdc --set backend=gpu
 ```
 
 Additional CLI flags:
@@ -22,27 +23,66 @@ Additional CLI flags:
 
 ## File Structure
 
-A `.pdc` file consists of top-level directives in any order. Lines starting with `#` are comments.
+A `.pdc` file has top-level directives (title, variables, settings, key bindings) and one or more `pipeline` blocks. Kernel and buffer declarations go inside pipeline blocks. Lines starting with `#` are comments.
 
 ```
 # This is a comment
 title = "My Example"
 
-pixel kernel "my_kernel.pd"
+on key(plus) zoom *= 1.1
 
 pipeline {
+  pixel kernel "my_kernel.pd"
   display my_kernel
 }
 ```
 
-## Kernel Declarations
+## Pipeline Blocks
 
-Three kernel types, declared with an explicit type keyword:
+Every `.pdc` file must have at least one `pipeline` block. Pipelines contain kernel declarations, buffer declarations, and execution steps.
+
+### Single pipeline (unnamed)
 
 ```
-pixel kernel "gradient.pd"                  # pixel shader — per-pixel computation
-sim kernel "gray_scott.pd"                  # simulation — reads/writes buffers
-init kernel init_spots = "init/spots.pd"    # initialization — fills a buffer once
+pipeline {
+  pixel kernel "gradient.pd"
+  display gradient
+}
+```
+
+### Named pipelines (CPU + GPU)
+
+A single file can define multiple named pipelines for different backends:
+
+```
+pipeline cpu {
+  pixel kernel "mandelbrot.pd"
+  accumulate(samples: 256) {
+    display mandelbrot
+  }
+}
+
+pipeline gpu {
+  pixel kernel "mandelbrot.wgsl"
+  display mandelbrot
+}
+```
+
+Pipeline selection:
+- **One pipeline**: used regardless of backend setting
+- **Multiple pipelines**: `--set backend=gpu` selects `pipeline gpu`, otherwise `pipeline cpu`
+- **Default backend**: cranelift (for CPU pipelines)
+
+## Kernel Declarations
+
+Kernel declarations must be inside a `pipeline` block. Three types:
+
+```
+pipeline {
+  pixel kernel "gradient.pd"                  # pixel shader — per-pixel computation
+  sim kernel "gray_scott.pd"                  # simulation — reads/writes buffers
+  init kernel init_spots = "init/spots.pd"    # initialization — fills a buffer once
+}
 ```
 
 ### Unnamed kernels
@@ -82,24 +122,30 @@ pixel kernel "@root/examples/shared/util.pd"     # relative to project root
 
 ## Buffer Declarations
 
-Simulation buffers are `width × height` arrays of `f64`:
+Buffer declarations must be inside a `pipeline` block. CPU simulation buffers are `width × height` arrays of `f64`. GPU buffers require a type annotation:
 
 ```
-buffer u = constant(1.0)                         # fill with 1.0
-buffer v = constant(0.0)                         # fill with 0.0
-buffer state = init_state()                      # run init kernel
-buffer state = init_state(density: 0.3, seed: 42)  # with parameters
+pipeline {
+  # CPU buffers
+  buffer u = constant(1.0)                         # fill with 1.0
+  buffer state = init_state(density: 0.3, seed: 42) # run init kernel
+
+  # GPU buffers (with type annotation)
+  buffer field: gpu(vec2f) = constant(0.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+}
 ```
 
-### `constant(value)`
+### GPU element types
 
-Built-in convenience — fills every cell with the given value.
-
-### Init kernel call
-
-References a declared `init kernel` by name. The init kernel runs once at startup via `render_sim()` with zero input buffers and one output buffer.
-
-Named parameters in parentheses are passed to the kernel (future feature — currently init kernels don't receive extra parameters).
+| Type | Size | Description |
+|------|------|-------------|
+| `f32` | 4 bytes | Single float |
+| `vec2f` | 8 bytes | 2-component float vector |
+| `vec3f` | 16 bytes | 3-component float vector (padded) |
+| `vec4f` | 16 bytes | 4-component float vector |
+| `i32` | 4 bytes | Signed integer |
+| `u32` | 4 bytes | Unsigned integer |
 
 ## Variables
 
@@ -156,7 +202,7 @@ Execution settings not visible to kernels:
 ```
 settings {
   threads = 4              # worker thread count
-  backend = "cranelift"    # JIT backend: "cranelift" or "llvm"
+  backend = "cranelift"    # JIT backend: "cranelift", "llvm", or "gpu"
   tile_height = 8          # rows per tile for parallel dispatch
 }
 ```
@@ -212,15 +258,7 @@ Variables with `range()` are automatically clamped or wrapped after modification
 | `escape` | Escape |
 | `q` | Q key |
 
-## Pipeline
-
-The pipeline describes what happens each frame. It is the central concept in PDC.
-
-```
-pipeline {
-  # steps execute in order
-}
-```
+## Pipeline Steps
 
 ### `run` — Execute a kernel
 
@@ -329,18 +367,15 @@ height = 1080
 ### Gradient (simplest)
 
 ```
-pixel kernel "gradient.pd"
-
 pipeline {
+  pixel kernel "gradient.pd"
   display gradient
 }
 ```
 
-### Mandelbrot (progressive + pan/zoom)
+### Mandelbrot (progressive + pan/zoom, CPU and GPU)
 
 ```
-pixel kernel "mandelbrot.pd"
-
 on key(left) center_x -= 0.1
 on key(right) center_x += 0.1
 on key(up) center_y -= 0.1
@@ -348,31 +383,37 @@ on key(down) center_y += 0.1
 on key(plus) zoom *= 1.1
 on key(minus) zoom /= 1.1
 
-pipeline {
+pipeline cpu {
+  pixel kernel "mandelbrot.pd"
   accumulate(samples: 256) {
     display mandelbrot
   }
 }
+
+pipeline gpu {
+  pixel kernel "mandelbrot.wgsl"
+  display mandelbrot
+}
 ```
 
-### Gray-Scott (simple simulation)
+### Gray-Scott (simulation with CPU and GPU pipelines)
 
 ```
 title = "Gray-Scott Reaction Diffusion"
 
-sim kernel "gray_scott.pd"
-init kernel init_u = "../init/gray_scott_u.pd"
-init kernel init_v = "../init/gray_scott_v.pd"
-
-buffer u = init_u()
-buffer v = init_v()
-buffer u_next = constant(0.0)
-buffer v_next = constant(0.0)
-
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline {
+pipeline cpu {
+  sim kernel "gray_scott.pd"
+  init kernel init_u = "init/gray_scott_u.pd"
+  init kernel init_v = "init/gray_scott_v.pd"
+
+  buffer u = init_u()
+  buffer v = init_v()
+  buffer u_next = constant(0.0)
+  buffer v_next = constant(0.0)
+
   on click(continuous: true) {
     v = run inject(value: 0.5, radius: 5)
   }
@@ -382,32 +423,50 @@ pipeline {
     swap v <-> v_next
   }
 }
+
+pipeline gpu {
+  sim kernel step = "gray_scott_step.wgsl"
+  sim kernel vis = "gray_scott_vis.wgsl"
+
+  buffer field: gpu(vec2f) = constant(1.0)
+  buffer field_next: gpu(vec2f) = constant(1.0)
+  buffer pixels: gpu(u32) = constant(0.0)
+
+  on click(continuous: true) {
+    field = run inject(value: 0.5, radius: 5)
+  }
+  loop(iterations: 8) {
+    field_next = run step { field_in: field, field_out: field_next }
+    swap field <-> field_next
+  }
+  display vis { field_in: field, pixels: pixels }
+}
 ```
 
-### Smoke (multi-kernel pipeline)
+### Smoke (multi-kernel CPU pipeline)
 
 ```
 title = "Smoke Simulation"
 
-sim kernel advect = "smoke/advect.pd"
-sim kernel divergence = "smoke/divergence.pd"
-sim kernel jacobi = "smoke/jacobi.pd"
-sim kernel project = "smoke/project.pd"
-
-buffer vx = constant(0.0)
-buffer vy = constant(0.0)
-buffer density = constant(0.0)
-buffer vx0 = constant(0.0)
-buffer vy0 = constant(0.0)
-buffer density0 = constant(0.0)
-buffer pressure = constant(0.0)
-buffer pressure_tmp = constant(0.0)
-buffer divergence = constant(0.0)
-
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline {
+pipeline cpu {
+  sim kernel advect = "advect.pd"
+  sim kernel divergence = "divergence.pd"
+  sim kernel jacobi = "jacobi.pd"
+  sim kernel project = "project.pd"
+
+  buffer vx = constant(0.0)
+  buffer vy = constant(0.0)
+  buffer density = constant(0.0)
+  buffer vx0 = constant(0.0)
+  buffer vy0 = constant(0.0)
+  buffer density0 = constant(0.0)
+  buffer pressure = constant(0.0)
+  buffer pressure_tmp = constant(0.0)
+  buffer divergence = constant(0.0)
+
   on click(continuous: true) {
     vy = run inject(value: -3.0, radius: 15, falloff: "quadratic")
     density = run inject(value: 0.5, radius: 15, falloff: "quadratic")
@@ -424,18 +483,10 @@ pipeline {
 }
 ```
 
-### Game of Life (interactive)
+### Game of Life (interactive with speed control)
 
 ```
 title = "Game of Life"
-
-sim kernel "game_of_life.pd"
-init kernel init_state = "../init/random_binary.pd"
-
-buffer state = init_state()
-buffer age = constant(0.0)
-buffer state_next = constant(0.0)
-buffer age_next = constant(0.0)
 
 iterations: range(1..10) = 1
 
@@ -444,7 +495,15 @@ on key(period) frame += 1
 on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
-pipeline {
+pipeline cpu {
+  sim kernel "game_of_life.pd"
+  init kernel init_state = "init/random_binary.pd"
+
+  buffer state = init_state()
+  buffer age = constant(0.0)
+  buffer state_next = constant(0.0)
+  buffer age_next = constant(0.0)
+
   on click(continuous: true) {
     state = run inject(value: 1.0, radius: 3)
     age = run inject(value: 0.0, radius: 3)
