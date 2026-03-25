@@ -4,13 +4,13 @@ kernel mandelbrot(x: f64, y: f64) -> u32 {
     let cy = y;
 
     while zx = 0.0, zy = 0.0, iter: u32 = 0 {
-        break_if zx * zx + zy * zy > 4.0 || iter >= 256u32;
+        break_if zx * zx + zy * zy > 4.0 || iter >= 256;
         yield zx * zx - zy * zy + cx,
               2.0 * zx * zy + cy,
-              iter + 1u32;
+              iter + 1;
     }
 
-    let is_inside = iter == 256u32;
+    let is_inside = iter == 256;
     let t = iter as f64 / 256.0;
     let omt = 1.0 - t;
 
@@ -26,5 +26,5 @@ kernel mandelbrot(x: f64, y: f64) -> u32 {
         8.5 * omt3 * t * 255.0,
     );
 
-    emit if is_inside { 0u32 } else { color };
+    emit if is_inside { 0 } else { color };
 }

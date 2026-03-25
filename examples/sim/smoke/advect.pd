@@ -12,8 +12,8 @@ kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
     let dissipation = 0.998;
     let buoyancy = 0.08;
 
-    let wm1 = width - 1u32;
-    let hm1 = height - 1u32;
+    let wm1 = width - 1;
+    let hm1 = height - 1;
     let max_x = (wm1 as f64) - 0.001;
     let max_y = (hm1 as f64) - 0.001;
 
@@ -30,8 +30,8 @@ kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
     let fy = floor(src_y);
     let x0 = fx as u32;
     let y0 = fy as u32;
-    let x1 = min(x0 + 1u32, wm1);
-    let y1 = min(y0 + 1u32, hm1);
+    let x1 = min(x0 + 1, wm1);
+    let y1 = min(y0 + 1, hm1);
     let s = src_x - fx;
     let t = src_y - fy;
 
@@ -69,7 +69,7 @@ kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
     let den_diss = new_den * dissipation;
 
     // Open boundaries
-    let is_edge = px == 0u32 || px == wm1 || py == 0u32 || py == hm1;
+    let is_edge = px == 0 || px == wm1 || py == 0 || py == hm1;
     let final_vx = select(is_edge, 0.0, new_vx);
     let final_vy = select(is_edge, 0.0, vy_buoy);
 
@@ -77,5 +77,5 @@ kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
     buf_store(vy_out, px, py, final_vy);
     buf_store(den_out, px, py, den_diss);
 
-    emit pack_argb(0u32, 0u32, 0u32);
+    emit pack_argb(0, 0, 0);
 }

@@ -39,7 +39,7 @@ kernel ray_march_ao(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -> u32 
         let d = abs(scene_sdf(rx, ry));
         let new_total = total_d + d;
         break_if d < 0.001 || new_total > 2.0;
-        yield rx + dx * d, ry + dy * d, new_total, steps + 1u32;
+        yield rx + dx * d, ry + dy * d, new_total, steps + 1;
     }
 
     // AO factor

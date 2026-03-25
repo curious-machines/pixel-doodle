@@ -20,5 +20,5 @@ kernel init_shallow_water_h(px: u32, py: u32, width: u32, height: u32) -> u32
 
     let val = 1.0 + bump1 + bump2;
     buf_store(out, px, py, val);
-    emit 0u32;
+    emit 0;
 }

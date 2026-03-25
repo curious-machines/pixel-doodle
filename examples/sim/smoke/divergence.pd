@@ -6,15 +6,15 @@
 kernel smoke_divergence(px: u32, py: u32, width: u32, height: u32) -> u32
   buffers(vx_in: read, vy_in: read, div_out: write)
 {
-    let wm1 = width - 1u32;
-    let hm1 = height - 1u32;
-    let is_edge = px == 0u32 || px == wm1 || py == 0u32 || py == hm1;
+    let wm1 = width - 1;
+    let hm1 = height - 1;
+    let is_edge = px == 0 || px == wm1 || py == 0 || py == hm1;
 
     // Neighbor coordinates (wrapped to avoid u32 underflow)
     let xl = (px + wm1) % width;
-    let xr = (px + 1u32) % width;
+    let xr = (px + 1) % width;
     let yu = (py + hm1) % height;
-    let yd = (py + 1u32) % height;
+    let yd = (py + 1) % height;
 
     let vx_r = buf_load(vx_in, xr, py);
     let vx_l = buf_load(vx_in, xl, py);
@@ -26,5 +26,5 @@ kernel smoke_divergence(px: u32, py: u32, width: u32, height: u32) -> u32
 
     buf_store(div_out, px, py, div_final);
 
-    emit pack_argb(0u32, 0u32, 0u32);
+    emit pack_argb(0, 0, 0);
 }

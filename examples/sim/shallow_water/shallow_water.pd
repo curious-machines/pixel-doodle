@@ -8,12 +8,12 @@ kernel shallow_water(px: u32, py: u32, width: u32, height: u32) -> u32
           h_out: write, vx_out: write, vy_out: write)
 {
     // Toroidal neighbor coordinates
-    let wm1 = width - 1u32;
-    let hm1 = height - 1u32;
+    let wm1 = width - 1;
+    let hm1 = height - 1;
     let xm = (px + wm1) % width;
-    let xp = (px + 1u32) % width;
+    let xp = (px + 1) % width;
     let ym = (py + hm1) % height;
-    let yp = (py + 1u32) % height;
+    let yp = (py + 1) % height;
 
     // 5-point stencil for H
     let h_c = buf_load(h_in, px, py);

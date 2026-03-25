@@ -5,7 +5,7 @@ kernel sdf2d_demo(x: f64, y: f64, time: f64) -> u32 {
     let p = vec2(x, y);
     // let d = sd_heart(vec2(x, y * -1.0 + 0.5));
     // let d = sd_hexagon(p, 0.5);
-    // let d = sd_star(p, 0.4, 5u32, 2.5);
+    // let d = sd_star(p, 0.4, 5, 2.5);
     // let d = sd_box(p, vec2(0.5, 0.3));
     // let d = sd_moon(p, 0.3, 0.5, 0.4);
 

@@ -7,12 +7,12 @@ kernel game_of_life(px: u32, py: u32, width: u32, height: u32) -> u32
   buffers(state_in: read, age_in: read, state_out: write, age_out: write)
 {
     // Toroidal neighbor coordinates
-    let wm1 = width - 1u32;
-    let hm1 = height - 1u32;
+    let wm1 = width - 1;
+    let hm1 = height - 1;
     let xm = (px + wm1) % width;
-    let xp = (px + 1u32) % width;
+    let xp = (px + 1) % width;
     let ym = (py + hm1) % height;
-    let yp = (py + 1u32) % height;
+    let yp = (py + 1) % height;
 
     // Load 8 neighbors
     let n0 = buf_load(state_in, xm, ym);

@@ -1,7 +1,7 @@
 kernel checkerboard(x: f64, y: f64) -> u32 {
     let ix = floor(x * 4.0) as u32;
     let iy = floor(y * 4.0) as u32;
-    let is_white = (ix + iy) % 2u32 == 0u32;
-    let v = if is_white { 255u32 } else { 0u32 };
+    let is_white = (ix + iy) % 2 == 0;
+    let v = if is_white { 255 } else { 0 };
     emit pack_argb(v, v, v);
 }

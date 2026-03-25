@@ -21,8 +21,8 @@ kernel sdf3d_demo(x: f64, y: f64, time: f64) -> u32 {
     while t = 0.0, i: u32 = 0 {
         let pos = ro + t * rd;
         let h = map(pos);
-        break_if h < 0.0001 || t > tmax || i >= 256u32;
-        yield t + h, i + 1u32;
+        break_if h < 0.0001 || t > tmax || i >= 256;
+        yield t + h, i + 1;
     }
 
     // Shading

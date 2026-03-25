@@ -84,7 +84,7 @@ kernel light_transport_2d(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -
           ray_x = start_x, ray_y = start_y,
           ray_dx = dx0, ray_dy = dy0,
           rng = rng0, alive: bool = in_gear {
-        break_if bounce >= 8u32 || !alive;
+        break_if bounce >= 8 || !alive;
 
         // Inner ray march
         while mrx = ray_x, mry = ray_y, mtot = 0.0 {
@@ -134,7 +134,7 @@ kernel light_transport_2d(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -
         let final_dx = if still_alive { new_dx } else { ray_dx };
         let final_dy = if still_alive { new_dy } else { ray_dy };
 
-        yield bounce + 1u32, new_rad_r, new_rad_g, new_rad_b,
+        yield bounce + 1, new_rad_r, new_rad_g, new_rad_b,
               final_thr_r, final_thr_g, final_thr_b,
               final_ray_x, final_ray_y, final_dx, final_dy,
               new_rng, still_alive;

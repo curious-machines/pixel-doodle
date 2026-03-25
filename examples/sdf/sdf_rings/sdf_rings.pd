@@ -5,8 +5,8 @@ kernel sdf_rings(x: f64, y: f64) -> u32 {
     let ring_sdf = abs(fract(r / 0.1) - 0.5) * 0.1 - 0.005;
     let inside = ring_sdf <= 0.0;
 
-    let out_r = if inside { 240u32 } else { 30u32 };
-    let out_g = if inside { 240u32 } else { 30u32 };
-    let out_b = if inside { 240u32 } else { 40u32 };
+    let out_r = if inside { 240 } else { 30 };
+    let out_g = if inside { 240 } else { 30 };
+    let out_b = if inside { 240 } else { 40 };
     emit pack_argb(out_r, out_g, out_b);
 }

@@ -13,5 +13,5 @@ kernel init_gray_scott_v(px: u32, py: u32, width: u32, height: u32) -> u32
     // Same 2% pixels as U
     let val = if hf < 0.02 { 0.25 } else { 0.0 };
     buf_store(out, px, py, val);
-    emit 0u32;
+    emit 0;
 }

@@ -7,9 +7,9 @@ kernel smoke_project(px: u32, py: u32, width: u32, height: u32) -> u32
   buffers(press_in: read, vx_in: read, vy_in: read, den_in: read,
           vx_out: write, vy_out: write)
 {
-    let wm1 = width - 1u32;
-    let hm1 = height - 1u32;
-    let is_edge = px == 0u32 || px == wm1 || py == 0u32 || py == hm1;
+    let wm1 = width - 1;
+    let hm1 = height - 1;
+    let is_edge = px == 0 || px == wm1 || py == 0 || py == hm1;
 
     // Read current velocity
     let cur_vx = buf_load(vx_in, px, py);
@@ -17,9 +17,9 @@ kernel smoke_project(px: u32, py: u32, width: u32, height: u32) -> u32
 
     // Pressure gradient (wrapped neighbor coords)
     let xl = (px + wm1) % width;
-    let xr = (px + 1u32) % width;
+    let xr = (px + 1) % width;
     let yu = (py + hm1) % height;
-    let yd = (py + 1u32) % height;
+    let yd = (py + 1) % height;
 
     let p_r = buf_load(press_in, xr, py);
     let p_l = buf_load(press_in, xl, py);

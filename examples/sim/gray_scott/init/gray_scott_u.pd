@@ -13,5 +13,5 @@ kernel init_gray_scott_u(px: u32, py: u32, width: u32, height: u32) -> u32
     // 2% of pixels seeded with spots
     let val = if hf < 0.02 { 0.5 } else { 1.0 };
     buf_store(out, px, py, val);
-    emit 0u32;
+    emit 0;
 }
