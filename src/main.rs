@@ -407,6 +407,9 @@ impl ApplicationHandler for PdpApp {
                 ..
             } => {
                 self.runtime.mouse_down = state == ElementState::Pressed;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
                 // Handle held keys for continuous pan/zoom
