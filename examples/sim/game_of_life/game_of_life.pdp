@@ -7,7 +7,7 @@ on key(period) frame += 1
 on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
-pipeline cpu {
+pipeline pd {
   sim kernel "game_of_life.pd"
   init kernel init_state = "init/random_binary.pd"
 

@@ -1,5 +1,10 @@
-pipeline cpu {
+pipeline pd {
   pixel kernel "solid_red.pd"
+  display solid_red
+}
+
+pipeline pdir {
+  pixel kernel "solid_red.pdir"
   display solid_red
 }
 

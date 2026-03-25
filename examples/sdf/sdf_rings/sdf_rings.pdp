@@ -1,7 +1,14 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "sdf_rings.pd"
+  accumulate(samples: 256) {
+    display sdf_rings
+  }
+}
+
+pipeline pdir {
+  pixel kernel "sdf_rings.pdir"
   accumulate(samples: 256) {
     display sdf_rings
   }

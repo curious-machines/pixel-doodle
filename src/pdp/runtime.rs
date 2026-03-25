@@ -79,6 +79,8 @@ pub struct Runtime {
     pub tile_height: usize,
     pub animated: bool,
     backend_name: String,
+    /// Explicitly selected pipeline name (from settings or --set pipeline=...).
+    pipeline_name: Option<String>,
     base_dir: std::path::PathBuf,
     /// GPU pixel kernel backend, initialized lazily when display is available.
     gpu_backend: Option<GpuBackend>,
@@ -139,6 +141,7 @@ impl Runtime {
             tile_height: render::DEFAULT_TILE_HEIGHT,
             animated: false,
             backend_name: "cranelift".into(),
+            pipeline_name: None,
             base_dir: base_dir.to_path_buf(),
             gpu_backend: None,
             gpu_sim_runner: None,
@@ -162,6 +165,11 @@ impl Runtime {
                 "backend" => {
                     if let Literal::Str(s) = &entry.value {
                         self.backend_name = s.clone();
+                    }
+                }
+                "pipeline" => {
+                    if let Literal::Str(s) = &entry.value {
+                        self.pipeline_name = Some(s.clone());
                     }
                 }
                 "tile_height" => {
@@ -193,6 +201,7 @@ impl Runtime {
                     }
                 }
                 "backend" => self.backend_name = value.clone(),
+                "pipeline" => self.pipeline_name = Some(value.clone()),
                 "tile_height" => {
                     if let Ok(v) = value.parse::<usize>() {
                         self.tile_height = v;
@@ -220,23 +229,24 @@ impl Runtime {
         None
     }
 
-    /// Parse and compile all declared kernels (top-level + selected pipeline).
+    /// Parse and compile all declared kernels from the selected pipeline.
     pub fn compile_kernels(&mut self) -> Result<(), String> {
-        // Collect kernel declarations from top-level AND selected pipeline
-        let mut kernel_decls: Vec<KernelDecl> = Vec::new();
-        // Find the selected pipeline's kernels
-        let pipelines = self.config.pipelines.clone();
-        let selected_name = if pipelines.len() == 1 {
-            pipelines[0].name.clone()
-        } else if self.backend_name == "gpu" {
-            Some("gpu".to_string())
-        } else {
-            Some("cpu".to_string())
-        };
-        for p in &pipelines {
-            if pipelines.len() == 1 || p.name == selected_name {
-                kernel_decls.extend(p.kernels.iter().cloned());
+        // Warn once if the requested pipeline name doesn't exist
+        if let Some(ref name) = self.pipeline_name {
+            let pipelines = &self.config.pipelines;
+            if !pipelines.iter().any(|p| p.name.as_deref() == Some(name.as_str())) {
+                let available: Vec<_> = pipelines.iter().filter_map(|p| p.name.as_deref()).collect();
+                eprintln!(
+                    "warning: pipeline '{}' not found; available: {:?}; using first pipeline",
+                    name, available
+                );
             }
+        }
+
+        let mut kernel_decls: Vec<KernelDecl> = Vec::new();
+        // Collect kernel declarations from the selected pipeline
+        if let Some(pipeline) = self.selected_pipeline() {
+            kernel_decls.extend(pipeline.kernels.iter().cloned());
         }
 
         let backend_name = self.backend_name.clone();
@@ -325,25 +335,30 @@ impl Runtime {
                 }
             }
         }
+
+        // Warn if backend setting has no effect on the selected pipeline
+        if self.has_gpu_kernels
+            && self.backend_name != "cranelift"
+            && kernel_decls.iter().all(|d| {
+                resolve_path(&d.path, &base_dir)
+                    .extension()
+                    .is_some_and(|e| e == "wgsl")
+            })
+        {
+            eprintln!(
+                "warning: backend='{}' has no effect — selected pipeline uses only WGSL kernels",
+                self.backend_name
+            );
+        }
+
         Ok(())
     }
 
-    /// Initialize all declared buffers (top-level + selected pipeline).
+    /// Initialize all declared buffers from the selected pipeline.
     pub fn init_buffers(&mut self) -> Result<(), String> {
         let mut buf_decls: Vec<BufferDecl> = Vec::new();
-        // Add pipeline-scoped buffers
-        let pipelines = self.config.pipelines.clone();
-        let selected_name = if pipelines.len() == 1 {
-            pipelines[0].name.clone()
-        } else if self.backend_name == "gpu" {
-            Some("gpu".to_string())
-        } else {
-            Some("cpu".to_string())
-        };
-        for p in &pipelines {
-            if pipelines.len() == 1 || p.name == selected_name {
-                buf_decls.extend(p.buffers.iter().cloned());
-            }
+        if let Some(pipeline) = self.selected_pipeline() {
+            buf_decls.extend(pipeline.buffers.iter().cloned());
         }
         let size = (self.width * self.height) as usize;
 
@@ -391,24 +406,23 @@ impl Runtime {
         Ok(())
     }
 
-    /// Select which pipeline to use based on backend setting.
+    /// Select which pipeline to use.
     /// Rules:
-    /// - One pipeline (named or unnamed): use it
-    /// - Multiple pipelines: backend=gpu selects "gpu", otherwise selects "cpu"
+    /// - If pipeline_name is set (via settings or --set pipeline=...), select by name
+    /// - Otherwise, use the first pipeline
     fn selected_pipeline(&self) -> Option<&Pipeline> {
         let pipelines = &self.config.pipelines;
         if pipelines.is_empty() {
             return None;
         }
-        if pipelines.len() == 1 {
-            return Some(&pipelines[0]);
+        if let Some(ref name) = self.pipeline_name {
+            pipelines
+                .iter()
+                .find(|p| p.name.as_deref() == Some(name.as_str()))
+                .or_else(|| pipelines.first())
+        } else {
+            pipelines.first()
         }
-        // Multiple pipelines — select by backend
-        let target = if self.backend_name == "gpu" { "gpu" } else { "cpu" };
-        pipelines
-            .iter()
-            .find(|p| p.name.as_deref() == Some(target))
-            .or_else(|| pipelines.first())
     }
 
     /// Check if the pipeline has an accumulate step.

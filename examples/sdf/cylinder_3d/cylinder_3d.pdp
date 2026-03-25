@@ -1,6 +1,6 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "cylinder_3d.pd"
   display cylinder_3d
 }

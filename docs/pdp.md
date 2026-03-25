@@ -50,13 +50,20 @@ pipeline {
 }
 ```
 
-### Named pipelines (CPU + GPU)
+### Named pipelines
 
-A single file can define multiple named pipelines for different backends:
+A single file can define multiple named pipelines for different variants:
 
 ```
-pipeline cpu {
+pipeline pd {
   pixel kernel "mandelbrot.pd"
+  accumulate(samples: 256) {
+    display mandelbrot
+  }
+}
+
+pipeline pdir {
+  pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
     display mandelbrot
   }
@@ -68,10 +75,12 @@ pipeline gpu {
 }
 ```
 
+Pipeline names are arbitrary identifiers. Common conventions: `pd`, `pdir`, `gpu`.
+
 Pipeline selection:
-- **One pipeline**: used regardless of backend setting
-- **Multiple pipelines**: `--set backend=gpu` selects `pipeline gpu`, otherwise `pipeline cpu`
-- **Default backend**: cranelift (for CPU pipelines)
+- **One pipeline**: always used
+- **Multiple pipelines**: the first pipeline is the default
+- **Explicit selection**: `--set pipeline=gpu` or `settings { pipeline = "gpu" }`
 
 ## Kernel Declarations
 
@@ -415,13 +424,20 @@ pipeline {
 }
 ```
 
-### Mandelbrot (progressive + pan/zoom, CPU and GPU)
+### Mandelbrot (progressive + pan/zoom, multiple pipelines)
 
 ```
 include "../../shared/pan_zoom.pdp"
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "mandelbrot.pd"
+  accumulate(samples: 256) {
+    display mandelbrot
+  }
+}
+
+pipeline pdir {
+  pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
     display mandelbrot
   }
@@ -433,7 +449,7 @@ pipeline gpu {
 }
 ```
 
-### Gray-Scott (simulation with CPU and GPU pipelines)
+### Gray-Scott (simulation with multiple pipelines)
 
 ```
 title = "Gray-Scott Reaction Diffusion"
@@ -441,7 +457,7 @@ title = "Gray-Scott Reaction Diffusion"
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline cpu {
+pipeline pd {
   sim kernel "gray_scott.pd"
   init kernel init_u = "init/gray_scott_u.pd"
   init kernel init_v = "init/gray_scott_v.pd"
@@ -480,7 +496,7 @@ pipeline gpu {
 }
 ```
 
-### Smoke (multi-kernel CPU pipeline)
+### Smoke (multi-kernel pipeline)
 
 ```
 title = "Smoke Simulation"
@@ -488,7 +504,7 @@ title = "Smoke Simulation"
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline cpu {
+pipeline pd {
   sim kernel advect = "advect.pd"
   sim kernel divergence = "divergence.pd"
   sim kernel jacobi = "jacobi.pd"
@@ -532,7 +548,7 @@ on key(period) frame += 1
 on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
-pipeline cpu {
+pipeline pd {
   sim kernel "game_of_life.pd"
   init kernel init_state = "init/random_binary.pd"
 

@@ -1,6 +1,6 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline {
+pipeline pd {
   pixel kernel "rectangle.pd"
   display rectangle
 }

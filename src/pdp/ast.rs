@@ -227,7 +227,7 @@ pub enum PipelineStep {
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
-    /// Pipeline name: None for unnamed, Some("cpu") or Some("gpu") for named.
+    /// Pipeline name: None for unnamed, Some("pd"), Some("pdir"), Some("gpu"), etc.
     pub name: Option<String>,
     /// Kernels scoped to this pipeline.
     pub kernels: Vec<KernelDecl>,
@@ -246,6 +246,6 @@ pub struct Config {
     pub variables: Vec<VarDecl>,
     pub settings: Settings,
     pub key_bindings: Vec<KeyBinding>,
-    /// One or more pipelines. Unnamed (single) or named (cpu/gpu).
+    /// One or more named pipelines. First pipeline is the default.
     pub pipelines: Vec<Pipeline>,
 }

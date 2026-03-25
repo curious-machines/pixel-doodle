@@ -1,7 +1,12 @@
 # Gradient — simplest pixel kernel
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "gradient.pd"
+  display gradient
+}
+
+pipeline pdir {
+  pixel kernel "gradient.pdir"
   display gradient
 }
 

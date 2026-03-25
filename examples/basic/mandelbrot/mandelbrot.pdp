@@ -2,8 +2,15 @@
 
 include "../../shared/pan_zoom.pdp"
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "mandelbrot.pd"
+  accumulate(samples: 256) {
+    display mandelbrot
+  }
+}
+
+pipeline pdir {
+  pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
     display mandelbrot
   }

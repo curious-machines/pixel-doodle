@@ -1,7 +1,12 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline cpu {
+pipeline pd {
   pixel kernel "starfield.pd"
+  display starfield
+}
+
+pipeline pdir {
+  pixel kernel "starfield.pdir"
   display starfield
 }
 

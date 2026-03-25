@@ -1,6 +1,6 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline {
+pipeline pd {
   pixel kernel "sdf2d_demo.pd"
   display sdf2d_demo
 }
