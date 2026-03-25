@@ -35,6 +35,10 @@ enum CompiledKernelEntry {
     GpuSim {
         wgsl_source: String,
     },
+    /// GPU init kernel — dispatched once during buffer initialization.
+    GpuInit {
+        wgsl_source: String,
+    },
 }
 
 /// The PDP execution engine. Holds all state for running a config-driven example.
@@ -248,8 +252,11 @@ impl Runtime {
                 if src.contains("params.time") {
                     self.animated = true;
                 }
+                // Init kernels store source for later use during buffer init
                 // Sim kernels go through GpuSimRunner, pixel kernels through GpuBackend
-                let entry = if decl.kind == KernelKind::Sim {
+                let entry = if decl.kind == KernelKind::Init {
+                    CompiledKernelEntry::GpuInit { wgsl_source: src }
+                } else if decl.kind == KernelKind::Sim {
                     CompiledKernelEntry::GpuSim { wgsl_source: src }
                 } else {
                     CompiledKernelEntry::Gpu { wgsl_source: src }
@@ -468,8 +475,24 @@ impl Runtime {
                             runner.init_buffer_constant(&buf_decl.name, *val);
                         }
                         BufferInit::InitKernel { kernel_name, .. } => {
-                            // Run init kernel on CPU, then upload to GPU
-                            if let Some(ir) = self.kernel_ir.get(kernel_name) {
+                            // Check for GPU init kernel first
+                            let gpu_init_source = self.kernels.get(kernel_name).and_then(|e| {
+                                if let CompiledKernelEntry::GpuInit { wgsl_source } = e {
+                                    Some(wgsl_source.clone())
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(source) = gpu_init_source {
+                                // Compile and dispatch WGSL init kernel on GPU
+                                let init_pipeline_name = format!("__init_{}", kernel_name);
+                                if let Err(e) = runner.add_pipeline(&init_pipeline_name, &source) {
+                                    eprintln!("warning: failed to compile GPU init kernel '{}': {}", kernel_name, e);
+                                } else {
+                                    runner.dispatch(&init_pipeline_name, &[(&buf_decl.name, &buf_decl.name)]);
+                                }
+                            } else if let Some(ir) = self.kernel_ir.get(kernel_name) {
+                                // Fall back to CPU init kernel, then upload to GPU
                                 let cpu_backend = if self.backend_name == "gpu" {
                                     "cranelift"
                                 } else {
@@ -492,10 +515,6 @@ impl Runtime {
                                         self.tile_height,
                                     );
                                     runner.upload_f64_data(&buf_decl.name, &output_buf);
-                                    eprintln!(
-                                        "[gpu] initialized buffer '{}' via init kernel '{}'",
-                                        buf_decl.name, kernel_name
-                                    );
                                 }
                             }
                         }
@@ -703,6 +722,9 @@ impl Runtime {
                         self.gpu_pixel_buffer_name = Some(binding.buffer_name.clone());
                     }
                 }
+            }
+            Some(CompiledKernelEntry::GpuInit { .. }) => {
+                // Init kernels are not executable as run/display steps
             }
             None => {
                 if is_display {
