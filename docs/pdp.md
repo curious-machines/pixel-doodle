@@ -220,7 +220,7 @@ on key(up) gravity += 0.1
 on key(left) center_x -= 0.1
 on key(plus) zoom *= 1.1
 on key(minus) zoom /= 1.1
-on key(digit0) zoom = 1.0
+on key(0) zoom = 1.0
 ```
 
 ### Block syntax
@@ -228,7 +228,7 @@ on key(digit0) zoom = 1.0
 A single key can trigger multiple actions using a block:
 
 ```
-on key(digit0) {
+on key(0) {
   center_x = 0.0
   center_y = 0.0
   zoom = 1.0
@@ -249,6 +249,7 @@ on key(digit0) {
 | `var = var - literal` | Expanded subtract form |
 | `var = var * literal` | Expanded multiply form |
 | `var = var / literal` | Expanded divide form |
+| `quit` | Exit the application |
 
 Variables with `range()` are automatically clamped or wrapped after modification.
 
@@ -267,7 +268,7 @@ Variables with `range()` are automatically clamped or wrapped after modification
 | `minus` | - / Numpad - |
 | `bracket_left` | [ |
 | `bracket_right` | ] |
-| `digit0` .. `digit3` | Number keys |
+| `0` .. `9` | Number keys |
 | `r` | R key |
 | `escape` | Escape |
 | `q` | Q key |

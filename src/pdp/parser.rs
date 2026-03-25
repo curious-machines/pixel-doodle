@@ -424,7 +424,18 @@ impl Parser {
         self.expect(&Token::On)?;
         self.expect(&Token::Key)?;
         self.expect(&Token::LParen)?;
-        let key_name = self.expect_ident()?;
+        let key_name = match self.peek().clone() {
+            Token::Ident(s) => { self.advance(); s }
+            Token::IntLit(n) if n <= 9 => { self.advance(); n.to_string() }
+            Token::IntLit(n) => {
+                return Err(self.error(format!(
+                    "key name must be a single digit (0-9), got '{n}'"
+                )));
+            }
+            other => {
+                return Err(self.error(format!("expected key name, got '{other}'")));
+            }
+        };
         self.expect(&Token::RParen)?;
 
         let actions = if self.at(&Token::LBrace) {
@@ -1309,7 +1320,7 @@ mod tests {
     fn parse_key_block() {
         let config = parse_str(
             r#"
-            on key(digit0) {
+            on key(0) {
               center_x = 0.0
               center_y = 0.0
               zoom = 1.0
@@ -1325,7 +1336,7 @@ mod tests {
 
         assert_eq!(config.key_bindings.len(), 1);
         let kb = &config.key_bindings[0];
-        assert_eq!(kb.key_name, "digit0");
+        assert_eq!(kb.key_name, "0");
         assert_eq!(kb.actions.len(), 3);
         assert!(matches!(&kb.actions[0], Action::Assign { target, value } if target == "center_x" && *value == 0.0));
         assert!(matches!(&kb.actions[1], Action::Assign { target, value } if target == "center_y" && *value == 0.0));
@@ -1336,8 +1347,8 @@ mod tests {
     fn parse_direct_assign() {
         let config = parse_str(
             r#"
-            on key(digit0) zoom = 1.0
-            on key(digit1) center_x = -0.5
+            on key(0) zoom = 1.0
+            on key(1) center_x = -0.5
 
             pipeline {
               pixel kernel "gradient.pd"

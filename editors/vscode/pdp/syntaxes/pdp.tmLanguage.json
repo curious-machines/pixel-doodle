@@ -126,7 +126,7 @@
       }
     },
     "event-handler": {
-      "match": "\\b(on)\\s+(key)\\s*\\(([a-zA-Z_][a-zA-Z0-9_]*)\\)",
+      "match": "\\b(on)\\s+(key)\\s*\\(([a-zA-Z_][a-zA-Z0-9_]*|[0-9])\\)",
       "captures": {
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" },
