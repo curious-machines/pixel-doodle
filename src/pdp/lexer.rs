@@ -102,6 +102,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "on" => Token::On,
                 "key" => Token::Key,
                 "click" => Token::Click,
+                "include" => Token::Include,
                 "settings" => Token::Settings,
                 "title" => Token::Title,
                 "range" => Token::Range,
@@ -285,6 +286,13 @@ mod tests {
         let tokens = lex("loop(iterations: 40) {\n  run jacobi\n}").unwrap();
         assert!(matches!(tokens[0].token, Token::Loop));
         assert!(matches!(tokens[1].token, Token::LParen));
+    }
+
+    #[test]
+    fn lex_include() {
+        let tokens = lex(r#"include "shared/pan_zoom.pdp""#).unwrap();
+        assert!(matches!(tokens[0].token, Token::Include));
+        assert!(matches!(tokens[1].token, Token::StringLit(_)));
     }
 
     #[test]

@@ -21,6 +21,8 @@ pub enum Token {
     On,
     Key,
     Click,
+    // Include
+    Include,
     // Settings
     Settings,
     Title,
@@ -78,6 +80,7 @@ impl fmt::Display for Token {
             Token::On => write!(f, "on"),
             Token::Key => write!(f, "key"),
             Token::Click => write!(f, "click"),
+            Token::Include => write!(f, "include"),
             Token::Settings => write!(f, "settings"),
             Token::Title => write!(f, "title"),
             Token::Range => write!(f, "range"),

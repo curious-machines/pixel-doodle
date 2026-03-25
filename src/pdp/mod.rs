@@ -6,7 +6,10 @@ pub mod runtime;
 pub mod token;
 pub mod validate;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::Path;
+use std::rc::Rc;
 
 use ast::Config;
 use parser::ParseError;
@@ -14,10 +17,11 @@ use parser::ParseError;
 /// Parse a `.pdp` configuration file.
 ///
 /// `source` is the file content. `base_dir` is the directory of the config file,
-/// used for resolving relative kernel paths.
-pub fn parse(source: &str, _base_dir: &Path) -> Result<Config, String> {
+/// used for resolving relative kernel and include paths.
+pub fn parse(source: &str, base_dir: &Path) -> Result<Config, String> {
     let tokens = lexer::lex(source)?;
-    let mut p = parser::Parser::new(tokens);
+    let included = Rc::new(RefCell::new(HashSet::new()));
+    let mut p = parser::Parser::new_with_context(tokens, base_dir.to_path_buf(), included);
     let config = p.parse_config().map_err(|e: ParseError| e.to_string())?;
     validate::validate(&config).map_err(|errors| {
         errors
@@ -167,5 +171,80 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be inside a pipeline"));
+    }
+
+    fn make_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pdp_test_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn include_key_bindings() {
+        let dir = make_test_dir("include_kb");
+        std::fs::write(
+            dir.join("pan_zoom.pdp"),
+            "on key(left) center_x -= 0.1\non key(right) center_x += 0.1\n",
+        )
+        .unwrap();
+
+        let source = concat!(
+            "include \"pan_zoom.pdp\"\n",
+            "\n",
+            "pipeline {\n",
+            "  pixel kernel \"gradient.pd\"\n",
+            "  display gradient\n",
+            "}\n",
+        );
+        let config = parse(source, &dir).unwrap();
+        assert_eq!(config.key_bindings.len(), 2);
+        assert_eq!(config.key_bindings[0].key_name, "left");
+        assert_eq!(config.key_bindings[1].key_name, "right");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_rejects_pipeline() {
+        let dir = make_test_dir("include_reject");
+        std::fs::write(
+            dir.join("bad.pdp"),
+            "pipeline { pixel kernel \"test.pd\"\n display test }\n",
+        )
+        .unwrap();
+
+        let source = "include \"bad.pdp\"\npipeline { pixel kernel \"test.pd\"\n display test }\n";
+        let result = parse(source, &dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must not contain pipeline"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_circular_dedup() {
+        let dir = make_test_dir("include_circular");
+        std::fs::write(
+            dir.join("a.pdp"),
+            "include \"b.pdp\"\non key(left) center_x -= 0.1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.pdp"),
+            "include \"a.pdp\"\non key(right) center_x += 0.1\n",
+        )
+        .unwrap();
+
+        let source = std::fs::read_to_string(dir.join("a.pdp")).unwrap();
+        let config = parse(
+            &format!("{source}\npipeline {{\n  pixel kernel \"test.pd\"\n  display test\n}}\n"),
+            &dir,
+        )
+        .unwrap();
+        // Should have key bindings from both files without infinite loop
+        assert!(config.key_bindings.len() >= 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

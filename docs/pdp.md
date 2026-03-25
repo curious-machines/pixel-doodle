@@ -220,6 +220,19 @@ on key(up) gravity += 0.1
 on key(left) center_x -= 0.1
 on key(plus) zoom *= 1.1
 on key(minus) zoom /= 1.1
+on key(digit0) zoom = 1.0
+```
+
+### Block syntax
+
+A single key can trigger multiple actions using a block:
+
+```
+on key(digit0) {
+  center_x = 0.0
+  center_y = 0.0
+  zoom = 1.0
+}
 ```
 
 ### Action expressions
@@ -227,6 +240,7 @@ on key(minus) zoom /= 1.1
 | Form | Description |
 |------|-------------|
 | `var = !var` | Toggle boolean |
+| `var = literal` | Direct assignment |
 | `var += literal` | Add to variable |
 | `var -= literal` | Subtract from variable |
 | `var *= literal` | Multiply variable |
@@ -257,6 +271,21 @@ Variables with `range()` are automatically clamped or wrapped after modification
 | `r` | R key |
 | `escape` | Escape |
 | `q` | Q key |
+
+## Include
+
+Reuse shared configuration across multiple `.pdp` files:
+
+```
+include "../../shared/pan_zoom.pdp"
+```
+
+- Paths are resolved relative to the including file's directory
+- Included files may contain: variables, key bindings, settings, title, and nested includes
+- Included files must **not** contain pipeline blocks
+- Circular includes are detected and silently deduplicated
+
+Included content is merged into the including file as if written inline.
 
 ## Pipeline Steps
 
@@ -376,12 +405,7 @@ pipeline {
 ### Mandelbrot (progressive + pan/zoom, CPU and GPU)
 
 ```
-on key(left) center_x -= 0.1
-on key(right) center_x += 0.1
-on key(up) center_y -= 0.1
-on key(down) center_y += 0.1
-on key(plus) zoom *= 1.1
-on key(minus) zoom /= 1.1
+include "../../shared/pan_zoom.pdp"
 
 pipeline cpu {
   pixel kernel "mandelbrot.pd"

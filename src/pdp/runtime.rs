@@ -874,26 +874,31 @@ impl Runtime {
         let bindings: Vec<KeyBinding> = self.config.key_bindings.clone();
         for binding in &bindings {
             if binding.key_name == key_name {
-                match &binding.action {
-                    Action::Toggle(var) => {
-                        let val = self.get_variable(var);
-                        self.set_variable(var, if val == 0.0 { 1.0 } else { 0.0 });
-                    }
-                    Action::CompoundAssign { target, op, value } | Action::BinAssign { target, op, value } => {
-                        let current = self.get_variable(target);
-                        let new_val = match op {
-                            CompoundOp::Add => current + value,
-                            CompoundOp::Sub => current - value,
-                            CompoundOp::Mul => current * value,
-                            CompoundOp::Div => {
-                                if *value != 0.0 {
-                                    current / value
-                                } else {
-                                    current
+                for action in &binding.actions {
+                    match action {
+                        Action::Toggle(var) => {
+                            let val = self.get_variable(var);
+                            self.set_variable(var, if val == 0.0 { 1.0 } else { 0.0 });
+                        }
+                        Action::CompoundAssign { target, op, value } | Action::BinAssign { target, op, value } => {
+                            let current = self.get_variable(target);
+                            let new_val = match op {
+                                CompoundOp::Add => current + value,
+                                CompoundOp::Sub => current - value,
+                                CompoundOp::Mul => current * value,
+                                CompoundOp::Div => {
+                                    if *value != 0.0 {
+                                        current / value
+                                    } else {
+                                        current
+                                    }
                                 }
-                            }
-                        };
-                        self.set_variable(target, new_val);
+                            };
+                            self.set_variable(target, new_val);
+                        }
+                        Action::Assign { target, value } => {
+                            self.set_variable(target, *value);
+                        }
                     }
                 }
             }

@@ -48,19 +48,22 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
 
     // Check key bindings reference valid variables
     for kb in &config.key_bindings {
-        let target = match &kb.action {
-            Action::Toggle(var) => var,
-            Action::CompoundAssign { target, .. } => target,
-            Action::BinAssign { target, .. } => target,
-        };
-        if !var_names.contains(target) {
-            errors.push(ValidationError {
-                line: kb.span.line,
-                col: kb.span.col,
-                message: format!(
-                    "key binding references undeclared variable '{target}'"
-                ),
-            });
+        for action in &kb.actions {
+            let target = match action {
+                Action::Toggle(var) => var,
+                Action::CompoundAssign { target, .. } => target,
+                Action::BinAssign { target, .. } => target,
+                Action::Assign { target, .. } => target,
+            };
+            if !var_names.contains(target) {
+                errors.push(ValidationError {
+                    line: kb.span.line,
+                    col: kb.span.col,
+                    message: format!(
+                        "key binding references undeclared variable '{target}'"
+                    ),
+                });
+            }
         }
     }
 

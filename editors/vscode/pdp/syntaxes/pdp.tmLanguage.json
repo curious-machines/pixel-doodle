@@ -7,6 +7,7 @@
     { "include": "#pipeline-block" },
     { "include": "#title" },
     { "include": "#event-handler" },
+    { "include": "#include-directive" },
     { "include": "#variable-declaration" },
     { "include": "#string" },
     { "include": "#number" },
@@ -130,6 +131,13 @@
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" },
         "3": { "name": "variable.parameter.key-name.pdp" }
+      }
+    },
+    "include-directive": {
+      "match": "\\b(include)\\s+(\"[^\"]*\")",
+      "captures": {
+        "1": { "name": "keyword.control.include.pdp" },
+        "2": { "name": "string.quoted.double.pdp" }
       }
     },
     "variable-declaration": {

@@ -1,3 +1,8 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::rc::Rc;
+
 use super::ast::*;
 use super::token::{Spanned, Token};
 
@@ -17,11 +22,34 @@ impl std::fmt::Display for ParseError {
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
+    /// Directory of the file being parsed, for resolving includes.
+    base_dir: PathBuf,
+    /// Canonicalized paths already included, to prevent circular includes.
+    included: Rc<RefCell<HashSet<PathBuf>>>,
 }
 
 impl Parser {
+    #[cfg(test)]
     pub fn new(tokens: Vec<Spanned>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            base_dir: PathBuf::from("."),
+            included: Rc::new(RefCell::new(HashSet::new())),
+        }
+    }
+
+    pub fn new_with_context(
+        tokens: Vec<Spanned>,
+        base_dir: PathBuf,
+        included: Rc<RefCell<HashSet<PathBuf>>>,
+    ) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            base_dir,
+            included,
+        }
     }
 
     // ── Token navigation ──
@@ -186,6 +214,15 @@ impl Parser {
                 }
                 Token::On => {
                     config.key_bindings.push(self.parse_key_binding()?);
+                }
+                Token::Include => {
+                    let included = self.parse_include()?;
+                    if config.title.is_none() {
+                        config.title = included.title;
+                    }
+                    config.variables.extend(included.variables);
+                    config.key_bindings.extend(included.key_bindings);
+                    config.settings.entries.extend(included.settings.entries);
                 }
                 Token::Ident(_) => {
                     // Could be a variable declaration: `name = value` or `name: range(...) = value`
@@ -390,11 +427,21 @@ impl Parser {
         let key_name = self.expect_ident()?;
         self.expect(&Token::RParen)?;
 
-        let action = self.parse_action()?;
+        let actions = if self.at(&Token::LBrace) {
+            self.advance();
+            let mut actions = Vec::new();
+            while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
+                actions.push(self.parse_action()?);
+            }
+            self.expect(&Token::RBrace)?;
+            actions
+        } else {
+            vec![self.parse_action()?]
+        };
 
         Ok(KeyBinding {
             key_name,
-            action,
+            actions,
             span,
         })
     }
@@ -402,6 +449,7 @@ impl Parser {
     fn parse_action(&mut self) -> Result<Action, ParseError> {
         // Forms:
         //   variable = !variable          (toggle)
+        //   variable = literal            (direct assign)
         //   variable += literal           (compound assign)
         //   variable -= literal
         //   variable *= literal
@@ -451,13 +499,17 @@ impl Parser {
             }
             Token::Eq => {
                 self.advance();
-                // Either `!variable` (toggle) or `variable op literal` (expanded)
                 if self.at(&Token::Bang) {
+                    // `!variable` (toggle)
                     self.advance();
                     let var = self.expect_ident()?;
                     Ok(Action::Toggle(var))
+                } else if matches!(self.peek(), Token::FloatLit(_) | Token::IntLit(_) | Token::Minus) {
+                    // literal (direct assign)
+                    let val = self.parse_number_literal()?;
+                    Ok(Action::Assign { target, value: val })
                 } else {
-                    // variable op literal
+                    // variable op literal (expanded form)
                     let _rhs_var = self.expect_ident()?;
                     let op = match self.peek() {
                         Token::Plus => CompoundOp::Add,
@@ -483,6 +535,103 @@ impl Parser {
                 "expected assignment operator, got '{other}'"
             ))),
         }
+    }
+
+    // ── Include ──
+
+    fn parse_include(&mut self) -> Result<Config, ParseError> {
+        self.expect(&Token::Include)?;
+        let path_str = self.expect_string()?;
+
+        let resolved = self.base_dir.join(&path_str);
+        let canonical = resolved.canonicalize().map_err(|e| {
+            self.error(format!("cannot resolve include path '{path_str}': {e}"))
+        })?;
+
+        // Dedup: if already included, return empty config
+        if !self.included.borrow_mut().insert(canonical.clone()) {
+            return Ok(Config {
+                title: None,
+                variables: Vec::new(),
+                settings: Settings::default(),
+                key_bindings: Vec::new(),
+                pipelines: Vec::new(),
+            });
+        }
+
+        let source = std::fs::read_to_string(&canonical).map_err(|e| {
+            self.error(format!("cannot read include file '{path_str}': {e}"))
+        })?;
+
+        let tokens = super::lexer::lex(&source).map_err(|e| {
+            self.error(format!("in included file '{path_str}': {e}"))
+        })?;
+
+        let sub_dir = canonical.parent().unwrap_or(&self.base_dir).to_path_buf();
+        let mut sub_parser =
+            Parser::new_with_context(tokens, sub_dir, Rc::clone(&self.included));
+
+        sub_parser.parse_include_file(&path_str)
+    }
+
+    fn parse_include_file(&mut self, path_str: &str) -> Result<Config, ParseError> {
+        let mut config = Config {
+            title: None,
+            variables: Vec::new(),
+            settings: Settings::default(),
+            key_bindings: Vec::new(),
+            pipelines: Vec::new(),
+        };
+
+        while !self.at(&Token::Eof) {
+            match self.peek().clone() {
+                Token::Pipeline => {
+                    return Err(self.error(format!(
+                        "included file '{path_str}' must not contain pipeline blocks"
+                    )));
+                }
+                Token::Pixel | Token::Sim | Token::Init => {
+                    return Err(self.error(format!(
+                        "included file '{path_str}' must not contain kernel declarations"
+                    )));
+                }
+                Token::Buffer => {
+                    return Err(self.error(format!(
+                        "included file '{path_str}' must not contain buffer declarations"
+                    )));
+                }
+                Token::Title => {
+                    self.advance();
+                    self.expect(&Token::Eq)?;
+                    config.title = Some(self.expect_string()?);
+                }
+                Token::Settings => {
+                    config.settings = self.parse_settings()?;
+                }
+                Token::On => {
+                    config.key_bindings.push(self.parse_key_binding()?);
+                }
+                Token::Include => {
+                    let included = self.parse_include()?;
+                    if config.title.is_none() {
+                        config.title = included.title;
+                    }
+                    config.variables.extend(included.variables);
+                    config.key_bindings.extend(included.key_bindings);
+                    config.settings.entries.extend(included.settings.entries);
+                }
+                Token::Ident(_) => {
+                    config.variables.push(self.parse_var_decl()?);
+                }
+                other => {
+                    return Err(self.error(format!(
+                        "unexpected token '{other}' in included file '{path_str}'"
+                    )));
+                }
+            }
+        }
+
+        Ok(config)
     }
 
     // ── Pipeline ──
@@ -1149,6 +1298,53 @@ mod tests {
         assert_eq!(config.pipelines[1].buffers.len(), 2);
         // Shared key bindings at top level
         assert_eq!(config.key_bindings.len(), 1);
+    }
+
+    #[test]
+    fn parse_key_block() {
+        let config = parse_str(
+            r#"
+            on key(digit0) {
+              center_x = 0.0
+              center_y = 0.0
+              zoom = 1.0
+            }
+
+            pipeline {
+              pixel kernel "gradient.pd"
+              display gradient
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.key_bindings.len(), 1);
+        let kb = &config.key_bindings[0];
+        assert_eq!(kb.key_name, "digit0");
+        assert_eq!(kb.actions.len(), 3);
+        assert!(matches!(&kb.actions[0], Action::Assign { target, value } if target == "center_x" && *value == 0.0));
+        assert!(matches!(&kb.actions[1], Action::Assign { target, value } if target == "center_y" && *value == 0.0));
+        assert!(matches!(&kb.actions[2], Action::Assign { target, value } if target == "zoom" && *value == 1.0));
+    }
+
+    #[test]
+    fn parse_direct_assign() {
+        let config = parse_str(
+            r#"
+            on key(digit0) zoom = 1.0
+            on key(digit1) center_x = -0.5
+
+            pipeline {
+              pixel kernel "gradient.pd"
+              display gradient
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.key_bindings.len(), 2);
+        assert!(matches!(&config.key_bindings[0].actions[0], Action::Assign { target, value } if target == "zoom" && *value == 1.0));
+        assert!(matches!(&config.key_bindings[1].actions[0], Action::Assign { target, value } if target == "center_x" && *value == -0.5));
     }
 
     #[test]

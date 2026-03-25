@@ -137,6 +137,11 @@ pub enum Action {
         op: CompoundOp,
         value: f64,
     },
+    /// `variable = literal` (direct assignment)
+    Assign {
+        target: String,
+        value: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +155,7 @@ pub enum CompoundOp {
 #[derive(Debug, Clone)]
 pub struct KeyBinding {
     pub key_name: String,
-    pub action: Action,
+    pub actions: Vec<Action>,
     pub span: Span,
 }
 
