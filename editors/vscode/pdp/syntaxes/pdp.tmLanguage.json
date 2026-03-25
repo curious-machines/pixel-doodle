@@ -27,20 +27,21 @@
       }
     },
     "pipeline-block": {
-      "begin": "\\b(pipeline)\\s+(cpu|gpu)\\s*\\{",
+      "begin": "\\b(pipeline)(?:\\s+(cpu|gpu))?\\s*\\{",
       "beginCaptures": {
         "1": { "name": "keyword.declaration.pipeline.pdp" },
         "2": { "name": "entity.name.type.pipeline.pdp" }
       },
-      "end": "\\}",
+      "end": "^\\}",
       "patterns": [
         { "include": "#comment" },
+        { "include": "#loop-block" },
         { "include": "#kernel-declaration" },
         { "include": "#buffer-declaration" },
         { "include": "#swap-statement" },
-        { "include": "#loop-block" },
         { "include": "#accumulate-block" },
-        { "include": "#on-click" },
+        { "include": "#on-click-block" },
+        { "include": "#on-key-block" },
         { "include": "#display-statement" },
         { "include": "#run-expression" },
         { "include": "#string" },
@@ -88,28 +89,76 @@
       "name": "keyword.operator.swap.pdp"
     },
     "loop-block": {
-      "begin": "\\b(loop)\\s*\\(",
+      "begin": "\\b(loop)\\s*\\([^)]*\\)\\s*\\{",
       "beginCaptures": {
         "1": { "name": "keyword.control.loop.pdp" }
       },
-      "end": "(?<=\\)\\s*\\{)|(?<=\\))",
+      "end": "\\}",
       "patterns": [
+        { "include": "#comment" },
+        { "include": "#swap-statement" },
+        { "include": "#display-statement" },
+        { "include": "#run-expression" },
+        { "include": "#loop-block" },
+        { "include": "#on-click-block" },
+        { "include": "#string" },
         { "include": "#number" },
+        { "include": "#boolean" },
+        { "include": "#operator" },
         { "include": "#identifier" }
       ]
     },
     "accumulate-block": {
-      "match": "\\b(accumulate)\\s*\\(",
-      "captures": {
+      "begin": "\\b(accumulate)\\s*\\([^)]*\\)\\s*\\{",
+      "beginCaptures": {
         "1": { "name": "keyword.control.accumulate.pdp" }
-      }
+      },
+      "end": "\\}",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#display-statement" },
+        { "include": "#run-expression" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#boolean" },
+        { "include": "#operator" },
+        { "include": "#identifier" }
+      ]
     },
-    "on-click": {
-      "match": "\\b(on)\\s+(click|key)\\b",
-      "captures": {
+    "on-click-block": {
+      "begin": "\\b(on)\\s+(click)\\s*\\([^)]*\\)\\s*\\{",
+      "beginCaptures": {
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" }
-      }
+      },
+      "end": "\\}",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#run-expression" },
+        { "include": "#display-statement" },
+        { "include": "#swap-statement" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#boolean" },
+        { "include": "#operator" },
+        { "include": "#identifier" }
+      ]
+    },
+    "on-key-block": {
+      "begin": "\\b(on)\\s+(key)\\s*\\([^)]*\\)\\s*\\{",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.event.pdp" },
+        "2": { "name": "keyword.other.event-type.pdp" }
+      },
+      "end": "\\}",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#boolean" },
+        { "include": "#operator" },
+        { "include": "#identifier" }
+      ]
     },
     "display-statement": {
       "match": "\\b(display)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
@@ -203,7 +252,7 @@
       ]
     },
     "identifier": {
-      "match": "\\b(constant|iterations|samples|continuous|radius|value|falloff|wrap)\\b",
+      "match": "\\b(constant|iterations|samples|continuous|radius|value|falloff|wrap|out|target)\\b",
       "name": "variable.parameter.pdp"
     }
   }
