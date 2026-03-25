@@ -826,10 +826,16 @@ impl Parser {
             let span = self.span();
             let param_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
+            // Check for `out` qualifier: `pixels: out pixels`
+            let is_output = matches!(self.peek(), Token::Ident(name) if name == "out");
+            if is_output {
+                self.advance();
+            }
             let buffer_name = self.expect_ident()?;
             bindings.push(BufferBinding {
                 param_name,
                 buffer_name,
+                is_output,
                 span,
             });
             if !self.at(&Token::RBrace) {

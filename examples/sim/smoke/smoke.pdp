@@ -60,5 +60,5 @@ pipeline gpu {
   }
   field_next = run project { pressure: press_a, field_in: field, field_out: field_next }
   swap field <-> field_next
-  display vis { field_in: field, pixels: pixels }
+  display vis { field_in: field, pixels: out pixels }
 }

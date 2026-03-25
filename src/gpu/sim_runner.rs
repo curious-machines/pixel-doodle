@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::display::Display;
+use crate::pdp::ast::GpuElementType;
 
 use super::aligned_bytes_per_row;
 
@@ -18,6 +19,7 @@ struct SimParams {
 struct GpuBuffer {
     buffer: wgpu::Buffer,
     element_size: u32,
+    element_type: GpuElementType,
 }
 
 /// A compiled GPU compute pipeline with binding metadata.
@@ -85,8 +87,9 @@ impl GpuSimRunner {
     pub fn add_buffer(
         &mut self,
         name: &str,
-        element_size: u32,
+        element_type: GpuElementType,
     ) {
+        let element_size = element_type.byte_size();
         let buf_size = (self.stride * self.height) as u64 * element_size as u64;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(name),
@@ -101,6 +104,7 @@ impl GpuSimRunner {
             GpuBuffer {
                 buffer,
                 element_size,
+                element_type,
             },
         );
     }
@@ -337,7 +341,7 @@ impl GpuSimRunner {
                     let r2 = (r * r) as f32;
                     if d2 <= r2 {
                         let offset =
-                            (y as u64 * self.stride as u64 + x as u64) * elem_size as u64;
+                            (y as u64 * self.width as u64 + x as u64) * elem_size as u64;
                         self.queue.write_buffer(&gpu_buf.buffer, offset, value);
                     }
                 }
@@ -361,29 +365,29 @@ impl GpuSimRunner {
         };
         let elem_size = gpu_buf.element_size as usize;
         let mut bytes = vec![0u8; elem_size];
-        let val_f32 = value as f32;
 
-        match elem_size {
-            4 => {
-                // f32, i32, or u32
-                bytes.copy_from_slice(&val_f32.to_le_bytes());
+        match gpu_buf.element_type {
+            GpuElementType::I32 => {
+                bytes.copy_from_slice(&(value as i32).to_le_bytes());
             }
-            8 => {
-                // vec2f — write value to both components for reaction-diffusion (u,v)
-                // For gray-scott: inject v=value → vec2(0, value)
-                // Default: write to second component (v channel)
-                let zero_bytes = 0.0f32.to_le_bytes();
-                let val_bytes = val_f32.to_le_bytes();
-                bytes[0..4].copy_from_slice(&zero_bytes);
+            GpuElementType::U32 => {
+                bytes.copy_from_slice(&(value as u32).to_le_bytes());
+            }
+            GpuElementType::F32 => {
+                bytes.copy_from_slice(&(value as f32).to_le_bytes());
+            }
+            GpuElementType::Vec2f => {
+                // Write to second component (v channel) for reaction-diffusion
+                let val_bytes = (value as f32).to_le_bytes();
                 bytes[4..8].copy_from_slice(&val_bytes);
             }
-            16 => {
-                // vec4f — write value to density (4th component) for smoke
-                let val_bytes = val_f32.to_le_bytes();
+            GpuElementType::Vec4f => {
+                // Write to density (4th component) for smoke
+                let val_bytes = (value as f32).to_le_bytes();
                 bytes[12..16].copy_from_slice(&val_bytes);
             }
             _ => {
-                bytes[0..4].copy_from_slice(&val_f32.to_le_bytes());
+                bytes[0..4].copy_from_slice(&(value as f32).to_le_bytes());
             }
         }
 
@@ -453,14 +457,16 @@ impl GpuSimRunner {
         let mut data = vec![0u8; total_elements as usize * elem_size];
 
         if value != 0.0 {
-            let val_f32 = value as f32;
-            let bytes = val_f32.to_le_bytes();
-            // Fill each f32 component with the value
-            let floats_per_element = elem_size / 4;
+            let component_bytes = match gpu_buf.element_type {
+                GpuElementType::I32 => (value as i32).to_le_bytes(),
+                GpuElementType::U32 => (value as u32).to_le_bytes(),
+                _ => (value as f32).to_le_bytes(),
+            };
+            let components_per_element = elem_size / 4;
             for i in 0..total_elements as usize {
-                for j in 0..floats_per_element {
+                for j in 0..components_per_element {
                     let offset = i * elem_size + j * 4;
-                    data[offset..offset + 4].copy_from_slice(&bytes);
+                    data[offset..offset + 4].copy_from_slice(&component_bytes);
                 }
             }
         }

@@ -462,7 +462,7 @@ impl Runtime {
 
             for buf_decl in &all_buffers {
                 if let Some(gpu_type) = buf_decl.gpu_type {
-                    runner.add_buffer(&buf_decl.name, gpu_type.byte_size());
+                    runner.add_buffer(&buf_decl.name, gpu_type);
                     match &buf_decl.init {
                         BufferInit::Constant(val) => {
                             runner.init_buffer_constant(&buf_decl.name, *val);
@@ -721,6 +721,8 @@ impl Runtime {
                     self.gpu_rendered_this_frame = true;
                     if let Some(out) = outputs.first() {
                         self.gpu_pixel_buffer_name = Some(out.clone());
+                    } else if let Some(binding) = input_bindings.iter().find(|b| b.is_output) {
+                        self.gpu_pixel_buffer_name = Some(binding.buffer_name.clone());
                     }
                 }
             }
@@ -1070,8 +1072,11 @@ impl Runtime {
             return !accum.is_converged();
         }
         // Simulations always animate (they have buffers/loops)
-        // Simulations always animate (they have buffers)
-        !self.buffers.is_empty()
+        if !self.buffers.is_empty() {
+            return true;
+        }
+        // GPU simulations have buffers in the GPU runner, not self.buffers
+        self.gpu_sim_runner.is_some()
     }
 
     pub fn accumulation_info(&self) -> Option<(u32, u32)> {

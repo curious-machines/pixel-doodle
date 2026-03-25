@@ -313,6 +313,21 @@ vx0, vy0 = display project { press_in: pressure, ... } # sim kernel with outputs
 
 Every pipeline must have at least one `display` step.
 
+**CPU vs GPU display**: In CPU pipelines, the runtime passes a hidden pixel buffer
+to the compiled kernel — the kernel writes ARGB pixels as a side effect and the
+runtime displays them automatically. In GPU pipelines, compute shaders run entirely
+on the GPU and the runtime cannot inject a hidden buffer. Instead, GPU display steps
+require an explicit `out` binding to identify which GPU buffer contains the pixel
+output:
+
+```
+display vis { grid_in: grid, pixels: out pixels }
+```
+
+The `out` qualifier marks the binding as the display output buffer. Exactly one `out`
+binding is allowed per display step. The buffer must be declared as `gpu(u32)` since
+pixel data is packed ARGB.
+
 ### `swap` — Swap buffers
 
 ```
@@ -464,7 +479,7 @@ pipeline gpu {
     field_next = run step { field_in: field, field_out: field_next }
     swap field <-> field_next
   }
-  display vis { field_in: field, pixels: pixels }
+  display vis { field_in: field, pixels: out pixels }
 }
 ```
 

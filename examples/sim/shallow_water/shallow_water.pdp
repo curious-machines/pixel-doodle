@@ -40,5 +40,5 @@ pipeline gpu {
     field_next = run step { field_in: field, field_out: field_next }
     swap field <-> field_next
   }
-  display vis { field_in: field, pixels: pixels }
+  display vis { field_in: field, pixels: out pixels }
 }

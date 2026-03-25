@@ -42,5 +42,5 @@ pipeline gpu {
     grid_next = run step { grid_in: grid, grid_out: grid_next }
     swap grid <-> grid_next
   }
-  display vis { grid_in: grid, pixels: pixels }
+  display vis { grid_in: grid, pixels: out pixels }
 }

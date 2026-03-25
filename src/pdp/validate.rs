@@ -174,6 +174,14 @@ fn validate_steps(
                         message: format!("undeclared kernel '{kernel_name}'"),
                     });
                 }
+                let out_count = input_bindings.iter().filter(|b| b.is_output).count();
+                if out_count > 1 {
+                    errors.push(ValidationError {
+                        line: span.line,
+                        col: span.col,
+                        message: "display step can have at most one 'out' binding".into(),
+                    });
+                }
                 validate_buffer_refs(outputs, input_bindings, buffers, *span, errors);
             }
             PipelineStep::Swap { pairs, span } => {

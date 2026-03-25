@@ -168,6 +168,8 @@ pub struct KeyBinding {
 pub struct BufferBinding {
     pub param_name: String,
     pub buffer_name: String,
+    /// Marks this binding as an output (e.g. `pixels: out pixels` in GPU display steps).
+    pub is_output: bool,
     pub span: Span,
 }
 
