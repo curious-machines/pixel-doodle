@@ -86,6 +86,8 @@ pub struct Runtime {
     gpu_rendered_this_frame: bool,
     /// Name of the GPU pixel buffer for sim display steps.
     gpu_pixel_buffer_name: Option<String>,
+    /// The config file path, used in window title when no explicit title is set.
+    config_path: Option<String>,
 }
 
 impl Runtime {
@@ -139,7 +141,13 @@ impl Runtime {
             has_gpu_kernels: false,
             gpu_rendered_this_frame: false,
             gpu_pixel_buffer_name: None,
+            config_path: None,
         }
+    }
+
+    /// Set the config file path (used in window title fallback).
+    pub fn set_config_path(&mut self, path: &str) {
+        self.config_path = Some(path.to_string());
     }
 
     /// Apply settings from the config's settings block.
@@ -1037,10 +1045,15 @@ impl Runtime {
     }
 
     pub fn title(&self) -> String {
-        self.config
-            .title
-            .clone()
-            .unwrap_or_else(|| "pixel-doodle".to_string())
+        if let Some(ref t) = self.config.title {
+            return t.clone();
+        }
+        if let Some(ref path) = self.config_path {
+            let p = std::path::Path::new(path);
+            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("pixel-doodle");
+            return format!("pixel-doodle — {}", name);
+        }
+        "pixel-doodle".to_string()
     }
 
     /// Returns true if progressive rendering is active and not yet converged.

@@ -12,6 +12,7 @@ mod progressive;
 mod render;
 
 use display::Display;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -31,6 +32,48 @@ struct CliArgs {
     output: Option<String>,
     set_overrides: Vec<(String, String)>,
     settings_file: Option<String>,
+}
+
+fn resolve_dir_to_pdp(dir: &str) -> String {
+    let dir_path = Path::new(dir);
+    let dir_name = dir_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // Try convention: <dir_name>/<dir_name>.pdp
+    let convention = dir_path.join(format!("{}.pdp", dir_name));
+    if convention.is_file() {
+        return convention.to_string_lossy().into_owned();
+    }
+
+    // Fall back: look for any .pdp files in the directory
+    let pdp_files: Vec<_> = std::fs::read_dir(dir_path)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to read directory '{}': {}", dir, e);
+            std::process::exit(1);
+        })
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.path().extension().and_then(|e| e.to_str()) == Some("pdp")
+                && entry.path().is_file()
+        })
+        .collect();
+
+    match pdp_files.len() {
+        0 => {
+            eprintln!("No .pdp file found in '{}'", dir);
+            std::process::exit(1);
+        }
+        1 => pdp_files[0].path().to_string_lossy().into_owned(),
+        _ => {
+            eprintln!("Multiple .pdp files in '{}', specify one:", dir);
+            for f in &pdp_files {
+                eprintln!("  {}", f.path().display());
+            }
+            std::process::exit(1);
+        }
+    }
 }
 
 fn parse_args() -> CliArgs {
@@ -90,7 +133,7 @@ fn parse_args() -> CliArgs {
                 }
             }
             "--help" | "-h" => {
-                eprintln!("Usage: pixel-doodle <config.pdp> [options]");
+                eprintln!("Usage: pixel-doodle <config.pdp | directory> [options]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --output <file.ppm>    Render one frame and save (no window)");
@@ -104,6 +147,9 @@ fn parse_args() -> CliArgs {
             }
             arg if arg.ends_with(".pdp") => {
                 config_path = Some(args[i].clone());
+            }
+            arg if Path::new(arg).is_dir() => {
+                config_path = Some(resolve_dir_to_pdp(arg));
             }
             _ => {
                 eprintln!("Unknown argument: {}", args[i]);
@@ -140,6 +186,7 @@ fn run_pdp(config_path: &str, args: &CliArgs) {
     });
 
     let mut runtime = pdp::runtime::Runtime::new(config, WIDTH, HEIGHT, base_dir);
+    runtime.set_config_path(config_path);
     runtime.apply_settings();
 
     // Apply .pds file overrides
