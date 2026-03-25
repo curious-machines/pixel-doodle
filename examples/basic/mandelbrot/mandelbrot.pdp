@@ -1,21 +1,17 @@
-# Mandelbrot with progressive sampling and pan/zoom
+# Mandelbrot with pan/zoom
 
 include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "mandelbrot.pd"
-  accumulate(samples: 256) {
-    run mandelbrot
-    display
-  }
+  run mandelbrot
+  display
 }
 
 pipeline pdir {
   pixel kernel "mandelbrot.pdir"
-  accumulate(samples: 256) {
-    run mandelbrot
-    display
-  }
+  run mandelbrot
+  display
 }
 
 pipeline gpu {
