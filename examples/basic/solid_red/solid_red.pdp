@@ -1,14 +1,17 @@
 pipeline pd {
   pixel kernel "solid_red.pd"
-  display solid_red
+  run solid_red
+  display
 }
 
 pipeline pdir {
   pixel kernel "solid_red.pdir"
-  display solid_red
+  run solid_red
+  display
 }
 
 pipeline gpu {
   pixel kernel "solid_red.wgsl"
-  display solid_red
+  run solid_red
+  display
 }

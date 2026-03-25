@@ -237,6 +237,7 @@ fn run_pdp(config_path: &str, args: &CliArgs) {
             if runtime.has_gpu_kernels {
                 runtime.execute_gpu_headless();
             } else {
+                runtime.execute_init_block(&thread_pool);
                 runtime.execute_frame(0.0, &thread_pool);
             }
             bench::write_ppm(
@@ -350,6 +351,8 @@ impl ApplicationHandler for PdpApp {
         );
         // Initialize GPU backend if needed (requires display device/queue)
         self.runtime.init_gpu(&display);
+        // Execute init blocks (runs once at startup)
+        self.runtime.execute_init_block(&self.thread_pool);
         self.display = Some(display);
         self.window = Some(window);
     }
@@ -378,15 +381,15 @@ impl ApplicationHandler for PdpApp {
                         }
                         if !self.keys_down.contains(&code) {
                             self.keys_down.push(code);
-                        }
-                        // Fire key binding on press
-                        if let Some(name) = pdp::runtime::key_code_to_name(code) {
-                            if self.runtime.handle_key_press(name) {
-                                event_loop.exit();
-                                return;
-                            }
-                            if let Some(window) = &self.window {
-                                window.request_redraw();
+                            // Fire key binding on initial press only (not OS repeats)
+                            if let Some(name) = pdp::runtime::key_code_to_name(code) {
+                                if self.runtime.handle_key_press(name) {
+                                    event_loop.exit();
+                                    return;
+                                }
+                                if let Some(window) = &self.window {
+                                    window.request_redraw();
+                                }
                             }
                         }
                     } else {
@@ -457,7 +460,7 @@ impl ApplicationHandler for PdpApp {
                     display.upload_and_present(self.runtime.display_pixels());
                 }
 
-                if self.runtime.needs_continuous_redraw() {
+                if self.runtime.needs_continuous_redraw() || !self.keys_down.is_empty() {
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }

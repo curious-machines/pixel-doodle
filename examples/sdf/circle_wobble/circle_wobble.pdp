@@ -2,5 +2,6 @@ include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "circle-wobble.pd"
-  display circle_wobble
+  run circle_wobble
+  display
 }

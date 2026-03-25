@@ -2,5 +2,6 @@ include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "rectangle.pd"
-  display rectangle
+  run rectangle
+  display
 }

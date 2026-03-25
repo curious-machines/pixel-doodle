@@ -2,15 +2,18 @@
 
 pipeline pd {
   pixel kernel "gradient.pd"
-  display gradient
+  run gradient
+  display
 }
 
 pipeline pdir {
   pixel kernel "gradient.pdir"
-  display gradient
+  run gradient
+  display
 }
 
 pipeline gpu {
   pixel kernel "gradient.wgsl"
-  display gradient
+  run gradient
+  display
 }

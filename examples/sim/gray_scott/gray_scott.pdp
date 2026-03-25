@@ -4,48 +4,58 @@ on key(space) paused = !paused
 on key(period) frame += 1
 
 pipeline pd {
-  sim kernel "gray_scott.pd"
-  init kernel init_u = "init/gray_scott_u.pd"
-  init kernel init_v = "init/gray_scott_v.pd"
+  kernel "gray_scott.pd"
+  kernel init_u = "init/gray_scott_u.pd"
+  kernel init_v = "init/gray_scott_v.pd"
 
-  buffer u = init_u()
-  buffer v = init_v()
+  buffer u = constant(0.0)
+  buffer v = constant(0.0)
   buffer u_next = constant(0.0)
   buffer v_next = constant(0.0)
 
+  init {
+    run init_u { out: out u }
+    run init_v { out: out v }
+  }
   on click(continuous: true) {
     run inject(value: 0.5, radius: 5) { target: out v }
   }
   loop(iterations: 8) {
-    display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    display
     swap u <-> u_next
     swap v <-> v_next
   }
 }
 
 pipeline pdir {
-  sim kernel "gray_scott.pdir"
-  init kernel init_u = "init/gray_scott_u.pd"
-  init kernel init_v = "init/gray_scott_v.pd"
+  kernel "gray_scott.pdir"
+  kernel init_u = "init/gray_scott_u.pd"
+  kernel init_v = "init/gray_scott_v.pd"
 
-  buffer u = init_u()
-  buffer v = init_v()
+  buffer u = constant(0.0)
+  buffer v = constant(0.0)
   buffer u_next = constant(0.0)
   buffer v_next = constant(0.0)
 
+  init {
+    run init_u { out: out u }
+    run init_v { out: out v }
+  }
   on click(continuous: true) {
     run inject(value: 0.5, radius: 5) { target: out v }
   }
   loop(iterations: 8) {
-    display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    display
     swap u <-> u_next
     swap v <-> v_next
   }
 }
 
 pipeline gpu {
-  sim kernel step = "gray_scott_step.wgsl"
-  sim kernel vis = "gray_scott_vis.wgsl"
+  kernel step = "gray_scott_step.wgsl"
+  kernel vis = "gray_scott_vis.wgsl"
 
   # field = vec2(u, v); u=1.0 everywhere, v=0.0; click to inject v and start reaction
   buffer field: gpu(vec2f) = constant(1.0)
@@ -59,5 +69,6 @@ pipeline gpu {
     run step { field_in: field, field_out: out field_next }
     swap field <-> field_next
   }
-  display vis { field_in: field, pixels: out pixels }
+  run vis { field_in: field, pixels: out pixels }
+  display pixels
 }

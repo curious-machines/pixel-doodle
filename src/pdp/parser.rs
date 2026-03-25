@@ -191,7 +191,7 @@ impl Parser {
 
         while !self.at(&Token::Eof) {
             match self.peek().clone() {
-                Token::Pixel | Token::Sim | Token::Init => {
+                Token::Pixel | Token::Kernel => {
                     return Err(self.error(
                         "kernel declarations must be inside a pipeline block".into(),
                     ));
@@ -243,22 +243,14 @@ impl Parser {
 
     fn parse_kernel_decl(&mut self) -> Result<KernelDecl, ParseError> {
         let span = self.span();
-        let kind = match self.peek() {
-            Token::Pixel => {
-                self.advance();
-                KernelKind::Pixel
-            }
-            Token::Sim => {
-                self.advance();
-                KernelKind::Sim
-            }
-            Token::Init => {
-                self.advance();
-                KernelKind::Init
-            }
-            _ => return Err(self.error("expected 'pixel', 'sim', or 'init'".into())),
+        let kind = if self.at(&Token::Pixel) {
+            self.advance();
+            self.expect(&Token::Kernel)?;
+            KernelKind::Pixel
+        } else {
+            self.expect(&Token::Kernel)?;
+            KernelKind::Standard
         };
-        self.expect(&Token::Kernel)?;
 
         // Either: "path.pd" (unnamed) or name = "path.pd" (named)
         match self.peek().clone() {
@@ -331,14 +323,7 @@ impl Parser {
             self.expect(&Token::RParen)?;
             BufferInit::Constant(val)
         } else {
-            // init_kernel_name(args...)
-            let kernel_name = self.expect_ident()?;
-            let args = if self.at(&Token::LParen) {
-                self.parse_named_args()?
-            } else {
-                Vec::new()
-            };
-            BufferInit::InitKernel { kernel_name, args }
+            return Err(self.error("expected 'constant(value)' for buffer initialization".into()));
         };
 
         Ok(BufferDecl { name, gpu_type, init, span })
@@ -479,7 +464,7 @@ impl Parser {
         match self.peek().clone() {
             Token::PlusEq => {
                 self.advance();
-                let val = self.parse_number_literal()?;
+                let val = self.parse_value_expr()?;
                 Ok(Action::CompoundAssign {
                     target,
                     op: CompoundOp::Add,
@@ -488,7 +473,7 @@ impl Parser {
             }
             Token::MinusEq => {
                 self.advance();
-                let val = self.parse_number_literal()?;
+                let val = self.parse_value_expr()?;
                 Ok(Action::CompoundAssign {
                     target,
                     op: CompoundOp::Sub,
@@ -497,7 +482,7 @@ impl Parser {
             }
             Token::StarEq => {
                 self.advance();
-                let val = self.parse_number_literal()?;
+                let val = self.parse_value_expr()?;
                 Ok(Action::CompoundAssign {
                     target,
                     op: CompoundOp::Mul,
@@ -506,7 +491,7 @@ impl Parser {
             }
             Token::SlashEq => {
                 self.advance();
-                let val = self.parse_number_literal()?;
+                let val = self.parse_value_expr()?;
                 Ok(Action::CompoundAssign {
                     target,
                     op: CompoundOp::Div,
@@ -539,7 +524,7 @@ impl Parser {
                         }
                     };
                     self.advance();
-                    let val = self.parse_number_literal()?;
+                    let val = self.parse_value_expr()?;
                     Ok(Action::BinAssign {
                         target,
                         op,
@@ -551,6 +536,28 @@ impl Parser {
                 "expected assignment operator, got '{other}'"
             ))),
         }
+    }
+
+    /// Parse a value expression: `literal` or `literal op variable`.
+    fn parse_value_expr(&mut self) -> Result<ValueExpr, ParseError> {
+        let left = self.parse_number_literal()?;
+        // Check for optional binary operator + variable
+        let op = match self.peek() {
+            Token::Star => Some(CompoundOp::Mul),
+            Token::Slash => Some(CompoundOp::Div),
+            Token::Plus => Some(CompoundOp::Add),
+            Token::Minus => Some(CompoundOp::Sub),
+            _ => None,
+        };
+        if let Some(op) = op {
+            // Only treat as binop if followed by an identifier (not a number)
+            if matches!(self.tokens.get(self.pos + 1).map(|t| &t.token), Some(Token::Ident(_))) {
+                self.advance(); // consume operator
+                let right = self.expect_ident()?;
+                return Ok(ValueExpr::BinOp { left, op, right });
+            }
+        }
+        Ok(ValueExpr::Literal(left))
     }
 
     // ── Include ──
@@ -606,7 +613,7 @@ impl Parser {
                         "included file '{path_str}' must not contain pipeline blocks"
                     )));
                 }
-                Token::Pixel | Token::Sim | Token::Init => {
+                Token::Pixel | Token::Kernel => {
                     return Err(self.error(format!(
                         "included file '{path_str}' must not contain kernel declarations"
                     )));
@@ -679,7 +686,7 @@ impl Parser {
 
         while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
             match self.peek().clone() {
-                Token::Pixel | Token::Sim | Token::Init => {
+                Token::Pixel | Token::Kernel => {
                     kernels.push(self.parse_kernel_decl()?);
                 }
                 Token::Buffer => {
@@ -711,22 +718,23 @@ impl Parser {
 
     fn parse_pipeline_step(&mut self) -> Result<PipelineStep, ParseError> {
         match self.peek().clone() {
-            Token::Run => self.parse_run_step(false),
-            Token::Display => self.parse_run_step(true),
+            Token::Run => self.parse_run_step(),
+            Token::Display => self.parse_display_step(),
             Token::Swap => self.parse_swap_step(),
             Token::Loop => self.parse_loop_step(),
             Token::Accumulate => self.parse_accumulate_step(),
             Token::On => self.parse_on_event_step(),
+            Token::Init => self.parse_init_block(),
             other => Err(self.error(format!(
-                "expected pipeline step (run, display, swap, loop, accumulate, on), got '{other}'"
+                "expected pipeline step (run, display, swap, loop, accumulate, on, init), got '{other}'"
             ))),
         }
     }
 
-    /// Parse `run kernel(args...) { bindings }` or `display kernel(args...) { bindings }`
-    fn parse_run_step(&mut self, is_display: bool) -> Result<PipelineStep, ParseError> {
+    /// Parse `run kernel(args...) { bindings }`
+    fn parse_run_step(&mut self) -> Result<PipelineStep, ParseError> {
         let span = self.span();
-        self.advance(); // consume 'run' or 'display'
+        self.advance(); // consume 'run'
 
         let kernel_name = self.expect_ident()?;
         let args = if self.at(&Token::LParen) {
@@ -740,21 +748,41 @@ impl Parser {
             Vec::new()
         };
 
-        if is_display {
-            Ok(PipelineStep::Display {
-                kernel_name,
-                args,
-                input_bindings,
-                span,
-            })
+        Ok(PipelineStep::Run {
+            kernel_name,
+            args,
+            input_bindings,
+            span,
+        })
+    }
+
+    /// Parse `display` or `display buffer_name`
+    fn parse_display_step(&mut self) -> Result<PipelineStep, ParseError> {
+        let span = self.span();
+        self.advance(); // consume 'display'
+
+        // Optional buffer name for GPU display
+        let buffer_name = if let Token::Ident(name) = self.peek().clone() {
+            self.advance();
+            Some(name)
         } else {
-            Ok(PipelineStep::Run {
-                kernel_name,
-                args,
-                input_bindings,
-                span,
-            })
+            None
+        };
+
+        Ok(PipelineStep::Display { buffer_name, span })
+    }
+
+    /// Parse `init { steps }`
+    fn parse_init_block(&mut self) -> Result<PipelineStep, ParseError> {
+        let span = self.span();
+        self.advance(); // consume 'init'
+        self.expect(&Token::LBrace)?;
+        let mut body = Vec::new();
+        while !self.at(&Token::RBrace) {
+            body.push(self.parse_pipeline_step()?);
         }
+        self.expect(&Token::RBrace)?;
+        Ok(PipelineStep::Init { body, span })
     }
 
     fn parse_buffer_bindings(&mut self) -> Result<Vec<BufferBinding>, ParseError> {
@@ -995,7 +1023,8 @@ mod tests {
             r#"
             pipeline {
               pixel kernel "gradient.pd"
-              display gradient
+              run gradient
+              display
             }
             "#,
         )
@@ -1007,8 +1036,9 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels[0].name, "gradient");
         assert_eq!(config.pipelines[0].kernels[0].path, "gradient.pd");
         let steps = &config.pipelines[0].steps;
-        assert_eq!(steps.len(), 1);
-        assert!(matches!(&steps[0], PipelineStep::Display { kernel_name, .. } if kernel_name == "gradient"));
+        assert_eq!(steps.len(), 2);
+        assert!(matches!(&steps[0], PipelineStep::Run { kernel_name, .. } if kernel_name == "gradient"));
+        assert!(matches!(&steps[1], PipelineStep::Display { buffer_name: None, .. }));
     }
 
     #[test]
@@ -1022,7 +1052,8 @@ mod tests {
             pipeline {
               pixel kernel "mandelbrot.pd"
               accumulate(samples: 256) {
-                display mandelbrot
+                run mandelbrot
+                display
               }
             }
             "#,
@@ -1046,20 +1077,25 @@ mod tests {
             on key(period) frame += 1
 
             pipeline {
-              sim kernel "gray_scott.pd"
-              init kernel init_u = "init/gray_scott_u.pd"
-              init kernel init_v = "init/gray_scott_v.pd"
+              kernel "gray_scott.pd"
+              kernel init_u = "init/gray_scott_u.pd"
+              kernel init_v = "init/gray_scott_v.pd"
 
-              buffer u = init_u()
-              buffer v = init_v()
+              buffer u = constant(0.0)
+              buffer v = constant(0.0)
               buffer u_next = constant(0.0)
               buffer v_next = constant(0.0)
 
+              init {
+                run init_u { out: out u }
+                run init_v { out: out v }
+              }
               on click(continuous: true) {
                 run inject(value: 0.5, radius: 5) { target: out v }
               }
               loop(iterations: 8) {
-                display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+                run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+                display
                 swap u <-> u_next
                 swap v <-> v_next
               }
@@ -1071,15 +1107,15 @@ mod tests {
         assert_eq!(config.title.as_deref(), Some("Gray-Scott"));
         assert_eq!(config.pipelines[0].kernels.len(), 3);
         assert_eq!(config.pipelines[0].buffers.len(), 4);
-        assert!(matches!(&config.pipelines[0].buffers[0].init, BufferInit::InitKernel { kernel_name, .. } if kernel_name == "init_u"));
-        assert!(matches!(&config.pipelines[0].buffers[2].init, BufferInit::Constant(v) if *v == 0.0));
+        assert!(matches!(&config.pipelines[0].buffers[0].init, BufferInit::Constant(v) if *v == 0.0));
         assert_eq!(config.key_bindings.len(), 2);
 
         let pipeline = config.pipelines.into_iter().next().unwrap();
-        assert_eq!(pipeline.steps.len(), 2); // on click, loop
-        assert!(matches!(&pipeline.steps[0], PipelineStep::OnClick { continuous: true, .. }));
-        if let PipelineStep::Loop { body, .. } = &pipeline.steps[1] {
-            assert_eq!(body.len(), 3); // display, swap, swap
+        assert_eq!(pipeline.steps.len(), 3); // init, on click, loop
+        assert!(matches!(&pipeline.steps[0], PipelineStep::Init { .. }));
+        assert!(matches!(&pipeline.steps[1], PipelineStep::OnClick { continuous: true, .. }));
+        if let PipelineStep::Loop { body, .. } = &pipeline.steps[2] {
+            assert_eq!(body.len(), 4); // run, display, swap, swap
         } else {
             panic!("expected loop step");
         }
@@ -1092,10 +1128,10 @@ mod tests {
             title = "Smoke Simulation"
 
             pipeline {
-              sim kernel advect = "smoke/advect.pd"
-              sim kernel divergence = "smoke/divergence.pd"
-              sim kernel jacobi = "smoke/jacobi.pd"
-              sim kernel project = "smoke/project.pd"
+              kernel advect = "smoke/advect.pd"
+              kernel divergence = "smoke/divergence.pd"
+              kernel jacobi = "smoke/jacobi.pd"
+              kernel project = "smoke/project.pd"
 
               buffer vx = constant(0.0)
               buffer vy = constant(0.0)
@@ -1114,7 +1150,8 @@ mod tests {
                 run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
                 swap pressure <-> pressure_tmp
               }
-              display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              run project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              display
               swap vx <-> vx0, vy <-> vy0
             }
             "#,
@@ -1124,7 +1161,7 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels.len(), 4);
         assert_eq!(config.pipelines[0].buffers.len(), 9);
         let pipeline = config.pipelines.into_iter().next().unwrap();
-        assert_eq!(pipeline.steps.len(), 6); // swap, run, run, loop, display, swap
+        assert_eq!(pipeline.steps.len(), 7); // swap, run, run, loop, run, display, swap
     }
 
     #[test]
@@ -1139,20 +1176,24 @@ mod tests {
             on key(bracket_left) iterations -= 1
 
             pipeline {
-              sim kernel "game_of_life.pd"
-              init kernel init_state = "init/random_binary.pd"
+              kernel "game_of_life.pd"
+              kernel init_state = "init/random_binary.pd"
 
-              buffer state = init_state(density: 0.3, seed: 42)
+              buffer state = constant(0.0)
               buffer age = constant(0.0)
               buffer state_next = constant(0.0)
               buffer age_next = constant(0.0)
 
+              init {
+                run init_state { out: out state }
+              }
               on click(continuous: true) {
                 run inject(value: 1.0, radius: 3) { target: out state }
                 run inject(value: 0.0, radius: 3) { target: out age }
               }
               loop(iterations: iterations) {
-                display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                display
                 swap state <-> state_next
                 swap age <-> age_next
               }
@@ -1185,7 +1226,8 @@ mod tests {
 
             pipeline {
               pixel kernel "gradient.pd"
-              display gradient
+              run gradient
+              display
             }
             "#,
         )
@@ -1203,7 +1245,8 @@ mod tests {
             mode: range(0..3, wrap: true) = 0
             pipeline {
               pixel kernel "test.pd"
-              display test
+              run test
+              display
             }
             "#,
         )
@@ -1221,41 +1264,44 @@ mod tests {
 
             on key(space) paused = !paused
 
-            pipeline cpu {
-              sim kernel "gray_scott.pd"
+            pipeline pd {
+              kernel "gray_scott.pd"
               buffer u = constant(1.0)
               buffer v = constant(0.0)
 
               loop(iterations: 8) {
-                display gray_scott { u_in: u, v_in: v, u_out: out u, v_out: out v }
+                run gray_scott { u_in: u, v_in: v, u_out: out u, v_out: out v }
+                display
               }
             }
 
             pipeline gpu {
-              sim kernel step = "gray_scott_step.wgsl"
-              sim kernel vis = "gray_scott_vis.wgsl"
+              kernel step = "gray_scott_step.wgsl"
+              kernel vis = "gray_scott_vis.wgsl"
               buffer field = constant(0.0)
               buffer field_next = constant(0.0)
+              buffer pixels = constant(0.0)
 
               loop(iterations: 8) {
                 run step { field_in: field, field_out: out field_next }
                 swap field <-> field_next
               }
-              display vis { field_in: field }
+              run vis { field_in: field, pixels: out pixels }
+              display pixels
             }
             "#,
         )
         .unwrap();
 
         assert_eq!(config.pipelines.len(), 2);
-        assert_eq!(config.pipelines[0].name.as_deref(), Some("cpu"));
+        assert_eq!(config.pipelines[0].name.as_deref(), Some("pd"));
         assert_eq!(config.pipelines[1].name.as_deref(), Some("gpu"));
-        // CPU pipeline has its own kernels and buffers
+        // pd pipeline has its own kernels and buffers
         assert_eq!(config.pipelines[0].kernels.len(), 1);
         assert_eq!(config.pipelines[0].buffers.len(), 2);
         // GPU pipeline has its own kernels and buffers
         assert_eq!(config.pipelines[1].kernels.len(), 2);
-        assert_eq!(config.pipelines[1].buffers.len(), 2);
+        assert_eq!(config.pipelines[1].buffers.len(), 3);
         // Shared key bindings at top level
         assert_eq!(config.key_bindings.len(), 1);
     }

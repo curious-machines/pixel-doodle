@@ -4,10 +4,10 @@ on key(space) paused = !paused
 on key(period) frame += 1
 
 pipeline pd {
-  sim kernel advect = "advect.pd"
-  sim kernel divergence = "divergence.pd"
-  sim kernel jacobi = "jacobi.pd"
-  sim kernel project = "project.pd"
+  kernel advect = "advect.pd"
+  kernel divergence = "divergence.pd"
+  kernel jacobi = "jacobi.pd"
+  kernel project = "project.pd"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -30,15 +30,16 @@ pipeline pd {
     run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
     swap pressure <-> pressure_tmp
   }
-  display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  display
   swap vx <-> vx0, vy <-> vy0
 }
 
 pipeline pdir {
-  sim kernel advect = "advect.pdir"
-  sim kernel divergence = "divergence.pdir"
-  sim kernel jacobi = "jacobi.pdir"
-  sim kernel project = "project.pdir"
+  kernel advect = "advect.pdir"
+  kernel divergence = "divergence.pdir"
+  kernel jacobi = "jacobi.pdir"
+  kernel project = "project.pdir"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -61,16 +62,17 @@ pipeline pdir {
     run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
     swap pressure <-> pressure_tmp
   }
-  display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  display
   swap vx <-> vx0, vy <-> vy0
 }
 
 pipeline gpu {
-  sim kernel advect = "smoke_advect.wgsl"
-  sim kernel divergence = "smoke_divergence.wgsl"
-  sim kernel jacobi = "smoke_jacobi.wgsl"
-  sim kernel project = "smoke_project.wgsl"
-  sim kernel vis = "smoke_vis.wgsl"
+  kernel advect = "smoke_advect.wgsl"
+  kernel divergence = "smoke_divergence.wgsl"
+  kernel jacobi = "smoke_jacobi.wgsl"
+  kernel project = "smoke_project.wgsl"
+  kernel vis = "smoke_vis.wgsl"
 
   buffer field: gpu(vec4f) = constant(0.0)
   buffer field_next: gpu(vec4f) = constant(0.0)
@@ -91,5 +93,6 @@ pipeline gpu {
   }
   run project { pressure: press_a, field_in: field, field_out: out field_next }
   swap field <-> field_next
-  display vis { field_in: field, pixels: out pixels }
+  run vis { field_in: field, pixels: out pixels }
+  display pixels
 }

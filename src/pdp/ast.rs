@@ -27,8 +27,7 @@ pub struct NamedArg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelKind {
     Pixel,
-    Sim,
-    Init,
+    Standard,
 }
 
 #[derive(Debug, Clone)]
@@ -70,11 +69,6 @@ impl GpuElementType {
 pub enum BufferInit {
     /// `constant(value)` — built-in fill.
     Constant(f64),
-    /// `init_name(arg: val, ...)` — call an init kernel.
-    InitKernel {
-        kernel_name: String,
-        args: Vec<NamedArg>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -120,22 +114,33 @@ pub struct SettingsEntry {
 
 // ── Key bindings ──
 
+/// A value expression in key bindings: `0.02`, `0.02 / zoom`, `0.02 * speed`.
+#[derive(Debug, Clone)]
+pub enum ValueExpr {
+    Literal(f64),
+    BinOp {
+        left: f64,
+        op: CompoundOp,
+        right: String,
+    },
+}
+
 /// The action performed when a key is pressed.
 #[derive(Debug, Clone)]
 pub enum Action {
     /// `variable = !variable`
     Toggle(String),
-    /// `variable += literal` (or -= *= /=)
+    /// `variable += expr` (or -= *= /=)
     CompoundAssign {
         target: String,
         op: CompoundOp,
-        value: f64,
+        value: ValueExpr,
     },
-    /// `variable = variable + literal` (expanded form)
+    /// `variable = variable + expr` (expanded form)
     BinAssign {
         target: String,
         op: CompoundOp,
-        value: f64,
+        value: ValueExpr,
     },
     /// `variable = literal` (direct assignment)
     Assign {
@@ -192,12 +197,14 @@ pub enum PipelineStep {
         input_bindings: Vec<BufferBinding>,
         span: Span,
     },
-    /// `display kernel_name { bindings }` — execute and show pixels.
-    /// Output buffers use `out` qualifier in bindings: `{ param: out buffer }`.
+    /// `display` (CPU) or `display buffer_name` (GPU) — present pixels to screen.
     Display {
-        kernel_name: String,
-        args: Vec<NamedArg>,
-        input_bindings: Vec<BufferBinding>,
+        buffer_name: Option<String>,
+        span: Span,
+    },
+    /// `init { steps }` — run once at startup.
+    Init {
+        body: Vec<PipelineStep>,
         span: Span,
     },
     /// `swap a <-> b, c <-> d`

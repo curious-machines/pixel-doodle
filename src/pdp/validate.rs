@@ -90,18 +90,6 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
                     message: format!("duplicate buffer name '{}'", b.name),
                 });
             }
-            if let BufferInit::InitKernel { kernel_name, .. } = &b.init {
-                if !pipe_kernels.contains(kernel_name) {
-                    errors.push(ValidationError {
-                        line: b.span.line,
-                        col: b.span.col,
-                        message: format!(
-                            "buffer '{}' references undeclared init kernel '{kernel_name}'",
-                            b.name
-                        ),
-                    });
-                }
-            }
         }
 
         let mut has_display = false;
@@ -158,21 +146,20 @@ fn validate_steps(
                 }
                 validate_buffer_refs(input_bindings, buffers, *span, errors);
             }
-            PipelineStep::Display {
-                kernel_name,
-                input_bindings,
-                span,
-                ..
-            } => {
+            PipelineStep::Display { buffer_name, span } => {
                 *has_display = true;
-                if !kernels.contains(kernel_name) {
-                    errors.push(ValidationError {
-                        line: span.line,
-                        col: span.col,
-                        message: format!("undeclared kernel '{kernel_name}'"),
-                    });
+                if let Some(name) = buffer_name {
+                    if !buffers.contains(name) {
+                        errors.push(ValidationError {
+                            line: span.line,
+                            col: span.col,
+                            message: format!("display references undeclared buffer '{name}'"),
+                        });
+                    }
                 }
-                validate_buffer_refs(input_bindings, buffers, *span, errors);
+            }
+            PipelineStep::Init { body, .. } => {
+                validate_steps(body, kernels, buffers, vars, has_display, errors);
             }
             PipelineStep::Swap { pairs, span } => {
                 for (a, b) in pairs {
@@ -260,7 +247,8 @@ mod tests {
             r#"
             pipeline {
               pixel kernel "gradient.pd"
-              display gradient
+              run gradient
+              display
             }
             "#,
         )
@@ -273,7 +261,8 @@ mod tests {
             r#"
             pipeline {
               pixel kernel "gradient.pd"
-              display nonexistent
+              run nonexistent
+              display
             }
             "#,
         );
@@ -289,7 +278,8 @@ mod tests {
             pipeline {
               pixel kernel "test.pd"
               buffer a = constant(0.0)
-              display test
+              run test
+              display
               swap a <-> b
             }
             "#,
@@ -304,7 +294,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              sim kernel "test.pd"
+              kernel "test.pd"
               buffer a = constant(0.0)
               run test
             }
@@ -331,12 +321,14 @@ mod tests {
 
     #[test]
     fn intrinsic_var_in_key_binding() {
+        // Also uses new kernel syntax
         parse_and_validate(
             r#"
             on key(space) paused = !paused
             pipeline {
               pixel kernel "test.pd"
-              display test
+              run test
+              display
             }
             "#,
         )
@@ -348,12 +340,13 @@ mod tests {
         parse_and_validate(
             r#"
             pipeline {
-              sim kernel "test.pd"
+              kernel "test.pd"
               buffer state = constant(0.0)
               on click(continuous: true) {
                 run inject(value: 1.0, radius: 3) { target: out state }
               }
-              display test
+              run test
+              display
             }
             "#,
         )
@@ -367,7 +360,8 @@ mod tests {
             pipeline {
               pixel kernel "a.pd"
               pixel kernel a = "b.pd"
-              display a
+              run a
+              display
             }
             "#,
         );

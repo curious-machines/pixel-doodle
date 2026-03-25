@@ -2,15 +2,18 @@ include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "starfield.pd"
-  display starfield
+  run starfield
+  display
 }
 
 pipeline pdir {
   pixel kernel "starfield.pdir"
-  display starfield
+  run starfield
+  display
 }
 
 pipeline gpu {
   pixel kernel "starfield.wgsl"
-  display starfield
+  run starfield
+  display
 }

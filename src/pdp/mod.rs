@@ -48,7 +48,8 @@ mod tests {
             r#"
             pipeline {
               pixel kernel "gradient.pd"
-              display gradient
+              run gradient
+              display
             }
             "#,
         )
@@ -71,20 +72,24 @@ mod tests {
             on key(bracket_left) iterations -= 1
 
             pipeline {
-              sim kernel "game_of_life.pd"
-              init kernel init_state = "init/random_binary.pd"
+              kernel "game_of_life.pd"
+              kernel init_state = "init/random_binary.pd"
 
-              buffer state = init_state(density: 0.3, seed: 42)
+              buffer state = constant(0.0)
               buffer age = constant(0.0)
               buffer state_next = constant(0.0)
               buffer age_next = constant(0.0)
 
+              init {
+                run init_state { out: out state }
+              }
               on click(continuous: true) {
                 run inject(value: 1.0, radius: 3) { target: out state }
                 run inject(value: 0.0, radius: 3) { target: out age }
               }
               loop(iterations: iterations) {
-                display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                display
                 swap state <-> state_next
                 swap age <-> age_next
               }
@@ -110,10 +115,10 @@ mod tests {
             on key(period) frame += 1
 
             pipeline {
-              sim kernel advect = "smoke/advect.pd"
-              sim kernel divergence = "smoke/divergence.pd"
-              sim kernel jacobi = "smoke/jacobi.pd"
-              sim kernel project = "smoke/project.pd"
+              kernel advect = "smoke/advect.pd"
+              kernel divergence = "smoke/divergence.pd"
+              kernel jacobi = "smoke/jacobi.pd"
+              kernel project = "smoke/project.pd"
 
               buffer vx = constant(0.0)
               buffer vy = constant(0.0)
@@ -136,7 +141,8 @@ mod tests {
                 run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
                 swap pressure <-> pressure_tmp
               }
-              display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              run project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              display
               swap vx <-> vx0, vy <-> vy0
             }
             "#,
@@ -153,7 +159,8 @@ mod tests {
             r#"
             pipeline {
               pixel kernel "test.pd"
-              display nonexistent
+              run nonexistent
+              display
             }
             "#,
         );
@@ -166,7 +173,8 @@ mod tests {
         let result = parse_pdp(
             r#"
             pixel kernel "test.pd"
-            pipeline { display test }
+            pipeline { run test
+            display }
             "#,
         );
         assert!(result.is_err());
@@ -194,7 +202,8 @@ mod tests {
             "\n",
             "pipeline {\n",
             "  pixel kernel \"gradient.pd\"\n",
-            "  display gradient\n",
+            "  run gradient\n",
+            "  display\n",
             "}\n",
         );
         let config = parse(source, &dir).unwrap();
@@ -210,11 +219,11 @@ mod tests {
         let dir = make_test_dir("include_reject");
         std::fs::write(
             dir.join("bad.pdp"),
-            "pipeline { pixel kernel \"test.pd\"\n display test }\n",
+            "pipeline { pixel kernel \"test.pd\"\n run test\n display }\n",
         )
         .unwrap();
 
-        let source = "include \"bad.pdp\"\npipeline { pixel kernel \"test.pd\"\n display test }\n";
+        let source = "include \"bad.pdp\"\npipeline { pixel kernel \"test.pd\"\n run test\n display }\n";
         let result = parse(source, &dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must not contain pipeline"));
@@ -238,7 +247,7 @@ mod tests {
 
         let source = std::fs::read_to_string(dir.join("a.pdp")).unwrap();
         let config = parse(
-            &format!("{source}\npipeline {{\n  pixel kernel \"test.pd\"\n  display test\n}}\n"),
+            &format!("{source}\npipeline {{\n  pixel kernel \"test.pd\"\n  run test\n  display\n}}\n"),
             &dir,
         )
         .unwrap();

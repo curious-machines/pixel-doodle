@@ -35,18 +35,12 @@ enum CompiledKernelEntry {
     GpuSim {
         wgsl_source: String,
     },
-    /// GPU init kernel — dispatched once during buffer initialization.
-    GpuInit {
-        wgsl_source: String,
-    },
 }
 
 /// The PDP execution engine. Holds all state for running a config-driven example.
 pub struct Runtime {
     config: Config,
     kernels: HashMap<String, CompiledKernelEntry>,
-    /// Parsed (but not compiled) kernel IR, keyed by kernel name.
-    kernel_ir: HashMap<String, Kernel>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
     /// User-defined variables.
@@ -118,7 +112,6 @@ impl Runtime {
         Runtime {
             config,
             kernels: HashMap::new(),
-            kernel_ir: HashMap::new(),
             buffers: HashMap::new(),
             variables,
             var_ranges,
@@ -262,11 +255,8 @@ impl Runtime {
                 if src.contains("params.time") {
                     self.animated = true;
                 }
-                // Init kernels store source for later use during buffer init
-                // Sim kernels go through GpuSimRunner, pixel kernels through GpuBackend
-                let entry = if decl.kind == KernelKind::Init {
-                    CompiledKernelEntry::GpuInit { wgsl_source: src }
-                } else if decl.kind == KernelKind::Sim {
+                // Standard kernels go through GpuSimRunner, pixel kernels through GpuBackend
+                let entry = if decl.kind == KernelKind::Standard {
                     CompiledKernelEntry::GpuSim { wgsl_source: src }
                 } else {
                     CompiledKernelEntry::Gpu { wgsl_source: src }
@@ -304,7 +294,7 @@ impl Runtime {
                         },
                     );
                 }
-                KernelKind::Sim => {
+                KernelKind::Standard => {
                     let read_slots: Vec<String> = ir
                         .buffers
                         .iter()
@@ -328,10 +318,6 @@ impl Runtime {
                             write_slots,
                         },
                     );
-                }
-                KernelKind::Init => {
-                    // Store IR for later use during buffer init
-                    self.kernel_ir.insert(decl.name.clone(), ir);
                 }
             }
         }
@@ -371,34 +357,6 @@ impl Runtime {
             let data = match &decl.init {
                 BufferInit::Constant(val) => {
                     vec![*val; size]
-                }
-                BufferInit::InitKernel { kernel_name, .. } => {
-                    // Compile and run the init kernel on CPU
-                    let ir = self
-                        .kernel_ir
-                        .get(kernel_name)
-                        .ok_or_else(|| format!("init kernel '{}' not found", kernel_name))?;
-
-                    // Init kernels always compile with a CPU backend
-                    let cpu_backend = if self.backend_name == "gpu" { "cranelift" } else { &self.backend_name };
-                    let compiled = compile_sim_kernel(cpu_backend, ir)?;
-                    let func = compiled.function_ptr();
-
-                    let mut output_buf = vec![0.0f64; size];
-                    let mut pixel_buf = vec![0u32; size];
-                    let bufs_in: &[*const f64] = &[];
-                    let bufs_out: &[*mut f64] = &[output_buf.as_mut_ptr()];
-
-                    render::render_sim(
-                        &mut pixel_buf,
-                        self.width as usize,
-                        self.height as usize,
-                        func,
-                        bufs_in,
-                        bufs_out,
-                        self.tile_height,
-                    );
-                    output_buf
                 }
             };
             self.buffers.insert(decl.name.clone(), data);
@@ -488,50 +446,6 @@ impl Runtime {
                         BufferInit::Constant(val) => {
                             runner.init_buffer_constant(&buf_decl.name, *val);
                         }
-                        BufferInit::InitKernel { kernel_name, .. } => {
-                            // Check for GPU init kernel first
-                            let gpu_init_source = self.kernels.get(kernel_name).and_then(|e| {
-                                if let CompiledKernelEntry::GpuInit { wgsl_source } = e {
-                                    Some(wgsl_source.clone())
-                                } else {
-                                    None
-                                }
-                            });
-                            if let Some(source) = gpu_init_source {
-                                // Compile and dispatch WGSL init kernel on GPU
-                                let init_pipeline_name = format!("__init_{}", kernel_name);
-                                if let Err(e) = runner.add_pipeline(&init_pipeline_name, &source) {
-                                    eprintln!("warning: failed to compile GPU init kernel '{}': {}", kernel_name, e);
-                                } else {
-                                    runner.dispatch(&init_pipeline_name, &[(&buf_decl.name, &buf_decl.name)]);
-                                }
-                            } else if let Some(ir) = self.kernel_ir.get(kernel_name) {
-                                // Fall back to CPU init kernel, then upload to GPU
-                                let cpu_backend = if self.backend_name == "gpu" {
-                                    "cranelift"
-                                } else {
-                                    &self.backend_name
-                                };
-                                if let Ok(compiled) = compile_sim_kernel(cpu_backend, ir) {
-                                    let func = compiled.function_ptr();
-                                    let size = (self.width * self.height) as usize;
-                                    let mut output_buf = vec![0.0f64; size];
-                                    let mut pixel_buf = vec![0u32; size];
-                                    let bufs_in: &[*const f64] = &[];
-                                    let bufs_out: &[*mut f64] = &[output_buf.as_mut_ptr()];
-                                    render::render_sim(
-                                        &mut pixel_buf,
-                                        self.width as usize,
-                                        self.height as usize,
-                                        func,
-                                        bufs_in,
-                                        bufs_out,
-                                        self.tile_height,
-                                    );
-                                    runner.upload_f64_data(&buf_decl.name, &output_buf);
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -552,6 +466,29 @@ impl Runtime {
             }
 
             self.gpu_sim_runner = Some(runner);
+        }
+    }
+
+    /// Execute init blocks from the selected pipeline. Call once after init_gpu().
+    pub fn execute_init_block(&mut self, pool: &Option<rayon::ThreadPool>) {
+        let init_steps: Vec<Vec<PipelineStep>> = self
+            .selected_pipeline()
+            .map(|p| {
+                p.steps
+                    .iter()
+                    .filter_map(|s| {
+                        if let PipelineStep::Init { body, .. } = s {
+                            Some(body.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for body in &init_steps {
+            self.execute_steps(body, pool);
         }
     }
 
@@ -592,13 +529,8 @@ impl Runtime {
     ) {
         for step in steps {
             match step {
-                PipelineStep::Display {
-                    kernel_name,
-                    input_bindings,
-                    args,
-                    ..
-                } => {
-                    self.execute_run_or_display(kernel_name, input_bindings, args, pool, true);
+                PipelineStep::Display { buffer_name, .. } => {
+                    self.execute_display(buffer_name.as_deref());
                 }
                 PipelineStep::Run {
                     kernel_name,
@@ -606,7 +538,12 @@ impl Runtime {
                     args,
                     ..
                 } => {
-                    self.execute_run_or_display(kernel_name, input_bindings, args, pool, false);
+                    self.execute_run(kernel_name, input_bindings, args, pool);
+                }
+                PipelineStep::Init { body, .. } => {
+                    // Init blocks are handled separately via execute_init_block()
+                    // Skip during normal frame execution
+                    let _ = body;
                 }
                 PipelineStep::Swap { pairs, .. } => {
                     for (a, b) in pairs {
@@ -650,13 +587,13 @@ impl Runtime {
         }
     }
 
-    fn execute_run_or_display(
+    /// Execute a kernel via `run`.
+    fn execute_run(
         &mut self,
         kernel_name: &str,
         input_bindings: &[BufferBinding],
         args: &[NamedArg],
         pool: &Option<rayon::ThreadPool>,
-        is_display: bool,
     ) {
         // Handle built-in inject
         if kernel_name == "inject" {
@@ -730,19 +667,26 @@ impl Runtime {
                         .collect();
                     runner.dispatch(kernel_name, &bindings);
                 }
-                if is_display {
-                    self.gpu_rendered_this_frame = true;
-                    if let Some(binding) = input_bindings.iter().find(|b| b.is_output) {
-                        self.gpu_pixel_buffer_name = Some(binding.buffer_name.clone());
-                    }
-                }
-            }
-            Some(CompiledKernelEntry::GpuInit { .. }) => {
-                // Init kernels are not executable as run/display steps
             }
             None => {
-                if is_display {
-                    eprintln!("warning: kernel '{}' not found for display", kernel_name);
+                eprintln!("warning: kernel '{}' not found", kernel_name);
+            }
+        }
+    }
+
+    /// Present pixels to screen.
+    fn execute_display(&mut self, buffer_name: Option<&str>) {
+        match buffer_name {
+            Some(name) => {
+                // GPU display — present named buffer
+                self.gpu_rendered_this_frame = true;
+                self.gpu_pixel_buffer_name = Some(name.to_string());
+            }
+            None => {
+                // CPU display — pixel buffer already written by run steps.
+                // GPU pixel kernel — mark as rendered.
+                if self.has_gpu_kernels && self.gpu_sim_runner.is_none() {
+                    self.gpu_rendered_this_frame = true;
                 }
             }
         }
@@ -780,10 +724,10 @@ impl Runtime {
         // For accumulate, we need to run pixel kernels with the sample index
         // Override the pixel rendering to use progressive mode
         {
-            // Find the display step inside body and run it with sample_index
+            // Find the run step for a pixel kernel inside body and run it with sample_index
             for step in body {
                 match step {
-                    PipelineStep::Display { kernel_name, .. } => {
+                    PipelineStep::Run { kernel_name, .. } => {
                         if let Some(CompiledKernelEntry::Pixel { func, .. }) =
                             self.kernels.get(kernel_name)
                         {
@@ -908,13 +852,14 @@ impl Runtime {
                         }
                         Action::CompoundAssign { target, op, value } | Action::BinAssign { target, op, value } => {
                             let current = self.get_variable(target);
+                            let val = self.eval_value_expr(value);
                             let new_val = match op {
-                                CompoundOp::Add => current + value,
-                                CompoundOp::Sub => current - value,
-                                CompoundOp::Mul => current * value,
+                                CompoundOp::Add => current + val,
+                                CompoundOp::Sub => current - val,
+                                CompoundOp::Mul => current * val,
                                 CompoundOp::Div => {
-                                    if *value != 0.0 {
-                                        current / value
+                                    if val != 0.0 {
+                                        current / val
                                     } else {
                                         current
                                     }
@@ -933,6 +878,21 @@ impl Runtime {
             }
         }
         quit
+    }
+
+    fn eval_value_expr(&self, expr: &ValueExpr) -> f64 {
+        match expr {
+            ValueExpr::Literal(v) => *v,
+            ValueExpr::BinOp { left, op, right } => {
+                let rhs = self.get_variable(right);
+                match op {
+                    CompoundOp::Add => left + rhs,
+                    CompoundOp::Sub => left - rhs,
+                    CompoundOp::Mul => left * rhs,
+                    CompoundOp::Div => if rhs != 0.0 { left / rhs } else { *left },
+                }
+            }
+        }
     }
 
     fn get_variable(&self, name: &str) -> f64 {

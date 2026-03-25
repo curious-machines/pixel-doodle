@@ -33,7 +33,8 @@ on key(plus) zoom *= 1.1
 
 pipeline {
   pixel kernel "my_kernel.pd"
-  display my_kernel
+  run my_kernel
+  display
 }
 ```
 
@@ -46,7 +47,8 @@ Every `.pdp` file must have at least one `pipeline` block. Pipelines contain ker
 ```
 pipeline {
   pixel kernel "gradient.pd"
-  display gradient
+  run gradient
+  display
 }
 ```
 
@@ -58,20 +60,23 @@ A single file can define multiple named pipelines for different variants:
 pipeline pd {
   pixel kernel "mandelbrot.pd"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline pdir {
   pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline gpu {
   pixel kernel "mandelbrot.wgsl"
-  display mandelbrot
+  run mandelbrot { pixels: out pixels }
+  display pixels
 }
 ```
 
@@ -84,13 +89,12 @@ Pipeline selection:
 
 ## Kernel Declarations
 
-Kernel declarations must be inside a `pipeline` block. Three types:
+Kernel declarations must be inside a `pipeline` block. Two types:
 
 ```
 pipeline {
   pixel kernel "gradient.pd"                  # pixel shader — per-pixel computation
-  sim kernel "gray_scott.pd"                  # simulation — reads/writes buffers
-  init kernel init_spots = "init/spots.pd"    # initialization — fills a buffer once
+  kernel "gray_scott.pd"                      # general kernel — reads/writes buffers
 }
 ```
 
@@ -100,7 +104,7 @@ When no name is given, the kernel name is derived from the filename:
 
 ```
 pixel kernel "gradient.pd"      # name: gradient
-sim kernel "smoke/advect.pd"    # name: advect
+kernel "smoke/advect.pd"        # name: advect
 ```
 
 ### Named kernels
@@ -108,8 +112,8 @@ sim kernel "smoke/advect.pd"    # name: advect
 Use `name = "path"` to give a kernel an explicit name:
 
 ```
-sim kernel advect = "smoke/advect.pd"
-sim kernel divergence = "smoke/divergence.pd"
+kernel advect = "smoke/advect.pd"
+kernel divergence = "smoke/divergence.pd"
 ```
 
 ### Kernel types
@@ -117,8 +121,9 @@ sim kernel divergence = "smoke/divergence.pd"
 | Type | Description | ABI |
 |------|-------------|-----|
 | `pixel` | Per-pixel shader. Receives view coordinates (x, y), produces ARGB pixel. | `TileKernelFn` |
-| `sim` | Simulation step. Reads/writes f64 buffers, produces ARGB pixels. | `SimTileKernelFn` |
-| `init` | Buffer initializer. Writes one f64 per cell. Runs once at startup. | `SimTileKernelFn` |
+| *(bare)* `kernel` | General kernel. Reads/writes f64 buffers, produces ARGB pixels. Used for simulation steps. | `SimTileKernelFn` |
+
+Initialization kernels are no longer a separate declaration type. Instead, use a bare `kernel` and run it inside an `init { }` block (see [Pipeline Steps](#pipeline-steps)).
 
 ### Path resolution
 
@@ -137,7 +142,7 @@ Buffer declarations must be inside a `pipeline` block. CPU simulation buffers ar
 pipeline {
   # CPU buffers
   buffer u = constant(1.0)                         # fill with 1.0
-  buffer state = init_state(density: 0.3, seed: 42) # run init kernel
+  buffer state = constant(0.0)                     # fill with 0.0 (use init block to populate)
 
   # GPU buffers (with type annotation)
   buffer field: gpu(vec2f) = constant(0.0)
@@ -311,28 +316,38 @@ run advect { vx_in: vx0, den_in: density0, vx_out: out vx } # sim kernel with bi
 - **Buffer bindings**: `{ param: buffer, ... }` maps kernel buffer slots to pipeline buffers
 - **Output bindings**: use the `out` qualifier to mark write buffers: `{ slot: out buffer }`
 
-### `display` — Execute and show pixels
+### `display` — Show pixels on screen
 
-Same syntax as `run`, but the kernel's ARGB pixel output is sent to the screen:
+Presents pixel data to the screen. Takes no arguments (CPU) or a buffer name (GPU):
 
 ```
-display gradient                                                                          # simple pixel kernel
-display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+display                    # CPU — display the pixel buffer written by the most recent run step
+display pixels             # GPU — display the named gpu(u32) buffer
 ```
 
 Every pipeline must have at least one `display` step.
 
-**CPU vs GPU display**: In CPU pipelines, the runtime passes a hidden pixel buffer
-to the compiled kernel — the kernel writes ARGB pixels as a side effect and the
-runtime displays them automatically. In GPU pipelines, compute shaders run entirely
-on the GPU and the runtime cannot inject a hidden buffer. GPU display steps require
-an explicit `out` binding to identify which GPU buffer contains the pixel output:
+**CPU pipelines**: The runtime maintains a hidden pixel buffer. Kernels executed via `run` write ARGB pixels into it as a side effect. `display` (with no arguments) presents that buffer to the screen.
+
+**GPU pipelines**: Compute shaders run entirely on the GPU and the runtime cannot inject a hidden buffer. Use `display buffer_name` to identify which `gpu(u32)` buffer contains the pixel output:
 
 ```
-display vis { grid_in: grid, pixels: out pixels }
+run vis { grid_in: grid, pixels: out pixels }
+display pixels
 ```
 
-The `out`-flagged `gpu(u32)` buffer is the one presented to the screen.
+### `init` — Run steps once at startup
+
+The `init { }` block contains steps that execute exactly once before the first frame. Use it to populate buffers with initial values:
+
+```
+init {
+  run init_state { out: out state }
+  run init_age { age: out age }
+}
+```
+
+Steps inside `init` follow the same syntax as regular pipeline steps (`run`, `swap`, etc.) but `display` is not allowed inside `init`.
 
 ### `swap` — Swap buffers
 
@@ -359,7 +374,8 @@ loop(iterations: iterations) {
 
 ```
 accumulate(samples: 256) {
-  display mandelbrot
+  run mandelbrot
+  display
 }
 ```
 
@@ -420,7 +436,8 @@ height = 1080
 ```
 pipeline {
   pixel kernel "gradient.pd"
-  display gradient
+  run gradient
+  display
 }
 ```
 
@@ -432,20 +449,24 @@ include "../../shared/pan_zoom.pdp"
 pipeline pd {
   pixel kernel "mandelbrot.pd"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline pdir {
   pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline gpu {
   pixel kernel "mandelbrot.wgsl"
-  display mandelbrot
+  buffer pixels: gpu(u32) = constant(0)
+  run mandelbrot { pixels: out pixels }
+  display pixels
 }
 ```
 
@@ -458,28 +479,33 @@ on key(space) paused = !paused
 on key(period) frame += 1
 
 pipeline pd {
-  sim kernel "gray_scott.pd"
-  init kernel init_u = "init/gray_scott_u.pd"
-  init kernel init_v = "init/gray_scott_v.pd"
+  kernel "gray_scott.pd"
+  kernel init_u = "init/gray_scott_u.pd"
+  kernel init_v = "init/gray_scott_v.pd"
 
-  buffer u = init_u()
-  buffer v = init_v()
+  buffer u = constant(0.0)
+  buffer v = constant(0.0)
   buffer u_next = constant(0.0)
   buffer v_next = constant(0.0)
 
+  init {
+    run init_u { out: out u }
+    run init_v { out: out v }
+  }
   on click(continuous: true) {
     run inject(value: 0.5, radius: 5) { target: out v }
   }
   loop(iterations: 8) {
-    display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    display
     swap u <-> u_next
     swap v <-> v_next
   }
 }
 
 pipeline gpu {
-  sim kernel step = "gray_scott_step.wgsl"
-  sim kernel vis = "gray_scott_vis.wgsl"
+  kernel step = "gray_scott_step.wgsl"
+  kernel vis = "gray_scott_vis.wgsl"
 
   buffer field: gpu(vec2f) = constant(1.0)
   buffer field_next: gpu(vec2f) = constant(1.0)
@@ -492,7 +518,8 @@ pipeline gpu {
     run step { field_in: field, field_out: out field_next }
     swap field <-> field_next
   }
-  display vis { field_in: field, pixels: out pixels }
+  run vis { field_in: field, pixels: out pixels }
+  display pixels
 }
 ```
 
@@ -505,10 +532,10 @@ on key(space) paused = !paused
 on key(period) frame += 1
 
 pipeline pd {
-  sim kernel advect = "advect.pd"
-  sim kernel divergence = "divergence.pd"
-  sim kernel jacobi = "jacobi.pd"
-  sim kernel project = "project.pd"
+  kernel advect = "advect.pd"
+  kernel divergence = "divergence.pd"
+  kernel jacobi = "jacobi.pd"
+  kernel project = "project.pd"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -531,7 +558,8 @@ pipeline pd {
     run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
     swap pressure <-> pressure_tmp
   }
-  display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  display
   swap vx <-> vx0, vy <-> vy0
 }
 ```
@@ -549,20 +577,24 @@ on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
 pipeline pd {
-  sim kernel "game_of_life.pd"
-  init kernel init_state = "init/random_binary.pd"
+  kernel "game_of_life.pd"
+  kernel init_state = "init/random_binary.pd"
 
-  buffer state = init_state()
+  buffer state = constant(0.0)
   buffer age = constant(0.0)
   buffer state_next = constant(0.0)
   buffer age_next = constant(0.0)
 
+  init {
+    run init_state { out: out state }
+  }
   on click(continuous: true) {
     run inject(value: 1.0, radius: 3) { target: out state }
     run inject(value: 0.0, radius: 3) { target: out age }
   }
   loop(iterations: iterations) {
-    display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+    run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+    display
     swap state <-> state_next
     swap age <-> age_next
   }

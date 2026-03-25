@@ -3,18 +3,21 @@ include "../../shared/pan_zoom.pdp"
 pipeline pd {
   pixel kernel "cornell_2d.pd"
   accumulate(samples: 512) {
-    display cornell_2d
+    run cornell_2d
+    display
   }
 }
 
 pipeline pdir {
   pixel kernel "cornell_2d.pdir"
   accumulate(samples: 512) {
-    display cornell_2d
+    run cornell_2d
+    display
   }
 }
 
 pipeline gpu {
   pixel kernel "cornell_2d.wgsl"
-  display cornell_2d
+  run cornell_2d
+  display
 }

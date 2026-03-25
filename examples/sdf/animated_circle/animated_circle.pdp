@@ -2,10 +2,12 @@ include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "animated_circle.pd"
-  display animated_circle
+  run animated_circle
+  display
 }
 
 pipeline gpu {
   pixel kernel "animated_circle.wgsl"
-  display animated_circle
+  run animated_circle
+  display
 }

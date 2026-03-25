@@ -2,15 +2,18 @@ include "../../shared/pan_zoom.pdp"
 
 pipeline pd {
   pixel kernel "sdf_flower.pd"
-  display sdf_flower
+  run sdf_flower
+  display
 }
 
 pipeline pdir {
   pixel kernel "sdf_flower.pdir"
-  display sdf_flower
+  run sdf_flower
+  display
 }
 
 pipeline gpu {
   pixel kernel "sdf_flower.wgsl"
-  display sdf_flower
+  run sdf_flower
+  display
 }

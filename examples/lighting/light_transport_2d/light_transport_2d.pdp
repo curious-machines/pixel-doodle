@@ -3,18 +3,21 @@ include "../../shared/pan_zoom.pdp"
 pipeline pd {
   pixel kernel "light_transport_2d.pd"
   accumulate(samples: 512) {
-    display light_transport_2d
+    run light_transport_2d
+    display
   }
 }
 
 pipeline pdir {
   pixel kernel "light_transport_2d.pdir"
   accumulate(samples: 512) {
-    display light_transport_2d
+    run light_transport_2d
+    display
   }
 }
 
 pipeline gpu {
   pixel kernel "light_transport_2d.wgsl"
-  display light_transport_2d
+  run light_transport_2d
+  display
 }

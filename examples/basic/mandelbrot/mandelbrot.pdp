@@ -5,18 +5,21 @@ include "../../shared/pan_zoom.pdp"
 pipeline pd {
   pixel kernel "mandelbrot.pd"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline pdir {
   pixel kernel "mandelbrot.pdir"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 
 pipeline gpu {
   pixel kernel "mandelbrot.wgsl"
-  display mandelbrot
+  run mandelbrot
+  display
 }

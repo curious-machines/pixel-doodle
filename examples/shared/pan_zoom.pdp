@@ -1,10 +1,10 @@
 # Standard pan/zoom key bindings with reset
-on key(left) center_x -= 0.1
-on key(right) center_x += 0.1
-on key(up) center_y -= 0.1
-on key(down) center_y += 0.1
-on key(plus) zoom *= 1.1
-on key(minus) zoom /= 1.1
+on key(left) center_x -= 0.02 / zoom
+on key(right) center_x += 0.02 / zoom
+on key(up) center_y -= 0.02 / zoom
+on key(down) center_y += 0.02 / zoom
+on key(plus) zoom *= 1.03
+on key(minus) zoom /= 1.03
 on key(0) {
   center_x = 0.0
   center_y = 0.0
