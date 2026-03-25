@@ -20,17 +20,17 @@ pipeline cpu {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    vy = run inject(value: -3.0, radius: 15, falloff: "quadratic")
-    density = run inject(value: 0.5, radius: 15, falloff: "quadratic")
+    run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out vy }
+    run inject(value: 0.5, radius: 15, falloff: "quadratic") { target: out density }
   }
   swap vx <-> vx0, vy <-> vy0, density <-> density0
-  vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
-  divergence = run divergence { vx_in: vx, vy_in: vy }
+  run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
+  run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
   loop(iterations: 40) {
-    pressure_tmp = run jacobi { div_in: divergence, press_in: pressure }
+    run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
     swap pressure <-> pressure_tmp
   }
-  vx0, vy0 = display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
+  display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
   swap vx <-> vx0, vy <-> vy0
 }
 
@@ -49,16 +49,16 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    field = run inject(value: 0.5, radius: 15)
+    run inject(value: 0.5, radius: 15) { target: out field }
   }
-  field_next = run advect { field_in: field, field_out: field_next }
+  run advect { field_in: field, field_out: out field_next }
   swap field <-> field_next
-  div_buf = run divergence { field_in: field, div_out: div_buf }
+  run divergence { field_in: field, div_out: out div_buf }
   loop(iterations: 40) {
-    press_b = run jacobi { div_in: div_buf, press_in: press_a, press_out: press_b }
+    run jacobi { div_in: div_buf, press_in: press_a, press_out: out press_b }
     swap press_a <-> press_b
   }
-  field_next = run project { pressure: press_a, field_in: field, field_out: field_next }
+  run project { pressure: press_a, field_in: field, field_out: out field_next }
   swap field <-> field_next
   display vis { field_in: field, pixels: out pixels }
 }

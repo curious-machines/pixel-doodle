@@ -15,10 +15,10 @@ pipeline cpu {
   buffer vy_next = constant(0.0)
 
   on click(continuous: true) {
-    h = run inject(value: 0.3, radius: 10, falloff: "quadratic")
+    run inject(value: 0.3, radius: 10, falloff: "quadratic") { target: out h }
   }
   loop(iterations: 4) {
-    h_next, vx_next, vy_next = display shallow_water { h_in: h, vx_in: vx, vy_in: vy }
+    display shallow_water { h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next }
     swap h <-> h_next
     swap vx <-> vx_next
     swap vy <-> vy_next
@@ -34,10 +34,10 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    field = run inject(value: 0.3, radius: 10)
+    run inject(value: 0.3, radius: 10) { target: out field }
   }
   loop(iterations: 4) {
-    field_next = run step { field_in: field, field_out: field_next }
+    run step { field_in: field, field_out: out field_next }
     swap field <-> field_next
   }
   display vis { field_in: field, pixels: out pixels }

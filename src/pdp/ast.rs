@@ -184,17 +184,17 @@ pub enum IterCount {
 
 #[derive(Debug, Clone)]
 pub enum PipelineStep {
-    /// `outputs = run kernel_name(args...) { bindings }` or just `run kernel_name`
+    /// `run kernel_name(args...) { bindings }` — execute a kernel.
+    /// Output buffers use `out` qualifier in bindings: `{ param: out buffer }`.
     Run {
-        outputs: Vec<String>,
         kernel_name: String,
         args: Vec<NamedArg>,
         input_bindings: Vec<BufferBinding>,
         span: Span,
     },
-    /// `outputs = display kernel_name { bindings }` or just `display kernel_name`
+    /// `display kernel_name { bindings }` — execute and show pixels.
+    /// Output buffers use `out` qualifier in bindings: `{ param: out buffer }`.
     Display {
-        outputs: Vec<String>,
         kernel_name: String,
         args: Vec<NamedArg>,
         input_bindings: Vec<BufferBinding>,

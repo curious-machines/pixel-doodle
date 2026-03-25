@@ -80,11 +80,11 @@ mod tests {
               buffer age_next = constant(0.0)
 
               on click(continuous: true) {
-                state = run inject(value: 1.0, radius: 3)
-                age = run inject(value: 0.0, radius: 3)
+                run inject(value: 1.0, radius: 3) { target: out state }
+                run inject(value: 0.0, radius: 3) { target: out age }
               }
               loop(iterations: iterations) {
-                state_next, age_next = display game_of_life { state_in: state, age_in: age }
+                display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
                 swap state <-> state_next
                 swap age <-> age_next
               }
@@ -126,17 +126,17 @@ mod tests {
               buffer divergence = constant(0.0)
 
               on click(continuous: true) {
-                vy = run inject(value: -3.0, radius: 15)
-                density = run inject(value: 0.5, radius: 15)
+                run inject(value: -3.0, radius: 15) { target: out vy }
+                run inject(value: 0.5, radius: 15) { target: out density }
               }
               swap vx <-> vx0, vy <-> vy0, density <-> density0
-              vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
-              divergence = run divergence { vx_in: vx, vy_in: vy }
+              run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
+              run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
               loop(iterations: 40) {
-                pressure_tmp = run jacobi { div_in: divergence, p_in: pressure }
+                run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
                 swap pressure <-> pressure_tmp
               }
-              vx0, vy0 = display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
+              display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
               swap vx <-> vx0, vy <-> vy0
             }
             "#,

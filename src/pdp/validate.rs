@@ -143,7 +143,6 @@ fn validate_steps(
     for step in steps {
         match step {
             PipelineStep::Run {
-                outputs,
                 kernel_name,
                 input_bindings,
                 span,
@@ -157,10 +156,9 @@ fn validate_steps(
                         message: format!("undeclared kernel '{kernel_name}'"),
                     });
                 }
-                validate_buffer_refs(outputs, input_bindings, buffers, *span, errors);
+                validate_buffer_refs(input_bindings, buffers, *span, errors);
             }
             PipelineStep::Display {
-                outputs,
                 kernel_name,
                 input_bindings,
                 span,
@@ -174,15 +172,7 @@ fn validate_steps(
                         message: format!("undeclared kernel '{kernel_name}'"),
                     });
                 }
-                let out_count = input_bindings.iter().filter(|b| b.is_output).count();
-                if out_count > 1 {
-                    errors.push(ValidationError {
-                        line: span.line,
-                        col: span.col,
-                        message: "display step can have at most one 'out' binding".into(),
-                    });
-                }
-                validate_buffer_refs(outputs, input_bindings, buffers, *span, errors);
+                validate_buffer_refs(input_bindings, buffers, *span, errors);
             }
             PipelineStep::Swap { pairs, span } => {
                 for (a, b) in pairs {
@@ -231,21 +221,12 @@ fn validate_steps(
 }
 
 fn validate_buffer_refs(
-    outputs: &[String],
     bindings: &[BufferBinding],
     buffers: &HashSet<String>,
     span: Span,
     errors: &mut Vec<ValidationError>,
 ) {
-    for out in outputs {
-        if !buffers.contains(out) {
-            errors.push(ValidationError {
-                line: span.line,
-                col: span.col,
-                message: format!("output references undeclared buffer '{out}'"),
-            });
-        }
-    }
+    let _ = span; // kept for future use
     for binding in bindings {
         if !buffers.contains(&binding.buffer_name) {
             errors.push(ValidationError {
@@ -370,7 +351,7 @@ mod tests {
               sim kernel "test.pd"
               buffer state = constant(0.0)
               on click(continuous: true) {
-                state = run inject(value: 1.0, radius: 3)
+                run inject(value: 1.0, radius: 3) { target: out state }
               }
               display test
             }

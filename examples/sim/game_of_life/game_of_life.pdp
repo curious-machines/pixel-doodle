@@ -17,11 +17,11 @@ pipeline cpu {
   buffer age_next = constant(0.0)
 
   on click(continuous: true) {
-    state = run inject(value: 1.0, radius: 3)
-    age = run inject(value: 0.0, radius: 3)
+    run inject(value: 1.0, radius: 3) { target: out state }
+    run inject(value: 0.0, radius: 3) { target: out age }
   }
   loop(iterations: iterations) {
-    state_next, age_next = display game_of_life { state_in: state, age_in: age }
+    display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
     swap state <-> state_next
     swap age <-> age_next
   }
@@ -36,10 +36,10 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    grid = run inject(value: 1.0, radius: 3)
+    run inject(value: 1.0, radius: 3) { target: out grid }
   }
   loop(iterations: iterations) {
-    grid_next = run step { grid_in: grid, grid_out: grid_next }
+    run step { grid_in: grid, grid_out: out grid_next }
     swap grid <-> grid_next
   }
   display vis { grid_in: grid, pixels: out pixels }

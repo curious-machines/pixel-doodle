@@ -293,22 +293,22 @@ Included content is merged into the including file as if written inline.
 ### `run` — Execute a kernel
 
 ```
-run kernel_name                                         # no I/O
-buf = run inject(value: 1.0, radius: 5)                # built-in, one output
-u_next, v_next = run gray_scott { u_in: u, v_in: v }  # input bindings, outputs
+run kernel_name                                              # no I/O (pixel kernel)
+run inject(value: 1.0, radius: 5) { target: out state }     # built-in inject
+run advect { vx_in: vx0, den_in: density0, vx_out: out vx } # sim kernel with bindings
 ```
 
-- **Output assignment**: buffer names on the left of `=` receive the kernel's write buffers in declaration order
-- **Parameters**: `(name: value, ...)` passed to the kernel
-- **Input bindings**: `{ param: buffer, ... }` maps the kernel's read buffer slots to config buffers
+- **Parameters**: `(name: value, ...)` literal values passed to the kernel
+- **Buffer bindings**: `{ param: buffer, ... }` maps kernel buffer slots to pipeline buffers
+- **Output bindings**: use the `out` qualifier to mark write buffers: `{ slot: out buffer }`
 
 ### `display` — Execute and show pixels
 
 Same syntax as `run`, but the kernel's ARGB pixel output is sent to the screen:
 
 ```
-display gradient                                        # simple pixel kernel
-vx0, vy0 = display project { press_in: pressure, ... } # sim kernel with outputs
+display gradient                                                                          # simple pixel kernel
+display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
 ```
 
 Every pipeline must have at least one `display` step.
@@ -316,17 +316,14 @@ Every pipeline must have at least one `display` step.
 **CPU vs GPU display**: In CPU pipelines, the runtime passes a hidden pixel buffer
 to the compiled kernel — the kernel writes ARGB pixels as a side effect and the
 runtime displays them automatically. In GPU pipelines, compute shaders run entirely
-on the GPU and the runtime cannot inject a hidden buffer. Instead, GPU display steps
-require an explicit `out` binding to identify which GPU buffer contains the pixel
-output:
+on the GPU and the runtime cannot inject a hidden buffer. GPU display steps require
+an explicit `out` binding to identify which GPU buffer contains the pixel output:
 
 ```
 display vis { grid_in: grid, pixels: out pixels }
 ```
 
-The `out` qualifier marks the binding as the display output buffer. Exactly one `out`
-binding is allowed per display step. The buffer must be declared as `gpu(u32)` since
-pixel data is packed ARGB.
+The `out`-flagged `gpu(u32)` buffer is the one presented to the screen.
 
 ### `swap` — Swap buffers
 
@@ -363,8 +360,8 @@ Each frame renders one sample. Results are accumulated and averaged for display.
 
 ```
 on click(continuous: true) {
-  state = run inject(value: 1.0, radius: 3)
-  age = run inject(value: 0.0, radius: 3)
+  run inject(value: 1.0, radius: 3) { target: out state }
+  run inject(value: 0.0, radius: 3) { target: out age }
 }
 ```
 
@@ -377,8 +374,8 @@ on click(continuous: true) {
 Writes a value into a buffer around the current mouse position:
 
 ```
-buf = run inject(value: 0.5, radius: 5)
-buf = run inject(value: -3.0, radius: 15, falloff: "quadratic")
+run inject(value: 0.5, radius: 5) { target: out buf }
+run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out buf }
 ```
 
 | Parameter | Description |
@@ -455,10 +452,10 @@ pipeline cpu {
   buffer v_next = constant(0.0)
 
   on click(continuous: true) {
-    v = run inject(value: 0.5, radius: 5)
+    run inject(value: 0.5, radius: 5) { target: out v }
   }
   loop(iterations: 8) {
-    u_next, v_next = display gray_scott { u_in: u, v_in: v }
+    display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
     swap u <-> u_next
     swap v <-> v_next
   }
@@ -473,10 +470,10 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    field = run inject(value: 0.5, radius: 5)
+    run inject(value: 0.5, radius: 5) { target: out field }
   }
   loop(iterations: 8) {
-    field_next = run step { field_in: field, field_out: field_next }
+    run step { field_in: field, field_out: out field_next }
     swap field <-> field_next
   }
   display vis { field_in: field, pixels: out pixels }
@@ -508,17 +505,17 @@ pipeline cpu {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    vy = run inject(value: -3.0, radius: 15, falloff: "quadratic")
-    density = run inject(value: 0.5, radius: 15, falloff: "quadratic")
+    run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out vy }
+    run inject(value: 0.5, radius: 15, falloff: "quadratic") { target: out density }
   }
   swap vx <-> vx0, vy <-> vy0, density <-> density0
-  vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
-  divergence = run divergence { vx_in: vx, vy_in: vy }
+  run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
+  run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
   loop(iterations: 40) {
-    pressure_tmp = run jacobi { div_in: divergence, press_in: pressure }
+    run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
     swap pressure <-> pressure_tmp
   }
-  vx0, vy0 = display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
+  display project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
   swap vx <-> vx0, vy <-> vy0
 }
 ```
@@ -545,11 +542,11 @@ pipeline cpu {
   buffer age_next = constant(0.0)
 
   on click(continuous: true) {
-    state = run inject(value: 1.0, radius: 3)
-    age = run inject(value: 0.0, radius: 3)
+    run inject(value: 1.0, radius: 3) { target: out state }
+    run inject(value: 0.0, radius: 3) { target: out age }
   }
   loop(iterations: iterations) {
-    state_next, age_next = display game_of_life { state_in: state, age_in: age }
+    display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
     swap state <-> state_next
     swap age <-> age_next
   }

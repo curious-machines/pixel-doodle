@@ -14,10 +14,10 @@ pipeline cpu {
   buffer v_next = constant(0.0)
 
   on click(continuous: true) {
-    v = run inject(value: 0.5, radius: 5)
+    run inject(value: 0.5, radius: 5) { target: out v }
   }
   loop(iterations: 8) {
-    u_next, v_next = display gray_scott { u_in: u, v_in: v }
+    display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
     swap u <-> u_next
     swap v <-> v_next
   }
@@ -33,10 +33,10 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    field = run inject(value: 0.5, radius: 5)
+    run inject(value: 0.5, radius: 5) { target: out field }
   }
   loop(iterations: 8) {
-    field_next = run step { field_in: field, field_out: field_next }
+    run step { field_in: field, field_out: out field_next }
     swap field <-> field_next
   }
   display vis { field_in: field, pixels: out pixels }

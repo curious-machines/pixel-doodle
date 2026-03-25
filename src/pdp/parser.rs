@@ -717,10 +717,6 @@ impl Parser {
             Token::Loop => self.parse_loop_step(),
             Token::Accumulate => self.parse_accumulate_step(),
             Token::On => self.parse_on_event_step(),
-            Token::Ident(_) => {
-                // Tuple assignment: `a, b = run kernel ...` or `a = run kernel ...`
-                self.parse_assignment_step()
-            }
             other => Err(self.error(format!(
                 "expected pipeline step (run, display, swap, loop, accumulate, on), got '{other}'"
             ))),
@@ -746,7 +742,6 @@ impl Parser {
 
         if is_display {
             Ok(PipelineStep::Display {
-                outputs: Vec::new(),
                 kernel_name,
                 args,
                 input_bindings,
@@ -754,63 +749,6 @@ impl Parser {
             })
         } else {
             Ok(PipelineStep::Run {
-                outputs: Vec::new(),
-                kernel_name,
-                args,
-                input_bindings,
-                span,
-            })
-        }
-    }
-
-    /// Parse `a, b = run|display kernel ...`
-    fn parse_assignment_step(&mut self) -> Result<PipelineStep, ParseError> {
-        let span = self.span();
-        let mut outputs = Vec::new();
-        outputs.push(self.expect_ident()?);
-
-        // Collect comma-separated output names
-        while self.at(&Token::Comma) {
-            self.advance();
-            outputs.push(self.expect_ident()?);
-        }
-
-        self.expect(&Token::Eq)?;
-
-        let is_display = match self.peek() {
-            Token::Run => false,
-            Token::Display => true,
-            other => {
-                return Err(self.error(format!(
-                    "expected 'run' or 'display' after '=', got '{other}'"
-                )))
-            }
-        };
-        self.advance();
-
-        let kernel_name = self.expect_ident()?;
-        let args = if self.at(&Token::LParen) {
-            self.parse_named_args()?
-        } else {
-            Vec::new()
-        };
-        let input_bindings = if self.at(&Token::LBrace) {
-            self.parse_buffer_bindings()?
-        } else {
-            Vec::new()
-        };
-
-        if is_display {
-            Ok(PipelineStep::Display {
-                outputs,
-                kernel_name,
-                args,
-                input_bindings,
-                span,
-            })
-        } else {
-            Ok(PipelineStep::Run {
-                outputs,
                 kernel_name,
                 args,
                 input_bindings,
@@ -1118,10 +1056,10 @@ mod tests {
               buffer v_next = constant(0.0)
 
               on click(continuous: true) {
-                v = run inject(value: 0.5, radius: 5)
+                run inject(value: 0.5, radius: 5) { target: out v }
               }
               loop(iterations: 8) {
-                u_next, v_next = display gray_scott { u_in: u, v_in: v }
+                display gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
                 swap u <-> u_next
                 swap v <-> v_next
               }
@@ -1170,13 +1108,13 @@ mod tests {
               buffer divergence = constant(0.0)
 
               swap vx <-> vx0, vy <-> vy0, density <-> density0
-              vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
-              divergence = run divergence { vx_in: vx, vy_in: vy }
+              run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
+              run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
               loop(iterations: 40) {
-                pressure_tmp = run jacobi { div_in: divergence, p_in: pressure }
+                run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
                 swap pressure <-> pressure_tmp
               }
-              vx0, vy0 = display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
+              display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
               swap vx <-> vx0, vy <-> vy0
             }
             "#,
@@ -1210,11 +1148,11 @@ mod tests {
               buffer age_next = constant(0.0)
 
               on click(continuous: true) {
-                state = run inject(value: 1.0, radius: 3)
-                age = run inject(value: 0.0, radius: 3)
+                run inject(value: 1.0, radius: 3) { target: out state }
+                run inject(value: 0.0, radius: 3) { target: out age }
               }
               loop(iterations: iterations) {
-                state_next, age_next = display game_of_life { state_in: state, age_in: age }
+                display game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
                 swap state <-> state_next
                 swap age <-> age_next
               }
@@ -1289,7 +1227,7 @@ mod tests {
               buffer v = constant(0.0)
 
               loop(iterations: 8) {
-                u, v = display gray_scott { u_in: u, v_in: v }
+                display gray_scott { u_in: u, v_in: v, u_out: out u, v_out: out v }
               }
             }
 
@@ -1300,7 +1238,7 @@ mod tests {
               buffer field_next = constant(0.0)
 
               loop(iterations: 8) {
-                field_next = run step { field_in: field }
+                run step { field_in: field, field_out: out field_next }
                 swap field <-> field_next
               }
               display vis { field_in: field }

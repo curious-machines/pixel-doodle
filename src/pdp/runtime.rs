@@ -560,22 +560,20 @@ impl Runtime {
         for step in steps {
             match step {
                 PipelineStep::Display {
-                    outputs,
                     kernel_name,
                     input_bindings,
                     args,
                     ..
                 } => {
-                    self.execute_run_or_display(kernel_name, outputs, input_bindings, args, pool, true);
+                    self.execute_run_or_display(kernel_name, input_bindings, args, pool, true);
                 }
                 PipelineStep::Run {
-                    outputs,
                     kernel_name,
                     input_bindings,
                     args,
                     ..
                 } => {
-                    self.execute_run_or_display(kernel_name, outputs, input_bindings, args, pool, false);
+                    self.execute_run_or_display(kernel_name, input_bindings, args, pool, false);
                 }
                 PipelineStep::Swap { pairs, .. } => {
                     for (a, b) in pairs {
@@ -622,7 +620,6 @@ impl Runtime {
     fn execute_run_or_display(
         &mut self,
         kernel_name: &str,
-        outputs: &[String],
         input_bindings: &[BufferBinding],
         args: &[NamedArg],
         pool: &Option<rayon::ThreadPool>,
@@ -630,7 +627,7 @@ impl Runtime {
     ) {
         // Handle built-in inject
         if kernel_name == "inject" {
-            self.execute_inject(outputs, args);
+            self.execute_inject(input_bindings, args);
             return;
         }
 
@@ -672,30 +669,17 @@ impl Runtime {
                     })
                     .collect();
 
-                // For outputs: use the tuple assignment names in order
-                let bufs_out: Vec<*mut f64> = if !outputs.is_empty() {
-                    outputs
-                        .iter()
-                        .map(|name| {
-                            self.buffers
-                                .get_mut(name)
-                                .unwrap_or_else(|| panic!("buffer '{}' not found", name))
-                                .as_mut_ptr()
-                        })
-                        .collect()
-                } else {
-                    write_slots
-                        .iter()
-                        .map(|slot| {
-                            let buf_name = find_binding(input_bindings, slot)
-                                .unwrap_or_else(|| slot.clone());
-                            self.buffers
-                                .get_mut(&buf_name)
-                                .unwrap_or_else(|| panic!("buffer '{}' not found", buf_name))
-                                .as_mut_ptr()
-                        })
-                        .collect()
-                };
+                let bufs_out: Vec<*mut f64> = write_slots
+                    .iter()
+                    .map(|slot| {
+                        let buf_name = find_binding(input_bindings, slot)
+                            .unwrap_or_else(|| slot.clone());
+                        self.buffers
+                            .get_mut(&buf_name)
+                            .unwrap_or_else(|| panic!("buffer '{}' not found", buf_name))
+                            .as_mut_ptr()
+                    })
+                    .collect();
 
                 let pixel_buf = &mut self.pixel_buffer;
                 render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th);
@@ -707,21 +691,15 @@ impl Runtime {
             Some(CompiledKernelEntry::GpuSim { .. }) => {
                 // GPU sim kernel — dispatch via GpuSimRunner
                 if let Some(runner) = &self.gpu_sim_runner {
-                    let mut bindings: Vec<(&str, &str)> = Vec::new();
-                    for binding in input_bindings {
-                        bindings.push((&binding.param_name, &binding.buffer_name));
-                    }
-                    // Output buffer names map directly to WGSL var names
-                    for out_name in outputs {
-                        bindings.push((out_name, out_name));
-                    }
+                    let bindings: Vec<(&str, &str)> = input_bindings
+                        .iter()
+                        .map(|b| (b.param_name.as_str(), b.buffer_name.as_str()))
+                        .collect();
                     runner.dispatch(kernel_name, &bindings);
                 }
                 if is_display {
                     self.gpu_rendered_this_frame = true;
-                    if let Some(out) = outputs.first() {
-                        self.gpu_pixel_buffer_name = Some(out.clone());
-                    } else if let Some(binding) = input_bindings.iter().find(|b| b.is_output) {
+                    if let Some(binding) = input_bindings.iter().find(|b| b.is_output) {
                         self.gpu_pixel_buffer_name = Some(binding.buffer_name.clone());
                     }
                 }
@@ -799,11 +777,12 @@ impl Runtime {
     }
 
     /// Built-in inject: write a value into a buffer around the mouse position.
-    fn execute_inject(&mut self, outputs: &[String], args: &[NamedArg]) {
-        if outputs.is_empty() {
-            return;
-        }
-        let buf_name = &outputs[0];
+    fn execute_inject(&mut self, bindings: &[BufferBinding], args: &[NamedArg]) {
+        let out_binding = match bindings.iter().find(|b| b.is_output) {
+            Some(b) => b,
+            None => return,
+        };
+        let buf_name = &out_binding.buffer_name;
 
         let mut value = 0.0f64;
         let mut radius = 5.0f64;
