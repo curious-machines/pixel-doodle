@@ -56,12 +56,15 @@ pipeline pdir {
 pipeline gpu {
   kernel step = "gray_scott_step.wgsl"
   kernel vis = "gray_scott_vis.wgsl"
+  kernel init_field = "gray_scott_init.wgsl"
 
-  # field = vec2(u, v); u=1.0 everywhere, v=0.0; click to inject v and start reaction
-  buffer field: gpu(vec2f) = constant(1.0)
-  buffer field_next: gpu(vec2f) = constant(1.0)
+  buffer field: gpu(vec2f) = constant(0.0)
+  buffer field_next: gpu(vec2f) = constant(0.0)
   buffer pixels: gpu(u32) = constant(0.0)
 
+  init {
+    run init_field { field_out: out field }
+  }
   on click(continuous: true) {
     run inject(value: 0.5, radius: 5) { target: out field }
   }
