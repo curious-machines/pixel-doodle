@@ -10,3 +10,4 @@ on key(digit0) {
   center_y = 0.0
   zoom = 1.0
 }
+on key(q) quit

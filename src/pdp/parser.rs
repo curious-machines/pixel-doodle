@@ -460,6 +460,11 @@ impl Parser {
         //   variable = variable / literal
         let target = self.expect_ident()?;
 
+        // Bare keyword actions (no assignment operator follows)
+        if target == "quit" {
+            return Ok(Action::Quit);
+        }
+
         match self.peek().clone() {
             Token::PlusEq => {
                 self.advance();

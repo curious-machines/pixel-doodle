@@ -142,6 +142,8 @@ pub enum Action {
         target: String,
         value: f64,
     },
+    /// `quit` — request application exit
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

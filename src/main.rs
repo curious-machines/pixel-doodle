@@ -372,7 +372,7 @@ impl ApplicationHandler for PdpApp {
             } => {
                 if let PhysicalKey::Code(code) = key_event.physical_key {
                     if key_event.state == ElementState::Pressed {
-                        if code == KeyCode::Escape || code == KeyCode::KeyQ {
+                        if code == KeyCode::Escape {
                             event_loop.exit();
                             return;
                         }
@@ -381,7 +381,13 @@ impl ApplicationHandler for PdpApp {
                         }
                         // Fire key binding on press
                         if let Some(name) = pdp::runtime::key_code_to_name(code) {
-                            self.runtime.handle_key_press(name);
+                            if self.runtime.handle_key_press(name) {
+                                event_loop.exit();
+                                return;
+                            }
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
                         }
                     } else {
                         self.keys_down.retain(|k| *k != code);

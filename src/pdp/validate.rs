@@ -54,6 +54,7 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
                 Action::CompoundAssign { target, .. } => target,
                 Action::BinAssign { target, .. } => target,
                 Action::Assign { target, .. } => target,
+                Action::Quit => continue,
             };
             if !var_names.contains(target) {
                 errors.push(ValidationError {

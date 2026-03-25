@@ -877,9 +877,10 @@ impl Runtime {
         }
     }
 
-    /// Handle a key press event.
-    pub fn handle_key_press(&mut self, key_name: &str) {
+    /// Handle a key press event. Returns `true` if the app should quit.
+    pub fn handle_key_press(&mut self, key_name: &str) -> bool {
         let bindings: Vec<KeyBinding> = self.config.key_bindings.clone();
+        let mut quit = false;
         for binding in &bindings {
             if binding.key_name == key_name {
                 for action in &binding.actions {
@@ -907,10 +908,14 @@ impl Runtime {
                         Action::Assign { target, value } => {
                             self.set_variable(target, *value);
                         }
+                        Action::Quit => {
+                            quit = true;
+                        }
                     }
                 }
             }
         }
+        quit
     }
 
     fn get_variable(&self, name: &str) -> f64 {
