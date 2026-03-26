@@ -118,11 +118,14 @@ fn parse_args() -> CliArgs {
             "--set" => {
                 i += 1;
                 if i < args.len() {
-                    if let Some((key, value)) = args[i].split_once('=') {
-                        set_overrides.push((key.to_string(), value.to_string()));
-                    } else {
-                        eprintln!("--set requires key=value format");
-                        std::process::exit(1);
+                    for item in args[i].split(',') {
+                        let item = item.trim();
+                        if let Some((key, value)) = item.split_once('=') {
+                            set_overrides.push((key.trim().to_string(), value.trim().to_string()));
+                        } else {
+                            eprintln!("--set requires key=value format");
+                            std::process::exit(1);
+                        }
                     }
                 }
             }
@@ -141,7 +144,7 @@ fn parse_args() -> CliArgs {
                 eprintln!("  --bench-frames <N>     Number of benchmark frames (default: 100)");
                 eprintln!("  --threads <N>          Worker thread count");
                 eprintln!("  --settings <file.pds>  Override settings from file");
-                eprintln!("  --set key=value        Override a setting or variable");
+                eprintln!("  --set key=val[,k=v]    Override settings (comma-delimited)");
                 eprintln!("  --help                 Show this help");
                 std::process::exit(0);
             }
