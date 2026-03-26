@@ -21,13 +21,17 @@ pub enum Token {
     Read,
     Write,
     // Types
+    TyF32,
     TyF64,
+    TyI32,
     TyU32,
     TyBool,
     TyVec2,
     TyVec3,
     // Literals
+    F32Lit(f32),
     FloatLit(f64),
+    I32Lit(i32),
     IntLit(u64),
     U32Lit(u32),
     StringLit(String),
@@ -89,12 +93,16 @@ impl fmt::Display for Token {
             Token::Buffers => write!(f, "buffers"),
             Token::Read => write!(f, "read"),
             Token::Write => write!(f, "write"),
+            Token::TyF32 => write!(f, "f32"),
             Token::TyF64 => write!(f, "f64"),
+            Token::TyI32 => write!(f, "i32"),
             Token::TyU32 => write!(f, "u32"),
             Token::TyBool => write!(f, "bool"),
             Token::TyVec2 => write!(f, "vec2"),
             Token::TyVec3 => write!(f, "vec3"),
+            Token::F32Lit(v) => write!(f, "{}f32", v),
             Token::FloatLit(v) => write!(f, "{}", v),
+            Token::I32Lit(v) => write!(f, "{}i32", v),
             Token::IntLit(v) => write!(f, "{}", v),
             Token::U32Lit(v) => write!(f, "{}u32", v),
             Token::StringLit(s) => write!(f, "\"{}\"", s),
@@ -188,23 +196,43 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 i += 1;
                 col += 1;
             }
-            // Check for u32 suffix
-            if !has_dot && i + 2 < chars.len() && chars[i] == 'u' && chars[i + 1] == '3' && chars[i + 2] == '2' {
-                let text: String = chars[start..i].iter().collect();
+            // Check for type suffixes: u32, i32, f32, f64
+            let suffix = if i + 2 < chars.len() { Some([chars[i], chars[i + 1], chars[i + 2]]) } else { None };
+            let text: String = chars[start..i].iter().collect();
+            if !has_dot && suffix == Some(['u', '3', '2']) {
                 i += 3;
                 col += 3;
                 let val = text.parse::<u32>().map_err(|e| {
                     format!("{}:{}: invalid u32 literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::U32Lit(val), line, col: start_col });
+            } else if !has_dot && suffix == Some(['i', '3', '2']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<i32>().map_err(|e| {
+                    format!("{}:{}: invalid i32 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::I32Lit(val), line, col: start_col });
+            } else if suffix == Some(['f', '3', '2']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<f32>().map_err(|e| {
+                    format!("{}:{}: invalid f32 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::F32Lit(val), line, col: start_col });
+            } else if suffix == Some(['f', '6', '4']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<f64>().map_err(|e| {
+                    format!("{}:{}: invalid f64 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::FloatLit(val), line, col: start_col });
             } else if has_dot {
-                let text: String = chars[start..i].iter().collect();
                 let val = text.parse::<f64>().map_err(|e| {
                     format!("{}:{}: invalid float literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::FloatLit(val), line, col: start_col });
             } else {
-                let text: String = chars[start..i].iter().collect();
                 let val = text.parse::<u64>().map_err(|e| {
                     format!("{}:{}: invalid integer literal '{}': {}", line, start_col, text, e)
                 })?;
@@ -239,7 +267,9 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "buffers" => Token::Buffers,
                 "read" => Token::Read,
                 "write" => Token::Write,
+                "f32" => Token::TyF32,
                 "f64" => Token::TyF64,
+                "i32" => Token::TyI32,
                 "u32" => Token::TyU32,
                 "bool" => Token::TyBool,
                 "vec2" => Token::TyVec2,

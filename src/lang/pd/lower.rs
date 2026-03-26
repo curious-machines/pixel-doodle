@@ -67,12 +67,20 @@ impl Lowerer {
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::F64, Inst::Const(Const::F64(*v)))));
                 var
             }
+            TExpr::F32Lit(v) => {
+                let var = self.auto_var("lit", ValType::F32);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::F32, Inst::Const(Const::F32(*v)))));
+                var
+            }
             TExpr::IntLit(v, ty) => {
                 let var = self.auto_var("lit", *ty);
                 let name = self.binding_name(var);
                 let c = match ty {
                     ValType::Scalar(ScalarType::F64) => Const::F64(*v as f64),
+                    ValType::Scalar(ScalarType::F32) => Const::F32(*v as f32),
                     ValType::Scalar(ScalarType::U32) => Const::U32(*v as u32),
+                    ValType::Scalar(ScalarType::I32) => Const::I32(*v as i32),
                     ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
@@ -82,6 +90,12 @@ impl Lowerer {
                 let var = self.auto_var("lit", ValType::U32);
                 let name = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::U32, Inst::Const(Const::U32(*v)))));
+                var
+            }
+            TExpr::I32Lit(v) => {
+                let var = self.auto_var("lit", ValType::I32);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::I32, Inst::Const(Const::I32(*v)))));
                 var
             }
             TExpr::BoolLit(v) => {
@@ -195,8 +209,9 @@ impl Lowerer {
                 let var = self.auto_var("conv", *to);
                 let vname = self.binding_name(var);
                 let conv_op = match (expr.ty(), to) {
-                    (ValType::Scalar(ScalarType::F64), ValType::Scalar(ScalarType::U32)) => ConvOp::F64_TO_U32,
-                    (ValType::Scalar(ScalarType::U32), ValType::Scalar(ScalarType::F64)) => ConvOp::U32_TO_F64,
+                    (ValType::Scalar(from_s), ValType::Scalar(to_s)) => {
+                        ConvOp { from: from_s, to: *to_s, norm: false }
+                    }
                     _ => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, *to, Inst::Conv { op: conv_op, arg })));

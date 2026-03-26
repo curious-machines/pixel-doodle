@@ -203,7 +203,9 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<ValType, ParseError> {
         match self.peek() {
+            Token::TyF32 => { self.advance(); Ok(ValType::F32) }
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
+            Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
             Token::TyVec2 | Token::TyVec3 => {
@@ -220,7 +222,9 @@ impl Parser {
 
     fn parse_scalar_type(&mut self) -> Result<ScalarType, ParseError> {
         match self.peek() {
+            Token::TyF32 => { self.advance(); Ok(ScalarType::F32) }
             Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyI32 => { self.advance(); Ok(ScalarType::I32) }
             Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
             Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
             _ => Err(self.error(format!("expected scalar type, got '{}'", self.peek()))),
@@ -541,6 +545,11 @@ impl Parser {
                 self.advance();
                 Ok(Expr::FloatLit(v, span))
             }
+            Token::F32Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::F32Lit(v, span))
+            }
             Token::IntLit(v) => {
                 let span = self.span();
                 self.advance();
@@ -550,6 +559,11 @@ impl Parser {
                 let span = self.span();
                 self.advance();
                 Ok(Expr::U32Lit(v, span))
+            }
+            Token::I32Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::I32Lit(v, span))
             }
             Token::True => {
                 let span = self.span();

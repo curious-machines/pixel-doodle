@@ -25,8 +25,10 @@ pub type TypeResult<T> = Result<T, TypeError>;
 #[derive(Debug, Clone)]
 pub enum TExpr {
     FloatLit(f64),
+    F32Lit(f32),
     IntLit(u64, ValType),
     U32Lit(u32),
+    I32Lit(i32),
     BoolLit(bool),
     Ident(String, ValType),
     BinOp {
@@ -67,8 +69,10 @@ impl TExpr {
     pub fn ty(&self) -> ValType {
         match self {
             TExpr::FloatLit(_) => ValType::F64,
+            TExpr::F32Lit(_) => ValType::F32,
             TExpr::IntLit(_, ty) => *ty,
             TExpr::U32Lit(_) => ValType::U32,
+            TExpr::I32Lit(_) => ValType::I32,
             TExpr::BoolLit(_) => ValType::BOOL,
             TExpr::Ident(_, ty) => *ty,
             TExpr::BinOp { ty, .. } => *ty,
@@ -186,7 +190,9 @@ impl Checker {
     fn check_expr(&self, expr: &Expr, expected: Option<ValType>) -> TypeResult<TExpr> {
         match expr {
             Expr::FloatLit(v, _) => Ok(TExpr::FloatLit(*v)),
+            Expr::F32Lit(v, _) => Ok(TExpr::F32Lit(*v)),
             Expr::U32Lit(v, _) => Ok(TExpr::U32Lit(*v)),
+            Expr::I32Lit(v, _) => Ok(TExpr::I32Lit(*v)),
             Expr::BoolLit(v, _) => Ok(TExpr::BoolLit(*v)),
 
             Expr::IntLit(v, span) => {
@@ -197,11 +203,18 @@ impl Checker {
                 });
                 match ty {
                     ValType::Scalar(ScalarType::F64) => Ok(TExpr::FloatLit(*v as f64)),
+                    ValType::Scalar(ScalarType::F32) => Ok(TExpr::F32Lit(*v as f32)),
                     ValType::Scalar(ScalarType::U32) => {
                         if *v > u32::MAX as u64 {
                             return Err(err(span, format!("integer {} too large for u32", v)));
                         }
                         Ok(TExpr::U32Lit(*v as u32))
+                    }
+                    ValType::Scalar(ScalarType::I32) => {
+                        if *v > i32::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for i32", v)));
+                        }
+                        Ok(TExpr::I32Lit(*v as i32))
                     }
                     ValType::Scalar(ScalarType::Bool) => Err(err(span, "cannot use integer literal as bool".into())),
                     ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
@@ -223,7 +236,7 @@ impl Checker {
                     UnaryOpKind::Neg => {
                         let inner = self.check_expr(inner, Some(ValType::F64))?;
                         let ty = inner.ty();
-                        if ty != ValType::F64 && ty != ValType::U32 && !ty.is_vec() {
+                        if ty != ValType::F64 && ty != ValType::F32 && ty != ValType::U32 && ty != ValType::I32 && !ty.is_vec() {
                             return Err(err(span, format!("cannot negate {}", ty)));
                         }
                         Ok(TExpr::UnaryOp { op: *op, expr: Box::new(inner), ty })
@@ -246,9 +259,10 @@ impl Checker {
                 let inner = self.check_expr(inner, None)?;
                 let from = inner.ty();
                 // Validate the conversion exists
-                match (from, ty) {
-                    (ValType::Scalar(ScalarType::F64), ValType::Scalar(ScalarType::U32)) |
-                    (ValType::Scalar(ScalarType::U32), ValType::Scalar(ScalarType::F64)) => {}
+                match (&from, ty) {
+                    // Allow any scalar-to-scalar cast except involving Bool
+                    (ValType::Scalar(f), ValType::Scalar(t))
+                        if *f != ScalarType::Bool && *t != ScalarType::Bool && f != t => {}
                     _ => return Err(err(span, format!("cannot cast {} to {}", from, ty))),
                 }
                 Ok(TExpr::Cast { expr: Box::new(inner), from, to: *ty })
@@ -330,14 +344,15 @@ impl Checker {
                 Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::BOOL })
             }
 
-            // Bitwise: u32 × u32 → u32
+            // Bitwise: u32 × u32 → u32 or i32 × i32 → i32
             BitAnd | BitOr | BitXor | Shl | Shr => {
                 let l = self.check_expr(lhs, Some(ValType::U32))?;
-                let r = self.check_expr(rhs, Some(ValType::U32))?;
-                if l.ty() != ValType::U32 || r.ty() != ValType::U32 {
-                    return Err(err(span, format!("bitwise op requires u32 operands, got {} and {}", l.ty(), r.ty())));
+                let r = self.check_expr(rhs, Some(l.ty()))?;
+                let ty = l.ty();
+                if (ty != ValType::U32 && ty != ValType::I32) || r.ty() != ty {
+                    return Err(err(span, format!("bitwise op requires matching u32 or i32 operands, got {} and {}", l.ty(), r.ty())));
                 }
-                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::U32 })
+                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty })
             }
 
             // Arithmetic: T × T → T (f64, u32, or vec)
@@ -504,7 +519,7 @@ impl Checker {
                     return Err(err(span, format!("'{}' arguments must match: {} vs {}", name, a.ty(), b.ty())));
                 }
                 match a.ty() {
-                    ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32) | ValType::Vec { .. } => {
+                    ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32) | ValType::Vec { .. } => {
                         let ty = a.ty();
                         return Ok(Some(TExpr::Call { name: name.to_string(), args: vec![a, b], ty }));
                     }
@@ -850,7 +865,9 @@ impl Checker {
 fn expected_for_arith(expr: &Expr, check: &dyn Fn(&Expr) -> TypeResult<TExpr>) -> Option<ValType> {
     match expr {
         Expr::FloatLit(_, _) => Some(ValType::F64),
+        Expr::F32Lit(_, _) => Some(ValType::F32),
         Expr::U32Lit(_, _) => Some(ValType::U32),
+        Expr::I32Lit(_, _) => Some(ValType::I32),
         Expr::BoolLit(_, _) => None,
         Expr::IntLit(_, _) => None,
         Expr::Ident(_, _) | Expr::Call { .. } | Expr::Cast { .. } | Expr::IfElse { .. } | Expr::FieldAccess { .. } => {

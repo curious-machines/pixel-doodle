@@ -353,7 +353,9 @@ fn lower_kernel_body(
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
                     ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::F32) => builder.ins().load(F32, MemFlags::trusted(), addr, 0),
                     ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::I32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }
@@ -428,7 +430,9 @@ fn lower_while(
             _ => {
                 let cl_ty = match cv.binding.ty {
                     ValType::Scalar(ScalarType::F64) => F64,
+                    ValType::Scalar(ScalarType::F32) => F32,
                     ValType::Scalar(ScalarType::U32) => I32,
+                    ValType::Scalar(ScalarType::I32) => I32,
                     ValType::Scalar(ScalarType::Bool) => I8,
                     _ => unreachable!(),
                 };
@@ -560,6 +564,38 @@ fn call_libm_f64_binary(
     builder.inst_results(call)[0]
 }
 
+fn call_libm_f32_unary(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder,
+    name: &str,
+    arg: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(F32));
+    sig.returns.push(AbiParam::new(F32));
+    let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(func_ref, &[arg]);
+    builder.inst_results(call)[0]
+}
+
+fn call_libm_f32_binary(
+    module: &mut JITModule,
+    builder: &mut FunctionBuilder,
+    name: &str,
+    lhs: cranelift_codegen::ir::Value,
+    rhs: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(F32));
+    sig.params.push(AbiParam::new(F32));
+    sig.returns.push(AbiParam::new(F32));
+    let func_id = module.declare_function(name, Linkage::Import, &sig).unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    let call = builder.ins().call(func_ref, &[lhs, rhs]);
+    builder.inst_results(call)[0]
+}
+
 fn lower_inst(
     module: &mut JITModule,
     builder: &mut FunctionBuilder,
@@ -571,7 +607,9 @@ fn lower_inst(
 ) -> VarValues {
     match inst {
         Inst::Const(c) => VarValues::Scalar(match c {
+            Const::F32(v) => builder.ins().f32const(*v),
             Const::F64(v) => builder.ins().f64const(*v),
+            Const::I32(v) => builder.ins().iconst(I32, *v as i64),
             Const::U32(v) => builder.ins().iconst(I32, *v as i64),
             Const::Bool(v) => builder.ins().iconst(I8, if *v { 1 } else { 0 }),
         }),
@@ -583,30 +621,52 @@ fn lower_inst(
                 (BinOp::Sub, ValType::Scalar(ScalarType::F64)) => builder.ins().fsub(l, r),
                 (BinOp::Mul, ValType::Scalar(ScalarType::F64)) => builder.ins().fmul(l, r),
                 (BinOp::Div, ValType::Scalar(ScalarType::F64)) => builder.ins().fdiv(l, r),
+                (BinOp::Add, ValType::Scalar(ScalarType::F32)) => builder.ins().fadd(l, r),
+                (BinOp::Sub, ValType::Scalar(ScalarType::F32)) => builder.ins().fsub(l, r),
+                (BinOp::Mul, ValType::Scalar(ScalarType::F32)) => builder.ins().fmul(l, r),
+                (BinOp::Div, ValType::Scalar(ScalarType::F32)) => builder.ins().fdiv(l, r),
                 (BinOp::Add, ValType::Scalar(ScalarType::U32)) => builder.ins().iadd(l, r),
                 (BinOp::Sub, ValType::Scalar(ScalarType::U32)) => builder.ins().isub(l, r),
                 (BinOp::Mul, ValType::Scalar(ScalarType::U32)) => builder.ins().imul(l, r),
                 (BinOp::Div, ValType::Scalar(ScalarType::U32)) => builder.ins().udiv(l, r),
+                (BinOp::Add, ValType::Scalar(ScalarType::I32)) => builder.ins().iadd(l, r),
+                (BinOp::Sub, ValType::Scalar(ScalarType::I32)) => builder.ins().isub(l, r),
+                (BinOp::Mul, ValType::Scalar(ScalarType::I32)) => builder.ins().imul(l, r),
+                (BinOp::Div, ValType::Scalar(ScalarType::I32)) => builder.ins().sdiv(l, r),
                 (BinOp::Rem, ValType::Scalar(ScalarType::F64)) => {
                     let q = builder.ins().fdiv(l, r);
                     let q_floor = builder.ins().floor(q);
                     let prod = builder.ins().fmul(q_floor, r);
                     builder.ins().fsub(l, prod)
                 }
+                (BinOp::Rem, ValType::Scalar(ScalarType::F32)) => {
+                    let q = builder.ins().fdiv(l, r);
+                    let q_floor = builder.ins().floor(q);
+                    let prod = builder.ins().fmul(q_floor, r);
+                    builder.ins().fsub(l, prod)
+                }
                 (BinOp::Rem, ValType::Scalar(ScalarType::U32)) => builder.ins().urem(l, r),
+                (BinOp::Rem, ValType::Scalar(ScalarType::I32)) => builder.ins().srem(l, r),
                 (BinOp::BitAnd, _) => builder.ins().band(l, r),
                 (BinOp::BitOr, _) => builder.ins().bor(l, r),
                 (BinOp::BitXor, _) => builder.ins().bxor(l, r),
                 (BinOp::Shl, _) => builder.ins().ishl(l, r),
+                (BinOp::Shr, ValType::Scalar(ScalarType::I32)) => builder.ins().sshr(l, r),
                 (BinOp::Shr, _) => builder.ins().ushr(l, r),
                 (BinOp::And, _) => builder.ins().band(l, r),
                 (BinOp::Or, _) => builder.ins().bor(l, r),
                 (BinOp::Min, ValType::Scalar(ScalarType::F64)) => builder.ins().fmin(l, r),
                 (BinOp::Max, ValType::Scalar(ScalarType::F64)) => builder.ins().fmax(l, r),
+                (BinOp::Min, ValType::Scalar(ScalarType::F32)) => builder.ins().fmin(l, r),
+                (BinOp::Max, ValType::Scalar(ScalarType::F32)) => builder.ins().fmax(l, r),
                 (BinOp::Min, ValType::Scalar(ScalarType::U32)) => builder.ins().umin(l, r),
                 (BinOp::Max, ValType::Scalar(ScalarType::U32)) => builder.ins().umax(l, r),
+                (BinOp::Min, ValType::Scalar(ScalarType::I32)) => builder.ins().smin(l, r),
+                (BinOp::Max, ValType::Scalar(ScalarType::I32)) => builder.ins().smax(l, r),
                 (BinOp::Atan2, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "atan2", l, r),
                 (BinOp::Pow, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "pow", l, r),
+                (BinOp::Atan2, ValType::Scalar(ScalarType::F32)) => call_libm_f32_binary(module, builder, "atan2f", l, r),
+                (BinOp::Pow, ValType::Scalar(ScalarType::F32)) => call_libm_f32_binary(module, builder, "powf", l, r),
                 (BinOp::Hash, ValType::Scalar(ScalarType::U32)) => {
                     // h = a * 0x45d9f3b + b
                     let hash_k = builder.ins().iconst(I32, 0x45d9f3bu32 as i64);
@@ -629,6 +689,8 @@ fn lower_inst(
             let a = get_scalar(val_map, arg);
             VarValues::Scalar(match (op, binding.ty) {
                 (UnaryOp::Neg, ValType::Scalar(ScalarType::F64)) => builder.ins().fneg(a),
+                (UnaryOp::Neg, ValType::Scalar(ScalarType::F32)) => builder.ins().fneg(a),
+                (UnaryOp::Neg, ValType::Scalar(ScalarType::I32)) => builder.ins().ineg(a),
                 (UnaryOp::Neg, ValType::Scalar(ScalarType::U32)) => {
                     let zero = builder.ins().iconst(I32, 0);
                     builder.ins().isub(zero, a)
@@ -638,24 +700,52 @@ fn lower_inst(
                     builder.ins().bxor(a, one)
                 }
                 (UnaryOp::Abs, ValType::Scalar(ScalarType::F64)) => builder.ins().fabs(a),
+                (UnaryOp::Abs, ValType::Scalar(ScalarType::F32)) => builder.ins().fabs(a),
+                (UnaryOp::Abs, ValType::Scalar(ScalarType::I32)) => {
+                    // abs(x) = select(x < 0, -x, x)
+                    let zero = builder.ins().iconst(I32, 0);
+                    let neg = builder.ins().ineg(a);
+                    let is_neg = builder.ins().icmp(IntCC::SignedLessThan, a, zero);
+                    builder.ins().select(is_neg, neg, a)
+                }
                 (UnaryOp::Abs, ValType::Scalar(ScalarType::U32)) => a,
-                (UnaryOp::Sqrt, _) => builder.ins().sqrt(a),
-                (UnaryOp::Floor, _) => builder.ins().floor(a),
-                (UnaryOp::Ceil, _) => builder.ins().ceil(a),
-                (UnaryOp::Sin, _) => call_libm_f64_unary(module, builder, "sin", a),
-                (UnaryOp::Cos, _) => call_libm_f64_unary(module, builder, "cos", a),
-                (UnaryOp::Tan, _) => call_libm_f64_unary(module, builder, "tan", a),
-                (UnaryOp::Asin, _) => call_libm_f64_unary(module, builder, "asin", a),
-                (UnaryOp::Acos, _) => call_libm_f64_unary(module, builder, "acos", a),
-                (UnaryOp::Atan, _) => call_libm_f64_unary(module, builder, "atan", a),
-                (UnaryOp::Exp, _) => call_libm_f64_unary(module, builder, "exp", a),
-                (UnaryOp::Exp2, _) => call_libm_f64_unary(module, builder, "exp2", a),
-                (UnaryOp::Log, _) => call_libm_f64_unary(module, builder, "log", a),
-                (UnaryOp::Log2, _) => call_libm_f64_unary(module, builder, "log2", a),
-                (UnaryOp::Log10, _) => call_libm_f64_unary(module, builder, "log10", a),
-                (UnaryOp::Round, _) => builder.ins().nearest(a),
-                (UnaryOp::Trunc, _) => builder.ins().trunc(a),
-                (UnaryOp::Fract, _) => {
+                (UnaryOp::Sqrt, ValType::Scalar(ScalarType::F64)) => builder.ins().sqrt(a),
+                (UnaryOp::Sqrt, ValType::Scalar(ScalarType::F32)) => builder.ins().sqrt(a),
+                (UnaryOp::Floor, ValType::Scalar(ScalarType::F64)) => builder.ins().floor(a),
+                (UnaryOp::Floor, ValType::Scalar(ScalarType::F32)) => builder.ins().floor(a),
+                (UnaryOp::Ceil, ValType::Scalar(ScalarType::F64)) => builder.ins().ceil(a),
+                (UnaryOp::Ceil, ValType::Scalar(ScalarType::F32)) => builder.ins().ceil(a),
+                (UnaryOp::Sin, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "sin", a),
+                (UnaryOp::Cos, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "cos", a),
+                (UnaryOp::Tan, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "tan", a),
+                (UnaryOp::Asin, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "asin", a),
+                (UnaryOp::Acos, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "acos", a),
+                (UnaryOp::Atan, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "atan", a),
+                (UnaryOp::Exp, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "exp", a),
+                (UnaryOp::Exp2, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "exp2", a),
+                (UnaryOp::Log, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "log", a),
+                (UnaryOp::Log2, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "log2", a),
+                (UnaryOp::Log10, ValType::Scalar(ScalarType::F64)) => call_libm_f64_unary(module, builder, "log10", a),
+                (UnaryOp::Sin, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "sinf", a),
+                (UnaryOp::Cos, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "cosf", a),
+                (UnaryOp::Tan, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "tanf", a),
+                (UnaryOp::Asin, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "asinf", a),
+                (UnaryOp::Acos, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "acosf", a),
+                (UnaryOp::Atan, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "atanf", a),
+                (UnaryOp::Exp, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "expf", a),
+                (UnaryOp::Exp2, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "exp2f", a),
+                (UnaryOp::Log, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "logf", a),
+                (UnaryOp::Log2, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "log2f", a),
+                (UnaryOp::Log10, ValType::Scalar(ScalarType::F32)) => call_libm_f32_unary(module, builder, "log10f", a),
+                (UnaryOp::Round, ValType::Scalar(ScalarType::F64)) => builder.ins().nearest(a),
+                (UnaryOp::Round, ValType::Scalar(ScalarType::F32)) => builder.ins().nearest(a),
+                (UnaryOp::Trunc, ValType::Scalar(ScalarType::F64)) => builder.ins().trunc(a),
+                (UnaryOp::Trunc, ValType::Scalar(ScalarType::F32)) => builder.ins().trunc(a),
+                (UnaryOp::Fract, ValType::Scalar(ScalarType::F64)) => {
+                    let floored = builder.ins().floor(a);
+                    builder.ins().fsub(a, floored)
+                }
+                (UnaryOp::Fract, ValType::Scalar(ScalarType::F32)) => {
                     let floored = builder.ins().floor(a);
                     builder.ins().fsub(a, floored)
                 }
@@ -667,7 +757,7 @@ fn lower_inst(
             let r = get_scalar(val_map, rhs);
             let operand_ty = kernel.var_type(*lhs).unwrap();
             VarValues::Scalar(match operand_ty {
-                ValType::Scalar(ScalarType::F64) => {
+                ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) => {
                     let cc = match op {
                         CmpOp::Eq => FloatCC::Equal,
                         CmpOp::Ne => FloatCC::NotEqual,
@@ -689,6 +779,17 @@ fn lower_inst(
                     };
                     builder.ins().icmp(cc, l, r)
                 }
+                ValType::Scalar(ScalarType::I32) => {
+                    let cc = match op {
+                        CmpOp::Eq => IntCC::Equal,
+                        CmpOp::Ne => IntCC::NotEqual,
+                        CmpOp::Lt => IntCC::SignedLessThan,
+                        CmpOp::Le => IntCC::SignedLessThanOrEqual,
+                        CmpOp::Gt => IntCC::SignedGreaterThan,
+                        CmpOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                    };
+                    builder.ins().icmp(cc, l, r)
+                }
                 _ => unreachable!("cannot compare bools"),
             })
         }
@@ -702,6 +803,21 @@ fn lower_inst(
                     let recip = builder.ins().f64const(1.0 / 4294967296.0);
                     builder.ins().fmul(f, recip)
                 }
+                // F32 <-> F64
+                (ScalarType::F32, ScalarType::F64, false) => builder.ins().fpromote(F64, a),
+                (ScalarType::F64, ScalarType::F32, false) => builder.ins().fdemote(F32, a),
+                // I32 <-> F64
+                (ScalarType::I32, ScalarType::F64, false) => builder.ins().fcvt_from_sint(F64, a),
+                (ScalarType::F64, ScalarType::I32, false) => builder.ins().fcvt_to_sint(I32, a),
+                // I32 <-> F32
+                (ScalarType::I32, ScalarType::F32, false) => builder.ins().fcvt_from_sint(F32, a),
+                (ScalarType::F32, ScalarType::I32, false) => builder.ins().fcvt_to_sint(I32, a),
+                // F32 <-> U32
+                (ScalarType::F32, ScalarType::U32, false) => builder.ins().fcvt_to_uint(I32, a),
+                (ScalarType::U32, ScalarType::F32, false) => builder.ins().fcvt_from_uint(F32, a),
+                // I32 <-> U32 (same bit representation in Cranelift)
+                (ScalarType::I32, ScalarType::U32, false) => a,
+                (ScalarType::U32, ScalarType::I32, false) => a,
                 _ => unreachable!("unsupported conversion"),
             })
         }
@@ -1111,7 +1227,9 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
                     ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::F32) => builder.ins().load(F32, MemFlags::trusted(), addr, 0),
                     ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::I32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }

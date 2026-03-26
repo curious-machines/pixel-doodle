@@ -615,7 +615,9 @@ impl Runtime {
         let last = slots.last().unwrap();
         let last_size = match last.ty {
             ValType::F64 => 8,
+            ValType::F32 => 4,
             ValType::U32 => 4,
+            ValType::I32 => 4,
             _ => 8,
         };
         let total = ((last.offset + last_size) + 7) & !7;
@@ -637,8 +639,16 @@ impl Runtime {
                 ValType::F64 => {
                     buf[slot.offset..slot.offset + 8].copy_from_slice(&f.to_le_bytes());
                 }
+                ValType::F32 => {
+                    let v = f as f32;
+                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                }
                 ValType::U32 => {
                     let v = f as u32;
+                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                }
+                ValType::I32 => {
+                    let v = f as i32;
                     buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
                 }
                 _ => panic!("unsupported user-arg type {:?}", slot.ty),

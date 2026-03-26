@@ -9,15 +9,36 @@
 /// Scalar (non-compound) types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarType {
+    F32,
     F64,
+    I32,
     U32,
     Bool,
+}
+
+impl ScalarType {
+    /// Returns true if this is a floating-point type.
+    pub fn is_float(self) -> bool {
+        matches!(self, ScalarType::F32 | ScalarType::F64)
+    }
+
+    /// Returns true if this is an integer type (signed or unsigned).
+    pub fn is_integer(self) -> bool {
+        matches!(self, ScalarType::I32 | ScalarType::U32)
+    }
+
+    /// Returns true if this is a signed type.
+    pub fn is_signed(self) -> bool {
+        matches!(self, ScalarType::I32)
+    }
 }
 
 impl std::fmt::Display for ScalarType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ScalarType::F32 => write!(f, "f32"),
             ScalarType::F64 => write!(f, "f64"),
+            ScalarType::I32 => write!(f, "i32"),
             ScalarType::U32 => write!(f, "u32"),
             ScalarType::Bool => write!(f, "bool"),
         }
@@ -32,7 +53,9 @@ pub enum ValType {
 
 impl ValType {
     // Convenience constants for common scalar types.
+    pub const F32: ValType = ValType::Scalar(ScalarType::F32);
     pub const F64: ValType = ValType::Scalar(ScalarType::F64);
+    pub const I32: ValType = ValType::Scalar(ScalarType::I32);
     pub const U32: ValType = ValType::Scalar(ScalarType::U32);
     pub const BOOL: ValType = ValType::Scalar(ScalarType::Bool);
 
@@ -89,7 +112,9 @@ pub struct Binding {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Const {
+    F32(f32),
     F64(f64),
+    I32(i32),
     U32(u32),
     Bool(bool),
 }
@@ -162,6 +187,16 @@ impl ConvOp {
     pub const F64_TO_U32: ConvOp = ConvOp { from: ScalarType::F64, to: ScalarType::U32, norm: false };
     pub const U32_TO_F64: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::F64, norm: false };
     pub const U32_TO_F64_NORM: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::F64, norm: true };
+    pub const F32_TO_F64: ConvOp = ConvOp { from: ScalarType::F32, to: ScalarType::F64, norm: false };
+    pub const F64_TO_F32: ConvOp = ConvOp { from: ScalarType::F64, to: ScalarType::F32, norm: false };
+    pub const I32_TO_F64: ConvOp = ConvOp { from: ScalarType::I32, to: ScalarType::F64, norm: false };
+    pub const F64_TO_I32: ConvOp = ConvOp { from: ScalarType::F64, to: ScalarType::I32, norm: false };
+    pub const I32_TO_U32: ConvOp = ConvOp { from: ScalarType::I32, to: ScalarType::U32, norm: false };
+    pub const U32_TO_I32: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::I32, norm: false };
+    pub const I32_TO_F32: ConvOp = ConvOp { from: ScalarType::I32, to: ScalarType::F32, norm: false };
+    pub const F32_TO_I32: ConvOp = ConvOp { from: ScalarType::F32, to: ScalarType::I32, norm: false };
+    pub const F32_TO_U32: ConvOp = ConvOp { from: ScalarType::F32, to: ScalarType::U32, norm: false };
+    pub const U32_TO_F32: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::F32, norm: false };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

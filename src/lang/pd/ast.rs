@@ -37,8 +37,10 @@ pub struct Span {
 #[derive(Debug, Clone)]
 pub enum Expr {
     FloatLit(f64, Span),
+    F32Lit(f32, Span),
     IntLit(u64, Span),
     U32Lit(u32, Span),
+    I32Lit(i32, Span),
     BoolLit(bool, Span),
     Ident(String, Span),
     BinOp {
@@ -79,8 +81,10 @@ impl Expr {
     pub fn span(&self) -> &Span {
         match self {
             Expr::FloatLit(_, s) => s,
+            Expr::F32Lit(_, s) => s,
             Expr::IntLit(_, s) => s,
             Expr::U32Lit(_, s) => s,
+            Expr::I32Lit(_, s) => s,
             Expr::BoolLit(_, s) => s,
             Expr::Ident(_, s) => s,
             Expr::BinOp { span, .. } => span,

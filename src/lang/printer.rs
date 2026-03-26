@@ -95,6 +95,14 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
         Inst::Const(c) => {
             out.push_str("const ");
             match c {
+                Const::F32(v) => {
+                    let s = format!("{v}");
+                    out.push_str(&s);
+                    if !s.contains('.') {
+                        out.push_str(".0");
+                    }
+                    out.push_str("f32");
+                }
                 Const::F64(v) => {
                     let s = format!("{v}");
                     out.push_str(&s);
@@ -103,6 +111,7 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
                         out.push_str(".0");
                     }
                 }
+                Const::I32(v) => out.push_str(&format!("{v}i32")),
                 Const::U32(v) => out.push_str(&format!("{v}")),
                 Const::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
             }
@@ -232,12 +241,25 @@ fn print_operand(out: &mut String, var: Var, kernel: &Kernel) {
             // Find the statement to get the const value
             if let Some(c) = find_const_in_body(&kernel.body, var) {
                 match c {
+                    Const::F32(v) => {
+                        let s = format!("{v}");
+                        out.push_str(&s);
+                        if !s.contains('.') {
+                            out.push_str(".0");
+                        }
+                        out.push_str("f32");
+                        return;
+                    }
                     Const::F64(v) => {
                         let s = format!("{v}");
                         out.push_str(&s);
                         if !s.contains('.') {
                             out.push_str(".0");
                         }
+                        return;
+                    }
+                    Const::I32(v) => {
+                        out.push_str(&format!("{v}i32"));
                         return;
                     }
                     Const::U32(v) => {
@@ -343,6 +365,16 @@ fn convop_name(op: ConvOp) -> &'static str {
         (F64, U32, false) => "f64_to_u32",
         (U32, F64, false) => "u32_to_f64",
         (U32, F64, true) => "u32_to_f64_norm",
+        (F32, F64, false) => "f32_to_f64",
+        (F64, F32, false) => "f64_to_f32",
+        (I32, U32, false) => "i32_to_u32",
+        (U32, I32, false) => "u32_to_i32",
+        (I32, F64, false) => "i32_to_f64",
+        (F64, I32, false) => "f64_to_i32",
+        (I32, F32, false) => "i32_to_f32",
+        (F32, I32, false) => "f32_to_i32",
+        (F32, U32, false) => "f32_to_u32",
+        (U32, F32, false) => "u32_to_f32",
         _ => "conv_unknown",
     }
 }

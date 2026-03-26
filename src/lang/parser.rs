@@ -18,7 +18,9 @@ enum Token {
     Cond,
     Yield,
     // Types
+    TyF32,
     TyF64,
+    TyI32,
     TyU32,
     TyBool,
     TyVec2,
@@ -98,6 +100,16 @@ enum Token {
     F64ToU32,
     U32ToF64,
     U32ToF64Norm,
+    F32ToF64,
+    F64ToF32,
+    I32ToU32,
+    U32ToI32,
+    I32ToF64,
+    F64ToI32,
+    I32ToF32,
+    F32ToI32,
+    F32ToU32,
+    U32ToF32,
     // Hash op (binary u32 -> u32)
     Hash,
     // Buffer ops
@@ -165,7 +177,9 @@ fn keyword_lookup(word: &str) -> Token {
         "carry" => Token::Carry,
         "cond" => Token::Cond,
         "yield" => Token::Yield,
+        "f32" => Token::TyF32,
         "f64" => Token::TyF64,
+        "i32" => Token::TyI32,
         "u32" => Token::TyU32,
         "bool" => Token::TyBool,
         "vec2" => Token::TyVec2,
@@ -233,6 +247,16 @@ fn keyword_lookup(word: &str) -> Token {
         "f64_to_u32" => Token::F64ToU32,
         "u32_to_f64" => Token::U32ToF64,
         "u32_to_f64_norm" => Token::U32ToF64Norm,
+        "f32_to_f64" => Token::F32ToF64,
+        "f64_to_f32" => Token::F64ToF32,
+        "i32_to_u32" => Token::I32ToU32,
+        "u32_to_i32" => Token::U32ToI32,
+        "i32_to_f64" => Token::I32ToF64,
+        "f64_to_i32" => Token::F64ToI32,
+        "i32_to_f32" => Token::I32ToF32,
+        "f32_to_i32" => Token::F32ToI32,
+        "f32_to_u32" => Token::F32ToU32,
+        "u32_to_f32" => Token::U32ToF32,
         "hash" => Token::Hash,
         "buf_load" => Token::BufLoad,
         "buf_store" => Token::BufStore,
@@ -613,13 +637,15 @@ impl Parser {
     fn parse_scalar_type(&mut self) -> Result<ScalarType, ParseError> {
         let sp = self.peek().clone();
         match sp.token {
+            Token::TyF32 => { self.advance(); Ok(ScalarType::F32) }
             Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyI32 => { self.advance(); Ok(ScalarType::I32) }
             Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
             Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected scalar type (f64, u32, bool), got {:?}", sp.token),
+                message: format!("expected scalar type (f32, f64, i32, u32, bool), got {:?}", sp.token),
             }),
         }
     }
@@ -627,7 +653,9 @@ impl Parser {
     fn parse_type(&mut self) -> Result<ValType, ParseError> {
         let sp = self.peek().clone();
         match sp.token {
+            Token::TyF32 => { self.advance(); Ok(ValType::F32) }
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
+            Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
             Token::TyVec2 => {
@@ -647,7 +675,7 @@ impl Parser {
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected type (f64, u32, bool, vec2<T>, vec3<T>), got {:?}", sp.token),
+                message: format!("expected type (f32, f64, i32, u32, bool, vec2<T>, vec3<T>), got {:?}", sp.token),
             }),
         }
     }
@@ -672,17 +700,45 @@ impl Parser {
             (Token::FloatLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v;
                 self.advance();
+                // Check for f32 suffix — if present, this is an error (expected f64)
                 Ok(self.alloc_implicit(ValType::F64, Const::F64(v)))
+            }
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::F32)) => {
+                let v = *v as f32;
+                self.advance();
+                // Consume optional f32 suffix
+                if self.peek().token == Token::TyF32 {
+                    self.advance();
+                }
+                Ok(self.alloc_implicit(ValType::F32, Const::F32(v)))
             }
             (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
                 Ok(self.alloc_implicit(ValType::U32, Const::U32(v as u32)))
             }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I32)) => {
+                let v = *v;
+                self.advance();
+                // Consume optional i32 suffix
+                if self.peek().token == Token::TyI32 {
+                    self.advance();
+                }
+                Ok(self.alloc_implicit(ValType::I32, Const::I32(v as i32)))
+            }
             (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
                 self.advance();
                 Ok(self.alloc_implicit(ValType::F64, Const::F64(v)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::F32)) => {
+                let v = *v as f32;
+                self.advance();
+                // Consume optional f32 suffix
+                if self.peek().token == Token::TyF32 {
+                    self.advance();
+                }
+                Ok(self.alloc_implicit(ValType::F32, Const::F32(v)))
             }
             (Token::True, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
@@ -717,8 +773,8 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if !matches!(declared_ty, ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32)) {
-                    return Err(ParseError { line, col, message: format!("arithmetic ops require f64 or u32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::U32)) {
+                    return Err(ParseError { line, col, message: format!("arithmetic ops require f32, f64, i32, or u32, got {declared_ty}") });
                 }
                 let lhs = self.parse_operand(declared_ty)?;
                 self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
@@ -736,13 +792,13 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if declared_ty != ValType::U32 {
-                    return Err(ParseError { line, col, message: format!("bitwise ops require u32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32)) {
+                    return Err(ParseError { line, col, message: format!("bitwise ops require u32 or i32, got {declared_ty}") });
                 }
-                let lhs = self.parse_operand(ValType::U32)?;
-                self.check_types_match(ValType::U32, self.var_ty(lhs), "lhs", line, col)?;
-                let rhs = self.parse_operand(ValType::U32)?;
-                self.check_types_match(ValType::U32, self.var_ty(rhs), "rhs", line, col)?;
+                let lhs = self.parse_operand(declared_ty)?;
+                self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
+                let rhs = self.parse_operand(declared_ty)?;
+                self.check_types_match(declared_ty, self.var_ty(rhs), "rhs", line, col)?;
                 Ok(Inst::Binary { op, lhs, rhs })
             }
             Token::And | Token::Or => {
@@ -784,8 +840,8 @@ impl Parser {
             Token::Neg | Token::Abs => {
                 let op = if sp.token == Token::Neg { UnaryOp::Neg } else { UnaryOp::Abs };
                 self.advance();
-                if !matches!(declared_ty, ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32)) {
-                    return Err(ParseError { line, col, message: format!("{op:?} requires f64 or u32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::U32)) {
+                    return Err(ParseError { line, col, message: format!("{op:?} requires f32, f64, i32, or u32, got {declared_ty}") });
                 }
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(declared_ty, self.var_ty(arg), "arg", line, col)?;
@@ -827,11 +883,11 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if declared_ty != ValType::F64 {
-                    return Err(ParseError { line, col, message: format!("{op:?} requires f64, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::F64)) {
+                    return Err(ParseError { line, col, message: format!("{op:?} requires f32 or f64, got {declared_ty}") });
                 }
                 let arg = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(arg), "arg", line, col)?;
+                self.check_types_match(declared_ty, self.var_ty(arg), "arg", line, col)?;
                 Ok(Inst::Unary { op, arg })
             }
             Token::F64ToU32 => {
@@ -860,6 +916,96 @@ impl Parser {
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(ValType::U32, self.var_ty(arg), "arg", line, col)?;
                 Ok(Inst::Conv { op: ConvOp::U32_TO_F64_NORM, arg })
+            }
+            Token::F32ToF64 => {
+                self.advance();
+                if declared_ty != ValType::F64 {
+                    return Err(ParseError { line, col, message: format!("f32_to_f64 produces f64, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::F32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::F32_TO_F64, arg })
+            }
+            Token::F64ToF32 => {
+                self.advance();
+                if declared_ty != ValType::F32 {
+                    return Err(ParseError { line, col, message: format!("f64_to_f32 produces f32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::F64, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::F64_TO_F32, arg })
+            }
+            Token::I32ToU32 => {
+                self.advance();
+                if declared_ty != ValType::U32 {
+                    return Err(ParseError { line, col, message: format!("i32_to_u32 produces u32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::I32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::I32_TO_U32, arg })
+            }
+            Token::U32ToI32 => {
+                self.advance();
+                if declared_ty != ValType::I32 {
+                    return Err(ParseError { line, col, message: format!("u32_to_i32 produces i32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::U32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::U32_TO_I32, arg })
+            }
+            Token::I32ToF64 => {
+                self.advance();
+                if declared_ty != ValType::F64 {
+                    return Err(ParseError { line, col, message: format!("i32_to_f64 produces f64, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::I32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::I32_TO_F64, arg })
+            }
+            Token::F64ToI32 => {
+                self.advance();
+                if declared_ty != ValType::I32 {
+                    return Err(ParseError { line, col, message: format!("f64_to_i32 produces i32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::F64, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::F64_TO_I32, arg })
+            }
+            Token::I32ToF32 => {
+                self.advance();
+                if declared_ty != ValType::F32 {
+                    return Err(ParseError { line, col, message: format!("i32_to_f32 produces f32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::I32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::I32_TO_F32, arg })
+            }
+            Token::F32ToI32 => {
+                self.advance();
+                if declared_ty != ValType::I32 {
+                    return Err(ParseError { line, col, message: format!("f32_to_i32 produces i32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::F32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::F32_TO_I32, arg })
+            }
+            Token::F32ToU32 => {
+                self.advance();
+                if declared_ty != ValType::U32 {
+                    return Err(ParseError { line, col, message: format!("f32_to_u32 produces u32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::F32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::F32_TO_U32, arg })
+            }
+            Token::U32ToF32 => {
+                self.advance();
+                if declared_ty != ValType::F32 {
+                    return Err(ParseError { line, col, message: format!("u32_to_f32 produces f32, got {declared_ty}") });
+                }
+                let arg = self.resolve_var_ident()?;
+                self.check_types_match(ValType::U32, self.var_ty(arg), "arg", line, col)?;
+                Ok(Inst::Conv { op: ConvOp::U32_TO_F32, arg })
             }
             Token::Hash => {
                 self.advance();
@@ -1110,6 +1256,15 @@ impl Parser {
                 self.advance();
                 Ok(Inst::Const(Const::F64(v)))
             }
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::F32)) => {
+                let v = *v as f32;
+                self.advance();
+                // Consume optional f32 suffix
+                if self.peek().token == Token::TyF32 {
+                    self.advance();
+                }
+                Ok(Inst::Const(Const::F32(v)))
+            }
             (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
@@ -1118,10 +1273,44 @@ impl Parser {
                 }
                 Ok(Inst::Const(Const::U32(v as u32)))
             }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I32)) => {
+                let v = *v;
+                self.advance();
+                // Consume optional i32 suffix
+                if self.peek().token == Token::TyI32 {
+                    self.advance();
+                }
+                if v > i32::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i32 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I32(v as i32)))
+            }
+            // Negative integers come through as FloatLit from the lexer
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::I32)) => {
+                let v = *v;
+                self.advance();
+                // Consume optional i32 suffix
+                if self.peek().token == Token::TyI32 {
+                    self.advance();
+                }
+                if v < i32::MIN as f64 || v > i32::MAX as f64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i32 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I32(v as i32)))
+            }
             (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
                 self.advance();
                 Ok(Inst::Const(Const::F64(v)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::F32)) => {
+                let v = *v as f32;
+                self.advance();
+                // Consume optional f32 suffix
+                if self.peek().token == Token::TyF32 {
+                    self.advance();
+                }
+                Ok(Inst::Const(Const::F32(v)))
             }
             (Token::True, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
@@ -1503,8 +1692,16 @@ impl Parser {
             // Return var is a carry var — create an identity op to copy its value
             let remapped = var_map[&def.return_var];
             match def.return_ty {
+                ValType::Scalar(ScalarType::F32) => {
+                    let zero = self.alloc_implicit(ValType::F32, Const::F32(0.0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
                 ValType::Scalar(ScalarType::F64) => {
                     let zero = self.alloc_implicit(ValType::F64, Const::F64(0.0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::I32) => {
+                    let zero = self.alloc_implicit(ValType::I32, Const::I32(0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
                 ValType::Scalar(ScalarType::U32) => {
