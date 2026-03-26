@@ -1,4 +1,4 @@
-use crate::kernel_ir::*;
+use crate::kernel_ir::{ScalarType, *};
 use std::collections::HashMap;
 
 // ── Tokens ──────────────────────────────────────────────────────────
@@ -23,6 +23,9 @@ enum Token {
     TyBool,
     TyVec2,
     TyVec3,
+    // Angle brackets (for parameterized types like vec2<f64>)
+    LAngle,
+    RAngle,
     // Vec construction
     MakeVec2,
     MakeVec3,
@@ -295,6 +298,14 @@ fn lex(input: &str) -> Result<Vec<Spanned>, ParseError> {
             }
             '=' => {
                 tokens.push(Spanned { token: Token::Equals, line, col });
+                chars.next();
+            }
+            '<' => {
+                tokens.push(Spanned { token: Token::LAngle, line, col });
+                chars.next();
+            }
+            '>' => {
+                tokens.push(Spanned { token: Token::RAngle, line, col });
                 chars.next();
             }
             '-' if matches!(chars.clone().nth(1), Some((_, '>'))) => {
@@ -599,18 +610,44 @@ impl Parser {
         self.var_types[&var]
     }
 
+    fn parse_scalar_type(&mut self) -> Result<ScalarType, ParseError> {
+        let sp = self.peek().clone();
+        match sp.token {
+            Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
+            Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
+            _ => Err(ParseError {
+                line: sp.line,
+                col: sp.col,
+                message: format!("expected scalar type (f64, u32, bool), got {:?}", sp.token),
+            }),
+        }
+    }
+
     fn parse_type(&mut self) -> Result<ValType, ParseError> {
         let sp = self.peek().clone();
         match sp.token {
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
-            Token::TyBool => { self.advance(); Ok(ValType::Bool) }
-            Token::TyVec2 => { self.advance(); Ok(ValType::Vec2) }
-            Token::TyVec3 => { self.advance(); Ok(ValType::Vec3) }
+            Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
+            Token::TyVec2 => {
+                self.advance();
+                self.expect_tok(&Token::LAngle)?;
+                let elem = self.parse_scalar_type()?;
+                self.expect_tok(&Token::RAngle)?;
+                Ok(ValType::Vec { len: 2, elem })
+            }
+            Token::TyVec3 => {
+                self.advance();
+                self.expect_tok(&Token::LAngle)?;
+                let elem = self.parse_scalar_type()?;
+                self.expect_tok(&Token::RAngle)?;
+                Ok(ValType::Vec { len: 3, elem })
+            }
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected type (f64, u32, bool, vec2, vec3), got {:?}", sp.token),
+                message: format!("expected type (f64, u32, bool, vec2<T>, vec3<T>), got {:?}", sp.token),
             }),
         }
     }
@@ -632,28 +669,28 @@ impl Parser {
     fn parse_operand(&mut self, expected_ty: ValType) -> Result<Var, ParseError> {
         let sp = self.peek().clone();
         match (&sp.token, expected_ty) {
-            (Token::FloatLit(v), ValType::F64) => {
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v;
                 self.advance();
                 Ok(self.alloc_implicit(ValType::F64, Const::F64(v)))
             }
-            (Token::IntLit(v), ValType::U32) => {
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
                 Ok(self.alloc_implicit(ValType::U32, Const::U32(v as u32)))
             }
-            (Token::IntLit(v), ValType::F64) => {
+            (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
                 self.advance();
                 Ok(self.alloc_implicit(ValType::F64, Const::F64(v)))
             }
-            (Token::True, ValType::Bool) => {
+            (Token::True, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
-                Ok(self.alloc_implicit(ValType::Bool, Const::Bool(true)))
+                Ok(self.alloc_implicit(ValType::BOOL, Const::Bool(true)))
             }
-            (Token::False, ValType::Bool) => {
+            (Token::False, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
-                Ok(self.alloc_implicit(ValType::Bool, Const::Bool(false)))
+                Ok(self.alloc_implicit(ValType::BOOL, Const::Bool(false)))
             }
             _ => self.resolve_var_ident(),
         }
@@ -680,7 +717,7 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if declared_ty != ValType::F64 && declared_ty != ValType::U32 {
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32)) {
                     return Err(ParseError { line, col, message: format!("arithmetic ops require f64 or u32, got {declared_ty}") });
                 }
                 let lhs = self.parse_operand(declared_ty)?;
@@ -711,13 +748,13 @@ impl Parser {
             Token::And | Token::Or => {
                 let op = if sp.token == Token::And { BinOp::And } else { BinOp::Or };
                 self.advance();
-                if declared_ty != ValType::Bool {
+                if declared_ty != ValType::BOOL {
                     return Err(ParseError { line, col, message: format!("logical ops require bool, got {declared_ty}") });
                 }
-                let lhs = self.parse_operand(ValType::Bool)?;
-                self.check_types_match(ValType::Bool, self.var_ty(lhs), "lhs", line, col)?;
-                let rhs = self.parse_operand(ValType::Bool)?;
-                self.check_types_match(ValType::Bool, self.var_ty(rhs), "rhs", line, col)?;
+                let lhs = self.parse_operand(ValType::BOOL)?;
+                self.check_types_match(ValType::BOOL, self.var_ty(lhs), "lhs", line, col)?;
+                let rhs = self.parse_operand(ValType::BOOL)?;
+                self.check_types_match(ValType::BOOL, self.var_ty(rhs), "rhs", line, col)?;
                 Ok(Inst::Binary { op, lhs, rhs })
             }
             Token::Eq_ | Token::Ne | Token::Lt | Token::Le | Token::Gt | Token::Ge => {
@@ -731,13 +768,13 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if declared_ty != ValType::Bool {
+                if declared_ty != ValType::BOOL {
                     return Err(ParseError { line, col, message: format!("comparison ops produce bool, got {declared_ty}") });
                 }
                 // For comparisons, we need to figure out the operand type from the first operand
                 let lhs = self.resolve_var_ident()?;
                 let operand_ty = self.var_ty(lhs);
-                if operand_ty == ValType::Bool {
+                if operand_ty == ValType::BOOL {
                     return Err(ParseError { line, col, message: "cannot compare bools".to_string() });
                 }
                 let rhs = self.parse_operand(operand_ty)?;
@@ -747,7 +784,7 @@ impl Parser {
             Token::Neg | Token::Abs => {
                 let op = if sp.token == Token::Neg { UnaryOp::Neg } else { UnaryOp::Abs };
                 self.advance();
-                if declared_ty != ValType::F64 && declared_ty != ValType::U32 {
+                if !matches!(declared_ty, ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32)) {
                     return Err(ParseError { line, col, message: format!("{op:?} requires f64 or u32, got {declared_ty}") });
                 }
                 let arg = self.resolve_var_ident()?;
@@ -756,11 +793,11 @@ impl Parser {
             }
             Token::Not => {
                 self.advance();
-                if declared_ty != ValType::Bool {
+                if declared_ty != ValType::BOOL {
                     return Err(ParseError { line, col, message: format!("not requires bool, got {declared_ty}") });
                 }
                 let arg = self.resolve_var_ident()?;
-                self.check_types_match(ValType::Bool, self.var_ty(arg), "arg", line, col)?;
+                self.check_types_match(ValType::BOOL, self.var_ty(arg), "arg", line, col)?;
                 Ok(Inst::Unary { op: UnaryOp::Not, arg })
             }
             Token::Sqrt | Token::Floor | Token::Ceil
@@ -804,7 +841,7 @@ impl Parser {
                 }
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(ValType::F64, self.var_ty(arg), "arg", line, col)?;
-                Ok(Inst::Conv { op: ConvOp::F64ToU32, arg })
+                Ok(Inst::Conv { op: ConvOp::F64_TO_U32, arg })
             }
             Token::U32ToF64 => {
                 self.advance();
@@ -813,7 +850,7 @@ impl Parser {
                 }
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(ValType::U32, self.var_ty(arg), "arg", line, col)?;
-                Ok(Inst::Conv { op: ConvOp::U32ToF64, arg })
+                Ok(Inst::Conv { op: ConvOp::U32_TO_F64, arg })
             }
             Token::U32ToF64Norm => {
                 self.advance();
@@ -822,7 +859,7 @@ impl Parser {
                 }
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(ValType::U32, self.var_ty(arg), "arg", line, col)?;
-                Ok(Inst::Conv { op: ConvOp::U32ToF64Norm, arg })
+                Ok(Inst::Conv { op: ConvOp::U32_TO_F64_NORM, arg })
             }
             Token::Hash => {
                 self.advance();
@@ -838,7 +875,7 @@ impl Parser {
             Token::Select => {
                 self.advance();
                 let cond = self.resolve_var_ident()?;
-                self.check_types_match(ValType::Bool, self.var_ty(cond), "cond", line, col)?;
+                self.check_types_match(ValType::BOOL, self.var_ty(cond), "cond", line, col)?;
                 let then_val = self.resolve_var_ident()?;
                 let else_val = self.resolve_var_ident()?;
                 let tty = self.var_ty(then_val);
@@ -868,8 +905,8 @@ impl Parser {
                 self.check_types_match(ValType::F64, self.var_ty(x), "x", line, col)?;
                 let y = self.resolve_var_ident()?;
                 self.check_types_match(ValType::F64, self.var_ty(y), "y", line, col)?;
-                if declared_ty != ValType::Vec2 {
-                    return Err(ParseError { line, col, message: format!("make_vec2 result must be vec2, got {declared_ty}") });
+                if declared_ty != (ValType::Vec { len: 2, elem: ScalarType::F64 }) {
+                    return Err(ParseError { line, col, message: format!("make_vec2 result must be vec2<f64>, got {declared_ty}") });
                 }
                 Ok(Inst::MakeVec2 { x, y })
             }
@@ -881,8 +918,8 @@ impl Parser {
                 self.check_types_match(ValType::F64, self.var_ty(y), "y", line, col)?;
                 let z = self.resolve_var_ident()?;
                 self.check_types_match(ValType::F64, self.var_ty(z), "z", line, col)?;
-                if declared_ty != ValType::Vec3 {
-                    return Err(ParseError { line, col, message: format!("make_vec3 result must be vec3, got {declared_ty}") });
+                if declared_ty != (ValType::Vec { len: 3, elem: ScalarType::F64 }) {
+                    return Err(ParseError { line, col, message: format!("make_vec3 result must be vec3<f64>, got {declared_ty}") });
                 }
                 Ok(Inst::MakeVec3 { x, y, z })
             }
@@ -890,7 +927,7 @@ impl Parser {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if vec_ty != ValType::Vec2 && vec_ty != ValType::Vec3 {
+                if !matches!(vec_ty, ValType::Vec { len: 2 | 3, .. }) {
                     return Err(ParseError { line, col, message: format!("extract_x requires vec2 or vec3 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
@@ -902,7 +939,7 @@ impl Parser {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if vec_ty != ValType::Vec2 && vec_ty != ValType::Vec3 {
+                if !matches!(vec_ty, ValType::Vec { len: 2 | 3, .. }) {
                     return Err(ParseError { line, col, message: format!("extract_y requires vec2 or vec3 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
@@ -914,7 +951,7 @@ impl Parser {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if vec_ty != ValType::Vec3 {
+                if !matches!(vec_ty, ValType::Vec { len: 3, .. }) {
                     return Err(ParseError { line, col, message: format!("extract_z requires vec3 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
@@ -1009,10 +1046,11 @@ impl Parser {
                 let rhs = self.resolve_var_ident()?;
                 let lhs_ty = self.var_ty(lhs);
                 let rhs_ty = self.var_ty(rhs);
-                if lhs_ty != ValType::Vec3 || rhs_ty != ValType::Vec3 {
-                    return Err(ParseError { line, col, message: format!("vec_cross requires vec3 operands, got {lhs_ty} and {rhs_ty}") });
+                let vec3_f64 = ValType::Vec { len: 3, elem: ScalarType::F64 };
+                if lhs_ty != vec3_f64 || rhs_ty != vec3_f64 {
+                    return Err(ParseError { line, col, message: format!("vec_cross requires vec3<f64> operands, got {lhs_ty} and {rhs_ty}") });
                 }
-                if declared_ty != ValType::Vec3 {
+                if declared_ty != vec3_f64 {
                     return Err(ParseError { line, col, message: format!("vec_cross result must be vec3, got {declared_ty}") });
                 }
                 Ok(Inst::VecCross { lhs, rhs })
@@ -1067,12 +1105,12 @@ impl Parser {
     fn parse_const_literal(&mut self, declared_ty: ValType) -> Result<Inst, ParseError> {
         let sp = self.peek().clone();
         match (&sp.token, declared_ty) {
-            (Token::FloatLit(v), ValType::F64) => {
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v;
                 self.advance();
                 Ok(Inst::Const(Const::F64(v)))
             }
-            (Token::IntLit(v), ValType::U32) => {
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
                 if v > u32::MAX as u64 {
@@ -1080,16 +1118,16 @@ impl Parser {
                 }
                 Ok(Inst::Const(Const::U32(v as u32)))
             }
-            (Token::IntLit(v), ValType::F64) => {
+            (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
                 self.advance();
                 Ok(Inst::Const(Const::F64(v)))
             }
-            (Token::True, ValType::Bool) => {
+            (Token::True, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
                 Ok(Inst::Const(Const::Bool(true)))
             }
-            (Token::False, ValType::Bool) => {
+            (Token::False, ValType::Scalar(ScalarType::Bool)) => {
                 self.advance();
                 Ok(Inst::Const(Const::Bool(false)))
             }
@@ -1200,7 +1238,7 @@ impl Parser {
         self.expect_tok(&Token::Cond)?;
         let (cond_name, cond_line, cond_col) = self.expect_ident()?;
         let cond = self.resolve_var(&cond_name, cond_line, cond_col)?;
-        self.check_types_match(ValType::Bool, self.var_ty(cond), "cond", cond_line, cond_col)?;
+        self.check_types_match(ValType::BOOL, self.var_ty(cond), "cond", cond_line, cond_col)?;
 
         // Parse body: statements/whiles until `yield`
         let mut body: Vec<BodyItem> = Vec::new();
@@ -1465,19 +1503,19 @@ impl Parser {
             // Return var is a carry var — create an identity op to copy its value
             let remapped = var_map[&def.return_var];
             match def.return_ty {
-                ValType::F64 => {
+                ValType::Scalar(ScalarType::F64) => {
                     let zero = self.alloc_implicit(ValType::F64, Const::F64(0.0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
-                ValType::U32 => {
+                ValType::Scalar(ScalarType::U32) => {
                     let zero = self.alloc_implicit(ValType::U32, Const::U32(0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
-                ValType::Bool => {
-                    let f = self.alloc_implicit(ValType::Bool, Const::Bool(false));
+                ValType::Scalar(ScalarType::Bool) => {
+                    let f = self.alloc_implicit(ValType::BOOL, Const::Bool(false));
                     Ok(Inst::Binary { op: BinOp::Or, lhs: remapped, rhs: f })
                 }
-                ValType::Vec2 | ValType::Vec3 => {
+                ValType::Vec { .. } => {
                     // Identity: vec + zero-vec. Use vec_add with a zero-scaled copy.
                     let zero = self.alloc_implicit(ValType::F64, Const::F64(0.0));
                     let zero_vec_name = format!("__identity_zero_vec_{}", self.next_var);

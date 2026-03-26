@@ -12,12 +12,12 @@ fn mod_f(x: f64, y: f64) -> f64 {
 }
 
 // dot(v,v) convenience for vec2
-fn dot2v(v: vec2) -> f64 {
+fn dot2v(v: vec2<f64>) -> f64 {
     return dot(v, v);
 }
 
 // dot(v,v) convenience for vec3
-fn dot3v(v: vec3) -> f64 {
+fn dot3v(v: vec3<f64>) -> f64 {
     return dot(v, v);
 }
 

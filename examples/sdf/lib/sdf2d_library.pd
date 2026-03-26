@@ -7,24 +7,24 @@ use "sdf_helpers.pd";
 
 // --- Basic Shapes -----------------------------------------------------------
 
-fn sd_circle(p: vec2, r: f64) -> f64 {
+fn sd_circle(p: vec2<f64>, r: f64) -> f64 {
     return length(p) - r;
 }
 
-fn sd_box(p: vec2, b: vec2) -> f64 {
+fn sd_box(p: vec2<f64>, b: vec2<f64>) -> f64 {
     let d = abs(p) - b;
     return length(max(d, vec2(0.0, 0.0))) + min(max(d.x, d.y), 0.0);
 }
 
 // r_tl = vec2(top-left, bottom-left), r_tr = vec2(top-right, bottom-right)
-fn sd_rounded_box(p: vec2, b: vec2, r_tl: vec2, r_tr: vec2) -> f64 {
+fn sd_rounded_box(p: vec2<f64>, b: vec2<f64>, r_tl: vec2<f64>, r_tr: vec2<f64>) -> f64 {
     let rs = if p.x > 0.0 { r_tr } else { r_tl };
     let r = if p.y > 0.0 { rs.x } else { rs.y };
     let q = abs(p) - b + vec2(r, r);
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0, 0.0))) - r;
 }
 
-fn sd_chamfer_box(p: vec2, b: vec2, chamfer: f64) -> f64 {
+fn sd_chamfer_box(p: vec2<f64>, b: vec2<f64>, chamfer: f64) -> f64 {
     let a = abs(p) - b;
     // swap so x >= y
     let sx = if a.y > a.x { a.y } else { a.x };
@@ -36,14 +36,14 @@ fn sd_chamfer_box(p: vec2, b: vec2, chamfer: f64) -> f64 {
            else { length(vec2(sx, sy2)) };
 }
 
-fn sd_segment(p: vec2, a: vec2, b: vec2) -> f64 {
+fn sd_segment(p: vec2<f64>, a: vec2<f64>, b: vec2<f64>) -> f64 {
     let pa = p - a;
     let ba = b - a;
     let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
     return length(pa - h * ba);
 }
 
-fn sd_oriented_box(p: vec2, a: vec2, b: vec2, th: f64) -> f64 {
+fn sd_oriented_box(p: vec2<f64>, a: vec2<f64>, b: vec2<f64>, th: f64) -> f64 {
     let l = length(b - a);
     let d = (b - a) / l;
     // center and rotate: q = mat2(dx,-dy, dy,dx) * (p - center)
@@ -58,7 +58,7 @@ fn sd_oriented_box(p: vec2, a: vec2, b: vec2, th: f64) -> f64 {
 
 // --- Triangles --------------------------------------------------------------
 
-fn sd_equilateral_triangle(p: vec2, r: f64) -> f64 {
+fn sd_equilateral_triangle(p: vec2<f64>, r: f64) -> f64 {
     let k = sqrt(3.0);
     let ax = abs(p.x) - r;
     let ay = p.y + r / k;
@@ -70,7 +70,7 @@ fn sd_equilateral_triangle(p: vec2, r: f64) -> f64 {
     return -length(vec2(cx, cy)) * sign(cy);
 }
 
-fn sd_isosceles_triangle(p: vec2, q: vec2) -> f64 {
+fn sd_isosceles_triangle(p: vec2<f64>, q: vec2<f64>) -> f64 {
     let apx = abs(p.x);
     let h1 = clamp((apx * q.x + p.y * q.y) / dot(q, q), 0.0, 1.0);
     let aa = vec2(apx - q.x * h1, p.y - q.y * h1);
@@ -86,7 +86,7 @@ fn sd_isosceles_triangle(p: vec2, q: vec2) -> f64 {
     return -sqrt(md) * sign(ms);
 }
 
-fn sd_triangle(p: vec2, p0: vec2, p1: vec2, p2: vec2) -> f64 {
+fn sd_triangle(p: vec2<f64>, p0: vec2<f64>, p1: vec2<f64>, p2: vec2<f64>) -> f64 {
     let e0 = p1 - p0;
     let e1 = p2 - p1;
     let e2 = p0 - p2;
@@ -119,7 +119,7 @@ fn sd_triangle(p: vec2, p0: vec2, p1: vec2, p2: vec2) -> f64 {
 
 // --- Quadrilaterals ---------------------------------------------------------
 
-fn sd_rhombus(p: vec2, b: vec2) -> f64 {
+fn sd_rhombus(p: vec2<f64>, b: vec2<f64>) -> f64 {
     let nb = vec2(b.x, -b.y);
     let a = abs(p);
     let h = clamp((nb.x * a.x + nb.y * a.y + nb.y * nb.y) / dot(nb, nb), 0.0, 1.0);
@@ -127,7 +127,7 @@ fn sd_rhombus(p: vec2, b: vec2) -> f64 {
     return length(r) * sign(r.x);
 }
 
-fn sd_trapezoid(p: vec2, r1: f64, r2: f64, he: f64) -> f64 {
+fn sd_trapezoid(p: vec2<f64>, r1: f64, r2: f64, he: f64) -> f64 {
     let k1 = vec2(r2, he);
     let k2 = vec2(r2 - r1, 2.0 * he);
     let apx = abs(p.x);
@@ -141,7 +141,7 @@ fn sd_trapezoid(p: vec2, r1: f64, r2: f64, he: f64) -> f64 {
     return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
 }
 
-fn sd_parallelogram(p: vec2, wi: f64, he: f64, sk: f64) -> f64 {
+fn sd_parallelogram(p: vec2<f64>, wi: f64, he: f64, sk: f64) -> f64 {
     let e = vec2(sk, he);
     // p = (p.y<0.0)?-p:p
     let q = if p.y < 0.0 { -p } else { p };
@@ -172,7 +172,7 @@ fn sd_parallelogram(p: vec2, wi: f64, he: f64, sk: f64) -> f64 {
 
 // --- Capsules / Segments ----------------------------------------------------
 
-fn sd_uneven_capsule(p: vec2, r1: f64, r2: f64, h: f64) -> f64 {
+fn sd_uneven_capsule(p: vec2<f64>, r1: f64, r2: f64, h: f64) -> f64 {
     let apx = abs(p.x);
     let b = (r1 - r2) / h;
     let a = sqrt(1.0 - b * b);
@@ -184,7 +184,7 @@ fn sd_uneven_capsule(p: vec2, r1: f64, r2: f64, h: f64) -> f64 {
 
 // --- Regular Polygons -------------------------------------------------------
 
-fn sd_pentagon(p: vec2, r: f64) -> f64 {
+fn sd_pentagon(p: vec2<f64>, r: f64) -> f64 {
     let k = vec2(0.809016994, 0.587785252);
     let kz = 0.726542528;
     let apx = abs(p.x);
@@ -203,7 +203,7 @@ fn sd_pentagon(p: vec2, r: f64) -> f64 {
     return length(d) * sign(d.y);
 }
 
-fn sd_hexagon(p: vec2, r: f64) -> f64 {
+fn sd_hexagon(p: vec2<f64>, r: f64) -> f64 {
     let k = vec2(-0.866025404, 0.5);
     let kz = 0.577350269;
     let ap = abs(p);
@@ -216,7 +216,7 @@ fn sd_hexagon(p: vec2, r: f64) -> f64 {
     return length(d) * sign(d.y);
 }
 
-fn sd_octagon(p: vec2, r: f64) -> f64 {
+fn sd_octagon(p: vec2<f64>, r: f64) -> f64 {
     let k = vec2(-0.9238795325, 0.3826834323);
     let kz = 0.4142135623;
     let ap = abs(p);
@@ -234,7 +234,7 @@ fn sd_octagon(p: vec2, r: f64) -> f64 {
     return length(d) * sign(d.y);
 }
 
-fn sd_hexagram(p: vec2, r: f64) -> f64 {
+fn sd_hexagram(p: vec2<f64>, r: f64) -> f64 {
     let kx = -0.5;
     let ky = 0.8660254038;
     let kz = 0.5773502692;
@@ -254,7 +254,7 @@ fn sd_hexagram(p: vec2, r: f64) -> f64 {
     return length(d) * sign(d.y);
 }
 
-fn sd_pentagram(p: vec2, r: f64) -> f64 {
+fn sd_pentagram(p: vec2<f64>, r: f64) -> f64 {
     let k1x = 0.809016994;
     let k2x = 0.309016994;
     let k1y = 0.587785252;
@@ -279,7 +279,7 @@ fn sd_pentagram(p: vec2, r: f64) -> f64 {
 
 // --- Arcs / Pies / Rings ----------------------------------------------------
 
-fn sd_pie(p: vec2, c: vec2, r: f64) -> f64 {
+fn sd_pie(p: vec2<f64>, c: vec2<f64>, r: f64) -> f64 {
     let apx = abs(p.x);
     let l = length(vec2(apx, p.y)) - r;
     // closest point on pie edge
@@ -288,7 +288,7 @@ fn sd_pie(p: vec2, c: vec2, r: f64) -> f64 {
     return max(l, m * sign(c.y * apx - c.x * p.y));
 }
 
-fn sd_cut_disk(p: vec2, r: f64, h: f64) -> f64 {
+fn sd_cut_disk(p: vec2<f64>, r: f64, h: f64) -> f64 {
     let w = sqrt(r * r - h * h);
     let apx = abs(p.x);
     let s = max((h - r) * apx * apx + w * w * (h + r - 2.0 * p.y), h * apx - w * p.y);
@@ -297,14 +297,14 @@ fn sd_cut_disk(p: vec2, r: f64, h: f64) -> f64 {
            else { length(vec2(apx - w, p.y - h)) };
 }
 
-fn sd_arc(p: vec2, sc: vec2, ra: f64, rb: f64) -> f64 {
+fn sd_arc(p: vec2<f64>, sc: vec2<f64>, ra: f64, rb: f64) -> f64 {
     let apx = abs(p.x);
     let inner = if sc.y * apx > sc.x * p.y { length(vec2(apx - sc.x * ra, p.y - sc.y * ra)) }
                 else { abs(length(vec2(apx, p.y)) - ra) };
     return inner - rb;
 }
 
-fn sd_ring(p: vec2, n: vec2, r: f64, th: f64) -> f64 {
+fn sd_ring(p: vec2<f64>, n: vec2<f64>, r: f64, th: f64) -> f64 {
     let apx = abs(p.x);
     // Rotate: mat2(nx,ny,-ny,nx) * p  → col0=(nx,-ny), col1=(ny,nx)
     let q = vec2(n.x * apx + n.y * p.y, -n.y * apx + n.x * p.y);
@@ -314,7 +314,7 @@ fn sd_ring(p: vec2, n: vec2, r: f64, th: f64) -> f64 {
     return max(d1, d2);
 }
 
-fn sd_horseshoe(p: vec2, c: vec2, r: f64, w: vec2) -> f64 {
+fn sd_horseshoe(p: vec2<f64>, c: vec2<f64>, r: f64, w: vec2<f64>) -> f64 {
     let apx = abs(p.x);
     let l = length(vec2(apx, p.y));
     // Rotate: mat2(-cx, cy, cy, cx) → col0=(-cx,cy), col1=(cy,cx)
@@ -330,7 +330,7 @@ fn sd_horseshoe(p: vec2, c: vec2, r: f64, w: vec2) -> f64 {
 
 // --- Moon / Vesica ----------------------------------------------------------
 
-fn sd_moon(p: vec2, d: f64, ra: f64, rb: f64) -> f64 {
+fn sd_moon(p: vec2<f64>, d: f64, ra: f64, rb: f64) -> f64 {
     let apy = abs(p.y);
     let a = (ra * ra - rb * rb + d * d) / (2.0 * d);
     let b = sqrt(max(ra * ra - a * a, 0.0));
@@ -341,7 +341,7 @@ fn sd_moon(p: vec2, d: f64, ra: f64, rb: f64) -> f64 {
     };
 }
 
-fn sd_vesica(p: vec2, w: f64, h: f64) -> f64 {
+fn sd_vesica(p: vec2<f64>, w: f64, h: f64) -> f64 {
     let ap = abs(p);
     let d = 0.5 * (w * w - h * h) / h;
     // branch: w*apy < d*(apx - w)
@@ -353,7 +353,7 @@ fn sd_vesica(p: vec2, w: f64, h: f64) -> f64 {
     return length(vec2(ap.x - cy, ap.y - cx)) - cz;
 }
 
-fn sd_oriented_vesica(p: vec2, a: vec2, b: vec2, w: f64) -> f64 {
+fn sd_oriented_vesica(p: vec2<f64>, a: vec2<f64>, b: vec2<f64>, w: f64) -> f64 {
     let r = 0.5 * length(b - a);
     let d = 0.5 * (r * r - w * w) / w;
     let v = (b - a) / r;
@@ -372,7 +372,7 @@ fn sd_oriented_vesica(p: vec2, a: vec2, b: vec2, w: f64) -> f64 {
 
 // --- Egg / Heart ------------------------------------------------------------
 
-fn sd_egg(p: vec2, he: f64, ra: f64, rb: f64, bu: f64) -> f64 {
+fn sd_egg(p: vec2<f64>, he: f64, ra: f64, rb: f64, bu: f64) -> f64 {
     let r = 0.5 * (he + ra + rb) / bu;
     let da = r - ra;
     let db = r - rb;
@@ -384,7 +384,7 @@ fn sd_egg(p: vec2, he: f64, ra: f64, rb: f64, bu: f64) -> f64 {
            else { min(length(vec2(apx, p.y)) - ra, length(vec2(apx, p.y - he)) - rb) };
 }
 
-fn sd_heart(p: vec2) -> f64 {
+fn sd_heart(p: vec2<f64>) -> f64 {
     let apx = abs(p.x);
     let t = max(apx + p.y, 0.0);
     let v1 = vec2(apx - 0.25, p.y - 0.75);
@@ -399,7 +399,7 @@ fn sd_heart(p: vec2) -> f64 {
 
 // --- Crosses ----------------------------------------------------------------
 
-fn sd_cross(p: vec2, b: vec2, r: f64) -> f64 {
+fn sd_cross(p: vec2<f64>, b: vec2<f64>, r: f64) -> f64 {
     let ap = abs(p);
     // swap so x >= y
     let sx = if ap.y > ap.x { ap.y } else { ap.x };
@@ -411,13 +411,13 @@ fn sd_cross(p: vec2, b: vec2, r: f64) -> f64 {
     return sign(k) * length(vec2(max(wx, 0.0), max(wy, 0.0))) + r;
 }
 
-fn sd_rounded_x(p: vec2, w: f64, r: f64) -> f64 {
+fn sd_rounded_x(p: vec2<f64>, w: f64, r: f64) -> f64 {
     let ap = abs(p);
     let t = min(ap.x + ap.y, w) * 0.5;
     return length(vec2(ap.x - t, ap.y - t)) - r;
 }
 
-fn sd_rounded_cross(p: vec2, h: f64) -> f64 {
+fn sd_rounded_cross(p: vec2<f64>, h: f64) -> f64 {
     let k = 0.5 * (h + 1.0 / h);
     let ap = abs(p);
     let va = vec2(ap.x - 1.0, ap.y - k);
@@ -432,7 +432,7 @@ fn sd_rounded_cross(p: vec2, h: f64) -> f64 {
 
 // --- Star -------------------------------------------------------------------
 
-fn sd_star(p: vec2, r: f64, n: u32, m: f64) -> f64 {
+fn sd_star(p: vec2<f64>, r: f64, n: u32, m: f64) -> f64 {
     let an = 3.141593 / (n as f64);
     let en = 3.141593 / m;
     let acs = vec2(cos(an), sin(an));
@@ -449,7 +449,7 @@ fn sd_star(p: vec2, r: f64, n: u32, m: f64) -> f64 {
 
 // --- Tunnel / Stairs --------------------------------------------------------
 
-fn sd_tunnel(p: vec2, wh: vec2) -> f64 {
+fn sd_tunnel(p: vec2<f64>, wh: vec2<f64>) -> f64 {
     let apx = abs(p.x);
     let npy = -p.y;
     let q = vec2(apx - wh.x, npy - wh.y);
@@ -462,7 +462,7 @@ fn sd_tunnel(p: vec2, wh: vec2) -> f64 {
 
 // --- Ellipse (exact) --------------------------------------------------------
 
-fn sd_ellipse(p: vec2, ab: vec2) -> f64 {
+fn sd_ellipse(p: vec2<f64>, ab: vec2<f64>) -> f64 {
     let ap = abs(p);
     // Ensure ab.x < ab.y by swapping if needed
     let swap = ap.x > ap.y;
@@ -505,7 +505,7 @@ fn sd_ellipse(p: vec2, ab: vec2) -> f64 {
 
 // --- Parabola ---------------------------------------------------------------
 
-fn sd_parabola(p: vec2, k: f64) -> f64 {
+fn sd_parabola(p: vec2<f64>, k: f64) -> f64 {
     let apx = abs(p.x);
     let ik = 1.0 / k;
     let pp = ik * (p.y - 0.5 * ik) / 3.0;
@@ -519,7 +519,7 @@ fn sd_parabola(p: vec2, k: f64) -> f64 {
     return length(vec2(apx - x, p.y - k * x * x)) * sign(apx - x);
 }
 
-fn sd_parabola_wh(p: vec2, wi: f64, he: f64) -> f64 {
+fn sd_parabola_wh(p: vec2<f64>, wi: f64, he: f64) -> f64 {
     let apx = abs(p.x);
     let ik = wi * wi / he;
     let pp = ik * (he - p.y - 0.5 * ik) / 3.0;
@@ -536,7 +536,7 @@ fn sd_parabola_wh(p: vec2, wi: f64, he: f64) -> f64 {
 
 // --- Bezier (quadratic) -----------------------------------------------------
 
-fn sd_bezier(p: vec2, a_: vec2, b_: vec2, c_: vec2) -> f64 {
+fn sd_bezier(p: vec2<f64>, a_: vec2<f64>, b_: vec2<f64>, c_: vec2<f64>) -> f64 {
     // a = B - A, b = A - 2B + C, c = a*2, d = A - pos
     let aa = b_ - a_;
     let bb = a_ - 2.0 * b_ + c_;
@@ -575,7 +575,7 @@ fn sd_bezier(p: vec2, a_: vec2, b_: vec2, c_: vec2) -> f64 {
 
 // --- Blobby Cross -----------------------------------------------------------
 
-fn sd_blobby_cross(p: vec2, he: f64) -> f64 {
+fn sd_blobby_cross(p: vec2<f64>, he: f64) -> f64 {
     let ap = abs(p);
     // Rotate 45°: (|x-y|, 1-x-y) / sqrt(2)
     let rx = abs(ap.x - ap.y) / sqrt(2.0);
@@ -595,7 +595,7 @@ fn sd_blobby_cross(p: vec2, he: f64) -> f64 {
 
 // --- Cool S -----------------------------------------------------------------
 
-fn sd_cool_s(p: vec2) -> f64 {
+fn sd_cool_s(p: vec2<f64>) -> f64 {
     let six = if p.y < 0.0 { -p.x } else { p.x };
     let apx = abs(p.x);
     let apy = abs(p.y) - 0.2;
@@ -620,7 +620,7 @@ fn sd_cool_s(p: vec2) -> f64 {
 
 // --- Circle Wave ------------------------------------------------------------
 
-fn sd_circle_wave(p: vec2, tb: f64, ra: f64) -> f64 {
+fn sd_circle_wave(p: vec2<f64>, tb: f64, ra: f64) -> f64 {
     let tb2 = 3.1415927 * 5.0 / 6.0 * max(tb, 0.0001);
     let co = vec2(ra * sin(tb2), ra * cos(tb2));
     let mx = abs(mod_f(p.x, co.x * 4.0) - co.x * 2.0);
@@ -635,7 +635,7 @@ fn sd_circle_wave(p: vec2, tb: f64, ra: f64) -> f64 {
 
 // --- Hyperbola --------------------------------------------------------------
 
-fn sd_hyperbola(p: vec2, k: f64, he: f64) -> f64 {
+fn sd_hyperbola(p: vec2<f64>, k: f64, he: f64) -> f64 {
     let ap = abs(p);
     // Rotate 45°
     let rx = (ap.x - ap.y) / sqrt(2.0);
@@ -660,7 +660,7 @@ fn sd_hyperbola(p: vec2, k: f64, he: f64) -> f64 {
 
 // --- Quadratic Circle -------------------------------------------------------
 
-fn sd_quadratic_circle(p: vec2) -> f64 {
+fn sd_quadratic_circle(p: vec2<f64>) -> f64 {
     let ap = abs(p);
     let ex = if ap.y > ap.x { ap.y } else { ap.x };
     let ey = if ap.y > ap.x { ap.x } else { ap.y };
@@ -681,7 +681,7 @@ fn sd_quadratic_circle(p: vec2) -> f64 {
 
 // --- Stairs (simplified — no matrix rotation for clarity) -------------------
 
-fn sd_stairs(p: vec2, wh: vec2, n: f64) -> f64 {
+fn sd_stairs(p: vec2<f64>, wh: vec2<f64>, n: f64) -> f64 {
     let ba = n * wh;
     // Distance to bottom and right edges
     let cx = clamp(p.x, 0.0, ba.x);

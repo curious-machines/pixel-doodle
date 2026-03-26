@@ -71,9 +71,9 @@ impl Lowerer {
                 let var = self.auto_var("lit", *ty);
                 let name = self.binding_name(var);
                 let c = match ty {
-                    ValType::F64 => Const::F64(*v as f64),
-                    ValType::U32 => Const::U32(*v as u32),
-                    ValType::Bool | ValType::Vec2 | ValType::Vec3 => unreachable!(),
+                    ValType::Scalar(ScalarType::F64) => Const::F64(*v as f64),
+                    ValType::Scalar(ScalarType::U32) => Const::U32(*v as u32),
+                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
                 var
@@ -85,9 +85,9 @@ impl Lowerer {
                 var
             }
             TExpr::BoolLit(v) => {
-                let var = self.auto_var("lit", ValType::Bool);
+                let var = self.auto_var("lit", ValType::BOOL);
                 let name = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::Bool, Inst::Const(Const::Bool(*v)))));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::BOOL, Inst::Const(Const::Bool(*v)))));
                 var
             }
             TExpr::Ident(name, _) => {
@@ -195,8 +195,8 @@ impl Lowerer {
                 let var = self.auto_var("conv", *to);
                 let vname = self.binding_name(var);
                 let conv_op = match (expr.ty(), to) {
-                    (ValType::F64, ValType::U32) => ConvOp::F64ToU32,
-                    (ValType::U32, ValType::F64) => ConvOp::U32ToF64,
+                    (ValType::Scalar(ScalarType::F64), ValType::Scalar(ScalarType::U32)) => ConvOp::F64_TO_U32,
+                    (ValType::Scalar(ScalarType::U32), ValType::Scalar(ScalarType::F64)) => ConvOp::U32_TO_F64,
                     _ => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, *to, Inst::Conv { op: conv_op, arg })));
@@ -227,7 +227,7 @@ impl Lowerer {
                     }
                     let var = self.auto_var("sel", *ty);
                     let name = self.binding_name(var);
-                    let inst = if *ty == ValType::Vec2 {
+                    let inst = if matches!(*ty, ValType::Vec { len: 2, .. }) {
                         Inst::MakeVec2 { x: components[0], y: components[1] }
                     } else {
                         Inst::MakeVec3 { x: components[0], y: components[1], z: components[2] }
@@ -322,9 +322,10 @@ impl Lowerer {
             "vec2" => {
                 let x = self.lower_expr(&args[0], out);
                 let y = self.lower_expr(&args[1], out);
-                let var = self.auto_var("tmp", ValType::Vec2);
+                let ty = ValType::Vec { len: 2, elem: ScalarType::F64 };
+                let var = self.auto_var("tmp", ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec2,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::MakeVec2 { x, y })));
                 return Some(var);
             }
@@ -332,9 +333,10 @@ impl Lowerer {
                 let x = self.lower_expr(&args[0], out);
                 let y = self.lower_expr(&args[1], out);
                 let z = self.lower_expr(&args[2], out);
-                let var = self.auto_var("tmp", ValType::Vec3);
+                let ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
+                let var = self.auto_var("tmp", ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec3,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::MakeVec3 { x, y, z })));
                 return Some(var);
             }
@@ -359,9 +361,10 @@ impl Lowerer {
             "cross" => {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
-                let var = self.auto_var("tmp", ValType::Vec3);
+                let ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
+                let var = self.auto_var("tmp", ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Vec3,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::VecCross { lhs: a, rhs: b })));
                 return Some(var);
             }
@@ -503,7 +506,7 @@ impl Lowerer {
                 let var = self.auto_var("conv", ValType::U32);
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
-                    Inst::Conv { op: ConvOp::F64ToU32, arg })));
+                    Inst::Conv { op: ConvOp::F64_TO_U32, arg })));
                 return Some(var);
             }
             "u32_to_f64" => {
@@ -511,7 +514,7 @@ impl Lowerer {
                 let var = self.auto_var("conv", ValType::F64);
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
-                    Inst::Conv { op: ConvOp::U32ToF64, arg })));
+                    Inst::Conv { op: ConvOp::U32_TO_F64, arg })));
                 return Some(var);
             }
             "norm" => {
@@ -519,7 +522,7 @@ impl Lowerer {
                 let var = self.auto_var("conv", ValType::F64);
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
-                    Inst::Conv { op: ConvOp::U32ToF64Norm, arg })));
+                    Inst::Conv { op: ConvOp::U32_TO_F64_NORM, arg })));
                 return Some(var);
             }
             _ => {}
@@ -734,9 +737,9 @@ impl Lowerer {
                 // step(edge, x) = if x < edge { 0.0 } else { 1.0 }
                 let edge = self.lower_expr(&args[0], out);
                 let x = self.lower_expr(&args[1], out);
-                let cond = self.auto_var("tmp", ValType::Bool);
+                let cond = self.auto_var("tmp", ValType::BOOL);
                 let cn = self.binding_name(cond);
-                out.push(BodyItem::Stmt(self.emit_stmt(cond, &cn, ValType::Bool,
+                out.push(BodyItem::Stmt(self.emit_stmt(cond, &cn, ValType::BOOL,
                     Inst::Cmp { op: CmpOp::Lt, lhs: x, rhs: edge })));
                 let z = self.auto_var("lit", ValType::F64);
                 let zn = self.binding_name(z);
@@ -796,15 +799,15 @@ impl Lowerer {
         let ru = self.auto_var("conv", ValType::U32);
         let run = self.binding_name(ru);
         out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: rs })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: rs })));
         let gu = self.auto_var("conv", ValType::U32);
         let gun = self.binding_name(gu);
         out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: gs })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: gs })));
         let bu = self.auto_var("conv", ValType::U32);
         let bun = self.binding_name(bu);
         out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: bs })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: bs })));
 
         let packed = self.auto_var("tmp", ValType::U32);
         let pn = self.binding_name(packed);
@@ -821,15 +824,15 @@ impl Lowerer {
         let ru = self.auto_var("conv", ValType::U32);
         let run = self.binding_name(ru);
         out.push(BodyItem::Stmt(self.emit_stmt(ru, &run, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: rv })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: rv })));
         let gu = self.auto_var("conv", ValType::U32);
         let gun = self.binding_name(gu);
         out.push(BodyItem::Stmt(self.emit_stmt(gu, &gun, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: gv })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: gv })));
         let bu = self.auto_var("conv", ValType::U32);
         let bun = self.binding_name(bu);
         out.push(BodyItem::Stmt(self.emit_stmt(bu, &bun, ValType::U32,
-            Inst::Conv { op: ConvOp::F64ToU32, arg: bv })));
+            Inst::Conv { op: ConvOp::F64_TO_U32, arg: bv })));
 
         let packed = self.auto_var("tmp", ValType::U32);
         let pn = self.binding_name(packed);
@@ -933,9 +936,9 @@ impl Lowerer {
             _ => unreachable!(),
         };
         let break_var = self.lower_expr(break_cond, &mut cond_body);
-        let cont_var = self.auto_var("cont", ValType::Bool);
+        let cont_var = self.auto_var("cont", ValType::BOOL);
         let cont_name = self.binding_name(cont_var);
-        cond_body.push(BodyItem::Stmt(self.emit_stmt(cont_var, &cont_name, ValType::Bool,
+        cond_body.push(BodyItem::Stmt(self.emit_stmt(cont_var, &cont_name, ValType::BOOL,
             Inst::Unary { op: UnaryOp::Not, arg: break_var })));
 
         // Loop body: statements after break_if (excluding yield)

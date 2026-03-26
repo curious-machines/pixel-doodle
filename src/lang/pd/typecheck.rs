@@ -1,4 +1,4 @@
-use crate::kernel_ir::ValType;
+use crate::kernel_ir::{ScalarType, ValType};
 use super::ast::*;
 use std::collections::HashMap;
 
@@ -69,7 +69,7 @@ impl TExpr {
             TExpr::FloatLit(_) => ValType::F64,
             TExpr::IntLit(_, ty) => *ty,
             TExpr::U32Lit(_) => ValType::U32,
-            TExpr::BoolLit(_) => ValType::Bool,
+            TExpr::BoolLit(_) => ValType::BOOL,
             TExpr::Ident(_, ty) => *ty,
             TExpr::BinOp { ty, .. } => *ty,
             TExpr::UnaryOp { ty, .. } => *ty,
@@ -196,15 +196,15 @@ impl Checker {
                     ValType::U32
                 });
                 match ty {
-                    ValType::F64 => Ok(TExpr::FloatLit(*v as f64)),
-                    ValType::U32 => {
+                    ValType::Scalar(ScalarType::F64) => Ok(TExpr::FloatLit(*v as f64)),
+                    ValType::Scalar(ScalarType::U32) => {
                         if *v > u32::MAX as u64 {
                             return Err(err(span, format!("integer {} too large for u32", v)));
                         }
                         Ok(TExpr::U32Lit(*v as u32))
                     }
-                    ValType::Bool => Err(err(span, "cannot use integer literal as bool".into())),
-                    ValType::Vec2 | ValType::Vec3 => Err(err(span, "cannot use integer literal as vec type".into())),
+                    ValType::Scalar(ScalarType::Bool) => Err(err(span, "cannot use integer literal as bool".into())),
+                    ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
                 }
             }
 
@@ -229,11 +229,11 @@ impl Checker {
                         Ok(TExpr::UnaryOp { op: *op, expr: Box::new(inner), ty })
                     }
                     UnaryOpKind::Not => {
-                        let inner = self.check_expr(inner, Some(ValType::Bool))?;
-                        if inner.ty() != ValType::Bool {
+                        let inner = self.check_expr(inner, Some(ValType::BOOL))?;
+                        if inner.ty() != ValType::BOOL {
                             return Err(err(span, format!("'!' requires bool, got {}", inner.ty())));
                         }
-                        Ok(TExpr::UnaryOp { op: *op, expr: Box::new(inner), ty: ValType::Bool })
+                        Ok(TExpr::UnaryOp { op: *op, expr: Box::new(inner), ty: ValType::BOOL })
                     }
                 }
             }
@@ -247,8 +247,8 @@ impl Checker {
                 let from = inner.ty();
                 // Validate the conversion exists
                 match (from, ty) {
-                    (ValType::F64, ValType::U32) |
-                    (ValType::U32, ValType::F64) => {}
+                    (ValType::Scalar(ScalarType::F64), ValType::Scalar(ScalarType::U32)) |
+                    (ValType::Scalar(ScalarType::U32), ValType::Scalar(ScalarType::F64)) => {}
                     _ => return Err(err(span, format!("cannot cast {} to {}", from, ty))),
                 }
                 Ok(TExpr::Cast { expr: Box::new(inner), from, to: *ty })
@@ -258,15 +258,15 @@ impl Checker {
                 let inner = self.check_expr(inner, None)?;
                 let inner_ty = inner.ty();
                 match (inner_ty, field.as_str()) {
-                    (ValType::Vec2, "x") | (ValType::Vec2, "y") |
-                    (ValType::Vec3, "x") | (ValType::Vec3, "y") | (ValType::Vec3, "z") => {
+                    (ValType::Vec { len: 2, .. }, "x") | (ValType::Vec { len: 2, .. }, "y") |
+                    (ValType::Vec { len: 3, .. }, "x") | (ValType::Vec { len: 3, .. }, "y") | (ValType::Vec { len: 3, .. }, "z") => {
                         Ok(TExpr::FieldAccess {
                             expr: Box::new(inner),
                             field: field.clone(),
                             ty: ValType::F64,
                         })
                     }
-                    (ValType::Vec2, "z") => {
+                    (ValType::Vec { len: 2, .. }, "z") => {
                         Err(err(span, "vec2 has no 'z' component".into()))
                     }
                     _ => {
@@ -276,8 +276,8 @@ impl Checker {
             }
 
             Expr::IfElse { cond, then_expr, else_expr, span } => {
-                let cond = self.check_expr(cond, Some(ValType::Bool))?;
-                if cond.ty() != ValType::Bool {
+                let cond = self.check_expr(cond, Some(ValType::BOOL))?;
+                if cond.ty() != ValType::BOOL {
                     return Err(err(span, format!("if condition must be bool, got {}", cond.ty())));
                 }
                 let then_val = self.check_expr(then_expr, expected)?;
@@ -305,12 +305,12 @@ impl Checker {
         match op {
             // Logical: bool × bool → bool
             And | Or => {
-                let l = self.check_expr(lhs, Some(ValType::Bool))?;
-                let r = self.check_expr(rhs, Some(ValType::Bool))?;
-                if l.ty() != ValType::Bool || r.ty() != ValType::Bool {
+                let l = self.check_expr(lhs, Some(ValType::BOOL))?;
+                let r = self.check_expr(rhs, Some(ValType::BOOL))?;
+                if l.ty() != ValType::BOOL || r.ty() != ValType::BOOL {
                     return Err(err(span, format!("logical op requires bool operands, got {} and {}", l.ty(), r.ty())));
                 }
-                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::Bool })
+                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::BOOL })
             }
 
             // Comparison: T × T → bool
@@ -325,9 +325,9 @@ impl Checker {
                     if l2.ty() != r2.ty() {
                         return Err(err(span, format!("comparison operands must match: {} vs {}", l2.ty(), r2.ty())));
                     }
-                    return Ok(TExpr::BinOp { op, lhs: Box::new(l2), rhs: Box::new(r2), ty: ValType::Bool });
+                    return Ok(TExpr::BinOp { op, lhs: Box::new(l2), rhs: Box::new(r2), ty: ValType::BOOL });
                 }
-                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::Bool })
+                Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: ValType::BOOL })
             }
 
             // Bitwise: u32 × u32 → u32
@@ -390,7 +390,7 @@ impl Checker {
                     return Ok(TExpr::BinOp { op, lhs: Box::new(l2), rhs: Box::new(r2), ty });
                 }
                 let ty = l.ty();
-                if ty == ValType::Bool {
+                if ty == ValType::BOOL {
                     return Err(err(span, "cannot do arithmetic on bool".into()));
                 }
                 if ty.is_vec() && op == Rem {
@@ -486,8 +486,8 @@ impl Checker {
                 }
                 let arg = self.check_expr(&args[0], None)?;
                 match arg.ty() {
-                    ValType::F64 => return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty: ValType::F64 })),
-                    ValType::Vec2 | ValType::Vec3 => {
+                    ValType::Scalar(ScalarType::F64) => return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty: ValType::F64 })),
+                    ValType::Vec { .. } => {
                         let ty = arg.ty();
                         return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty }));
                     }
@@ -504,7 +504,7 @@ impl Checker {
                     return Err(err(span, format!("'{}' arguments must match: {} vs {}", name, a.ty(), b.ty())));
                 }
                 match a.ty() {
-                    ValType::F64 | ValType::U32 | ValType::Vec2 | ValType::Vec3 => {
+                    ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::U32) | ValType::Vec { .. } => {
                         let ty = a.ty();
                         return Ok(Some(TExpr::Call { name: name.to_string(), args: vec![a, b], ty }));
                     }
@@ -520,7 +520,7 @@ impl Checker {
                 if x.ty() != ValType::F64 || y.ty() != ValType::F64 {
                     return Err(err(span, "vec2 arguments must be f64".into()));
                 }
-                return Ok(Some(TExpr::Call { name: "vec2".into(), args: vec![x, y], ty: ValType::Vec2 }));
+                return Ok(Some(TExpr::Call { name: "vec2".into(), args: vec![x, y], ty: ValType::Vec { len: 2, elem: ScalarType::F64 } }));
             }
             "vec3" => {
                 if args.len() != 3 {
@@ -532,7 +532,7 @@ impl Checker {
                 if x.ty() != ValType::F64 || y.ty() != ValType::F64 || z.ty() != ValType::F64 {
                     return Err(err(span, "vec3 arguments must be f64".into()));
                 }
-                return Ok(Some(TExpr::Call { name: "vec3".into(), args: vec![x, y, z], ty: ValType::Vec3 }));
+                return Ok(Some(TExpr::Call { name: "vec3".into(), args: vec![x, y, z], ty: ValType::Vec { len: 3, elem: ScalarType::F64 } }));
             }
             "dot" => {
                 if args.len() != 2 {
@@ -560,12 +560,13 @@ impl Checker {
                 if args.len() != 2 {
                     return Err(err(span, "cross expects 2 arguments".into()));
                 }
-                let a = self.check_expr(&args[0], Some(ValType::Vec3))?;
-                let b = self.check_expr(&args[1], Some(ValType::Vec3))?;
-                if a.ty() != ValType::Vec3 || b.ty() != ValType::Vec3 {
+                let vec3_ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
+                let a = self.check_expr(&args[0], Some(vec3_ty))?;
+                let b = self.check_expr(&args[1], Some(vec3_ty))?;
+                if !matches!(a.ty(), ValType::Vec { len: 3, .. }) || !matches!(b.ty(), ValType::Vec { len: 3, .. }) {
                     return Err(err(span, format!("cross requires vec3 arguments, got {} and {}", a.ty(), b.ty())));
                 }
-                return Ok(Some(TExpr::Call { name: "cross".into(), args: vec![a, b], ty: ValType::Vec3 }));
+                return Ok(Some(TExpr::Call { name: "cross".into(), args: vec![a, b], ty: vec3_ty }));
             }
             "clamp" => {
                 if args.len() != 3 {
@@ -739,7 +740,7 @@ impl Checker {
                 if args.len() != 3 {
                     return Err(err(span, "select expects 3 arguments".into()));
                 }
-                let c = self.check_expr(&args[0], Some(ValType::Bool))?;
+                let c = self.check_expr(&args[0], Some(ValType::BOOL))?;
                 let t = self.check_expr(&args[1], None)?;
                 let e = self.check_expr(&args[2], Some(t.ty()))?;
                 let ty = t.ty();
@@ -811,8 +812,8 @@ impl Checker {
             }
 
             Stmt::BreakIf { cond, span } => {
-                let tcond = self.check_expr(cond, Some(ValType::Bool))?;
-                if tcond.ty() != ValType::Bool {
+                let tcond = self.check_expr(cond, Some(ValType::BOOL))?;
+                if tcond.ty() != ValType::BOOL {
                     return Err(err(span, format!("break_if condition must be bool, got {}", tcond.ty())));
                 }
                 Ok(TStmt::BreakIf { cond: tcond })

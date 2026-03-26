@@ -8,24 +8,24 @@ use "sdf_helpers.pd";
 // --- Primitives (exact) -----------------------------------------------------
 
 // Sphere centered at origin
-fn sdSphere(p: vec3, r: f64) -> f64 {
+fn sdSphere(p: vec3<f64>, r: f64) -> f64 {
     return length(p) - r;
 }
 
 // Axis-aligned box
-fn sdBox(p: vec3, b: vec3) -> f64 {
+fn sdBox(p: vec3<f64>, b: vec3<f64>) -> f64 {
     let q = abs(p) - b;
     return length(max(q, vec3(0.0, 0.0, 0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
 // Rounded box
-fn sdRoundBox(p: vec3, b: vec3, r: f64) -> f64 {
+fn sdRoundBox(p: vec3<f64>, b: vec3<f64>, r: f64) -> f64 {
     let q = abs(p) - b + vec3(r, r, r);
     return length(max(q, vec3(0.0, 0.0, 0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 }
 
 // Box frame — hollow box edges
-fn sdBoxFrame(p: vec3, b: vec3, e: f64) -> f64 {
+fn sdBoxFrame(p: vec3<f64>, b: vec3<f64>, e: f64) -> f64 {
     let pa = abs(p) - b;
     let q = abs(pa + vec3(e, e, e)) - vec3(e, e, e);
     let d1 = length(max(vec3(pa.x, q.y, q.z), vec3(0.0, 0.0, 0.0)))
@@ -38,13 +38,13 @@ fn sdBoxFrame(p: vec3, b: vec3, e: f64) -> f64 {
 }
 
 // Torus (major radius tx, minor radius ty)
-fn sdTorus(p: vec3, tx: f64, ty: f64) -> f64 {
+fn sdTorus(p: vec3<f64>, tx: f64, ty: f64) -> f64 {
     let q = vec2(length(vec2(p.x, p.z)) - tx, p.y);
     return length(q) - ty;
 }
 
 // Capped torus — sc = vec2(sin,cos) of aperture angle
-fn sdCappedTorus(p: vec3, sc: vec2, ra: f64, rb: f64) -> f64 {
+fn sdCappedTorus(p: vec3<f64>, sc: vec2<f64>, ra: f64, rb: f64) -> f64 {
     let px = abs(p.x);
     let pxy = vec2(px, p.y);
     let k = if sc.y * px > sc.x * p.y { dot(pxy, sc) } else { length(pxy) };
@@ -52,13 +52,13 @@ fn sdCappedTorus(p: vec3, sc: vec2, ra: f64, rb: f64) -> f64 {
 }
 
 // Chain link
-fn sdLink(p: vec3, le: f64, r1: f64, r2: f64) -> f64 {
+fn sdLink(p: vec3<f64>, le: f64, r1: f64, r2: f64) -> f64 {
     let q = vec3(p.x, max(abs(p.y) - le, 0.0), p.z);
     return length(vec2(length(vec2(q.x, q.y)) - r1, q.z)) - r2;
 }
 
 // Capsule between two endpoints
-fn sdCapsule(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
+fn sdCapsule(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, r: f64) -> f64 {
     let pa = p - a;
     let ba = b - a;
     let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
@@ -66,20 +66,20 @@ fn sdCapsule(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
 }
 
 // Vertical capsule (base at origin, height h along +Y)
-fn sdVerticalCapsule(p: vec3, h: f64, r: f64) -> f64 {
+fn sdVerticalCapsule(p: vec3<f64>, h: f64, r: f64) -> f64 {
     let py = p.y - clamp(p.y, 0.0, h);
     let q = vec3(p.x, py, p.z);
     return length(q) - r;
 }
 
 // Vertical capped cylinder (centered at origin)
-fn sdCappedCylinder(p: vec3, r: f64, h: f64) -> f64 {
+fn sdCappedCylinder(p: vec3<f64>, r: f64, h: f64) -> f64 {
     let d = abs(vec2(length(vec2(p.x, p.z)), p.y)) - vec2(r, h);
     return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0, 0.0)));
 }
 
 // Capped cylinder between arbitrary endpoints a and b
-fn sdCappedCylinderAB(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
+fn sdCappedCylinderAB(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, r: f64) -> f64 {
     let ba = b - a;
     let pa = p - a;
     let baba = dot(ba, ba);
@@ -97,13 +97,13 @@ fn sdCappedCylinderAB(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
 }
 
 // Rounded cylinder
-fn sdRoundedCylinder(p: vec3, ra: f64, rb: f64, h: f64) -> f64 {
+fn sdRoundedCylinder(p: vec3<f64>, ra: f64, rb: f64, h: f64) -> f64 {
     let d = vec2(length(vec2(p.x, p.z)) - ra + rb, abs(p.y) - h + rb);
     return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0, 0.0))) - rb;
 }
 
 // Finite cone — c = vec2(sin, cos) of angle, h = height
-fn sdCone(p: vec3, c: vec2, h: f64) -> f64 {
+fn sdCone(p: vec3<f64>, c: vec2<f64>, h: f64) -> f64 {
     let q = vec2(c.x / c.y, -1.0) * h;
     let w = vec2(length(vec2(p.x, p.z)), p.y);
     let a = w - q * clamp(dot(w, q) / dot(q, q), 0.0, 1.0);
@@ -115,12 +115,12 @@ fn sdCone(p: vec3, c: vec2, h: f64) -> f64 {
 }
 
 // Infinite plane with normal n and offset h
-fn sdPlane(p: vec3, n: vec3, h: f64) -> f64 {
+fn sdPlane(p: vec3<f64>, n: vec3<f64>, h: f64) -> f64 {
     return dot(p, n) + h;
 }
 
 // Hexagonal prism — h.x = edge length, h.y = half-height
-fn sdHexPrism(p: vec3, h: vec2) -> f64 {
+fn sdHexPrism(p: vec3<f64>, h: vec2<f64>) -> f64 {
     let kx = -0.8660254;
     let ky = 0.5;
     let kz = 0.57735;
@@ -138,7 +138,7 @@ fn sdHexPrism(p: vec3, h: vec2) -> f64 {
 }
 
 // Vertical capped cone (centered at origin, radii r1 at bottom, r2 at top)
-fn sdCappedCone(p: vec3, h: f64, r1: f64, r2: f64) -> f64 {
+fn sdCappedCone(p: vec3<f64>, h: f64, r1: f64, r2: f64) -> f64 {
     let q = vec2(length(vec2(p.x, p.z)), p.y);
     let k1 = vec2(r2, h);
     let k2 = vec2(r2 - r1, 2.0 * h);
@@ -152,7 +152,7 @@ fn sdCappedCone(p: vec3, h: f64, r1: f64, r2: f64) -> f64 {
 }
 
 // Capped cone between arbitrary endpoints
-fn sdCappedConeAB(p: vec3, a: vec3, b: vec3, ra: f64, rb: f64) -> f64 {
+fn sdCappedConeAB(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, ra: f64, rb: f64) -> f64 {
     let rba = rb - ra;
     let baba = dot(b - a, b - a);
     let papa = dot(p - a, p - a);
@@ -169,7 +169,7 @@ fn sdCappedConeAB(p: vec3, a: vec3, b: vec3, ra: f64, rb: f64) -> f64 {
 }
 
 // Solid angle — c = vec2(sin, cos) of angle
-fn sdSolidAngle(p: vec3, c: vec2, ra: f64) -> f64 {
+fn sdSolidAngle(p: vec3<f64>, c: vec2<f64>, ra: f64) -> f64 {
     let q = vec2(length(vec2(p.x, p.z)), p.y);
     let l = length(q) - ra;
     let m = length(q - c * clamp(dot(q, c), 0.0, ra));
@@ -177,7 +177,7 @@ fn sdSolidAngle(p: vec3, c: vec2, ra: f64) -> f64 {
 }
 
 // Cut sphere — sphere with bottom cut at height h
-fn sdCutSphere(p: vec3, r: f64, h: f64) -> f64 {
+fn sdCutSphere(p: vec3<f64>, r: f64, h: f64) -> f64 {
     let w = sqrt(r * r - h * h);
     let q = vec2(length(vec2(p.x, p.z)), p.y);
     let s = max((h - r) * q.x * q.x + w * w * (h + r - 2.0 * q.y), h * q.x - w * q.y);
@@ -189,7 +189,7 @@ fn sdCutSphere(p: vec3, r: f64, h: f64) -> f64 {
 }
 
 // Cut hollow sphere
-fn sdCutHollowSphere(p: vec3, r: f64, h: f64, t: f64) -> f64 {
+fn sdCutHollowSphere(p: vec3<f64>, r: f64, h: f64, t: f64) -> f64 {
     let w = sqrt(r * r - h * h);
     let q = vec2(length(vec2(p.x, p.z)), p.y);
     let d = if h * q.x < w * q.y { length(q - vec2(w, h)) } else { abs(length(q) - r) };
@@ -197,7 +197,7 @@ fn sdCutHollowSphere(p: vec3, r: f64, h: f64, t: f64) -> f64 {
 }
 
 // Death star — sphere ra with sphere rb scooped out at distance d along x
-fn sdDeathStar(p: vec3, ra: f64, rb: f64, d: f64) -> f64 {
+fn sdDeathStar(p: vec3<f64>, ra: f64, rb: f64, d: f64) -> f64 {
     let a2 = (ra * ra - rb * rb + d * d) / (2.0 * d);
     let b2 = sqrt(max(ra * ra - a2 * a2, 0.0));
     let q = vec2(p.x, length(vec2(p.y, p.z)));
@@ -207,7 +207,7 @@ fn sdDeathStar(p: vec3, ra: f64, rb: f64, d: f64) -> f64 {
 }
 
 // Vertical round cone (base r1 at origin, r2 at height h)
-fn sdRoundCone(p: vec3, r1: f64, r2: f64, h: f64) -> f64 {
+fn sdRoundCone(p: vec3<f64>, r1: f64, r2: f64, h: f64) -> f64 {
     let b = (r1 - r2) / h;
     let a = sqrt(1.0 - b * b);
     let q = vec2(length(vec2(p.x, p.z)), p.y);
@@ -218,7 +218,7 @@ fn sdRoundCone(p: vec3, r1: f64, r2: f64, h: f64) -> f64 {
 }
 
 // Round cone between arbitrary endpoints
-fn sdRoundConeAB(p: vec3, a: vec3, b: vec3, r1: f64, r2: f64) -> f64 {
+fn sdRoundConeAB(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, r1: f64, r2: f64) -> f64 {
     let ba = b - a;
     let l2 = dot(ba, ba);
     let rr = r1 - r2;
@@ -238,7 +238,7 @@ fn sdRoundConeAB(p: vec3, a: vec3, b: vec3, r1: f64, r2: f64) -> f64 {
 }
 
 // Ellipsoid (approximate)
-fn sdEllipsoid(p: vec3, r: vec3) -> f64 {
+fn sdEllipsoid(p: vec3<f64>, r: vec3<f64>) -> f64 {
     let px = p.x / r.x;
     let py = p.y / r.y;
     let pz = p.z / r.z;
@@ -253,7 +253,7 @@ fn sdEllipsoid(p: vec3, r: vec3) -> f64 {
 }
 
 // Rhombus — la, lb = half diagonals, h = half thickness, ra = rounding
-fn sdRhombus(p: vec3, la: f64, lb: f64, h: f64, ra: f64) -> f64 {
+fn sdRhombus(p: vec3<f64>, la: f64, lb: f64, h: f64, ra: f64) -> f64 {
     let ap = abs(p);
     let f = clamp((la * ap.x - lb * ap.z + lb * lb) / (la * la + lb * lb), 0.0, 1.0);
     let w = vec2(ap.x, ap.z) - vec2(la, lb) * vec2(f, 1.0 - f);
@@ -262,7 +262,7 @@ fn sdRhombus(p: vec3, la: f64, lb: f64, h: f64, ra: f64) -> f64 {
 }
 
 // Octahedron (exact)
-fn sdOctahedron(p: vec3, s: f64) -> f64 {
+fn sdOctahedron(p: vec3<f64>, s: f64) -> f64 {
     let ap = abs(p);
     let m = ap.x + ap.y + ap.z - s;
     // Select face — reorder components so q.x is smallest
@@ -276,7 +276,7 @@ fn sdOctahedron(p: vec3, s: f64) -> f64 {
 }
 
 // Pyramid with unit square base, height h
-fn sdPyramid(p: vec3, h: f64) -> f64 {
+fn sdPyramid(p: vec3<f64>, h: f64) -> f64 {
     let m2 = h * h + 0.25;
     // abs and conditional swap of xz
     let ax = abs(p.x);
@@ -299,7 +299,7 @@ fn sdPyramid(p: vec3, h: f64) -> f64 {
 // --- Unsigned Distances ------------------------------------------------------
 
 // Unsigned distance to triangle
-fn udTriangle(p: vec3, a: vec3, b: vec3, c: vec3) -> f64 {
+fn udTriangle(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, c: vec3<f64>) -> f64 {
     let ba = b - a;
     let pa = p - a;
     let cb = c - b;
@@ -323,7 +323,7 @@ fn udTriangle(p: vec3, a: vec3, b: vec3, c: vec3) -> f64 {
 }
 
 // Unsigned distance to quad
-fn udQuad(p: vec3, a: vec3, b: vec3, c: vec3, d: vec3) -> f64 {
+fn udQuad(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, c: vec3<f64>, d: vec3<f64>) -> f64 {
     let ba = b - a;
     let pa = p - a;
     let cb = c - b;
@@ -353,7 +353,7 @@ fn udQuad(p: vec3, a: vec3, b: vec3, c: vec3, d: vec3) -> f64 {
 
 // --- Demo: Raymarched scene -------------------------------------------------
 
-fn map(p: vec3) -> f64 {
+fn map(p: vec3<f64>) -> f64 {
     let d_box = sdRoundBox(p - vec3(0.0, 0.0, 0.0), vec3(0.3, 0.3, 0.3), 0.05);
     let d_sphere = sdSphere(p - vec3(0.5, 0.2, 0.0), 0.3);
     let d_torus = sdTorus(p - vec3(-0.3, 0.4, 0.3), 0.35, 0.1);
@@ -362,7 +362,7 @@ fn map(p: vec3) -> f64 {
 }
 
 // Tetrahedron technique for SDF normals
-fn calc_normal(p: vec3) -> vec3 {
+fn calc_normal(p: vec3<f64>) -> vec3<f64> {
     let eps = 0.0005;
     let k = 0.5773;
     let e1 = vec3( k, -k, -k);

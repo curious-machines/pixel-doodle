@@ -5,7 +5,7 @@ fn sd_circle(px: f64, py: f64, r: f64) -> f64 {
     return length(px, py) - r;
 }
 
-fn wobble(position: vec2, frequency: vec2, amount: vec2) -> vec2 { 
+fn wobble(position: vec2<f64>, frequency: vec2<f64>, amount: vec2<f64>) -> vec2<f64> { 
     let wx = sin(position.y * frequency.x) * amount.x;                                                                                   
     let wy = sin(position.x * frequency.y) * amount.y;                                                                                   
     let wobble = vec2(wx, wy);                                                                                                           

@@ -6,47 +6,73 @@
 /// which are assigned `Var` indices in declaration order, and produces
 /// a `u32` ARGB color via `emit`.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValType {
+/// Scalar (non-compound) types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScalarType {
     F64,
     U32,
     Bool,
-    Vec2, // 2x f64
-    Vec3, // 3x f64
+}
+
+impl std::fmt::Display for ScalarType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScalarType::F64 => write!(f, "f64"),
+            ScalarType::U32 => write!(f, "u32"),
+            ScalarType::Bool => write!(f, "bool"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValType {
+    Scalar(ScalarType),
+    Vec { len: u8, elem: ScalarType }, // len in {2, 3, 4}
 }
 
 impl ValType {
+    // Convenience constants for common scalar types.
+    pub const F64: ValType = ValType::Scalar(ScalarType::F64);
+    pub const U32: ValType = ValType::Scalar(ScalarType::U32);
+    pub const BOOL: ValType = ValType::Scalar(ScalarType::Bool);
+
     /// Returns true if this is a vector type.
     pub fn is_vec(self) -> bool {
-        matches!(self, ValType::Vec2 | ValType::Vec3)
+        matches!(self, ValType::Vec { .. })
     }
 
-    /// Number of scalar components (1 for scalars, 2 for Vec2, 3 for Vec3).
+    /// Number of scalar components (1 for scalars, 2..4 for vectors).
     pub fn component_count(self) -> usize {
         match self {
-            ValType::Vec2 => 2,
-            ValType::Vec3 => 3,
-            _ => 1,
+            ValType::Vec { len, .. } => len as usize,
+            ValType::Scalar(_) => 1,
         }
     }
 
-    /// The element type of a vector (F64), or self for scalars.
-    pub fn element_type(self) -> ValType {
+    /// The element type of a vector, or the scalar type itself.
+    pub fn element_scalar(self) -> ScalarType {
         match self {
-            ValType::Vec2 | ValType::Vec3 => ValType::F64,
-            other => other,
+            ValType::Vec { elem, .. } => elem,
+            ValType::Scalar(s) => s,
         }
+    }
+
+    /// Returns true if this is a scalar type (not a compound type).
+    pub fn is_scalar(self) -> bool {
+        matches!(self, ValType::Scalar(_))
+    }
+
+    /// Returns true if this is a float type (f64 scalar or vec of f64).
+    pub fn is_float(self) -> bool {
+        self.element_scalar() == ScalarType::F64
     }
 }
 
 impl std::fmt::Display for ValType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValType::F64 => write!(f, "f64"),
-            ValType::U32 => write!(f, "u32"),
-            ValType::Bool => write!(f, "bool"),
-            ValType::Vec2 => write!(f, "vec2"),
-            ValType::Vec3 => write!(f, "vec3"),
+            ValType::Scalar(s) => write!(f, "{}", s),
+            ValType::Vec { len, elem } => write!(f, "vec{}<{}>", len, elem),
         }
     }
 }
@@ -123,11 +149,19 @@ pub enum UnaryOp {
     Fract,
 }
 
+/// Type conversion operation. `norm` indicates a normalizing conversion
+/// (e.g. u32 → f64 by dividing by 2^32).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConvOp {
-    F64ToU32,
-    U32ToF64,
-    U32ToF64Norm,
+pub struct ConvOp {
+    pub from: ScalarType,
+    pub to: ScalarType,
+    pub norm: bool,
+}
+
+impl ConvOp {
+    pub const F64_TO_U32: ConvOp = ConvOp { from: ScalarType::F64, to: ScalarType::U32, norm: false };
+    pub const U32_TO_F64: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::F64, norm: false };
+    pub const U32_TO_F64_NORM: ConvOp = ConvOp { from: ScalarType::U32, to: ScalarType::F64, norm: true };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

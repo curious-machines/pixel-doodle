@@ -352,8 +352,8 @@ fn lower_kernel_body(
                 let offset = builder.ins().iconst(I64, slot.offset as i64);
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
-                    ValType::F64 => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
-                    ValType::U32 => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }
@@ -407,7 +407,7 @@ fn lower_while(
     // Vec types expand to multiple Variables (one per component).
     let carry_vars: Vec<Vec<Variable>> = w.carry.iter().map(|cv| {
         match cv.binding.ty {
-            ValType::Vec2 => {
+            ValType::Vec { len: 2, .. } => {
                 let vx = builder.declare_var(F64);
                 let vy = builder.declare_var(F64);
                 let (ix, iy) = get_vec2(val_map, &cv.init);
@@ -415,7 +415,7 @@ fn lower_while(
                 builder.def_var(vy, iy);
                 vec![vx, vy]
             }
-            ValType::Vec3 => {
+            ValType::Vec { len: 3, .. } => {
                 let vx = builder.declare_var(F64);
                 let vy = builder.declare_var(F64);
                 let vz = builder.declare_var(F64);
@@ -427,9 +427,9 @@ fn lower_while(
             }
             _ => {
                 let cl_ty = match cv.binding.ty {
-                    ValType::F64 => F64,
-                    ValType::U32 => I32,
-                    ValType::Bool => I8,
+                    ValType::Scalar(ScalarType::F64) => F64,
+                    ValType::Scalar(ScalarType::U32) => I32,
+                    ValType::Scalar(ScalarType::Bool) => I8,
                     _ => unreachable!(),
                 };
                 let cl_var = builder.declare_var(cl_ty);
@@ -448,12 +448,12 @@ fn lower_while(
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
         match cv.binding.ty {
-            ValType::Vec2 => {
+            ValType::Vec { len: 2, .. } => {
                 let x = builder.use_var(carry_vars[i][0]);
                 let y = builder.use_var(carry_vars[i][1]);
                 val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
             }
-            ValType::Vec3 => {
+            ValType::Vec { len: 3, .. } => {
                 let x = builder.use_var(carry_vars[i][0]);
                 let y = builder.use_var(carry_vars[i][1]);
                 let z = builder.use_var(carry_vars[i][2]);
@@ -509,12 +509,12 @@ fn lower_while(
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
         match cv.binding.ty {
-            ValType::Vec2 => {
+            ValType::Vec { len: 2, .. } => {
                 let x = builder.use_var(carry_vars[i][0]);
                 let y = builder.use_var(carry_vars[i][1]);
                 val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
             }
-            ValType::Vec3 => {
+            ValType::Vec { len: 3, .. } => {
                 let x = builder.use_var(carry_vars[i][0]);
                 let y = builder.use_var(carry_vars[i][1]);
                 let z = builder.use_var(carry_vars[i][2]);
@@ -579,21 +579,21 @@ fn lower_inst(
             let l = get_scalar(val_map, lhs);
             let r = get_scalar(val_map, rhs);
             VarValues::Scalar(match (op, binding.ty) {
-                (BinOp::Add, ValType::F64) => builder.ins().fadd(l, r),
-                (BinOp::Sub, ValType::F64) => builder.ins().fsub(l, r),
-                (BinOp::Mul, ValType::F64) => builder.ins().fmul(l, r),
-                (BinOp::Div, ValType::F64) => builder.ins().fdiv(l, r),
-                (BinOp::Add, ValType::U32) => builder.ins().iadd(l, r),
-                (BinOp::Sub, ValType::U32) => builder.ins().isub(l, r),
-                (BinOp::Mul, ValType::U32) => builder.ins().imul(l, r),
-                (BinOp::Div, ValType::U32) => builder.ins().udiv(l, r),
-                (BinOp::Rem, ValType::F64) => {
+                (BinOp::Add, ValType::Scalar(ScalarType::F64)) => builder.ins().fadd(l, r),
+                (BinOp::Sub, ValType::Scalar(ScalarType::F64)) => builder.ins().fsub(l, r),
+                (BinOp::Mul, ValType::Scalar(ScalarType::F64)) => builder.ins().fmul(l, r),
+                (BinOp::Div, ValType::Scalar(ScalarType::F64)) => builder.ins().fdiv(l, r),
+                (BinOp::Add, ValType::Scalar(ScalarType::U32)) => builder.ins().iadd(l, r),
+                (BinOp::Sub, ValType::Scalar(ScalarType::U32)) => builder.ins().isub(l, r),
+                (BinOp::Mul, ValType::Scalar(ScalarType::U32)) => builder.ins().imul(l, r),
+                (BinOp::Div, ValType::Scalar(ScalarType::U32)) => builder.ins().udiv(l, r),
+                (BinOp::Rem, ValType::Scalar(ScalarType::F64)) => {
                     let q = builder.ins().fdiv(l, r);
                     let q_floor = builder.ins().floor(q);
                     let prod = builder.ins().fmul(q_floor, r);
                     builder.ins().fsub(l, prod)
                 }
-                (BinOp::Rem, ValType::U32) => builder.ins().urem(l, r),
+                (BinOp::Rem, ValType::Scalar(ScalarType::U32)) => builder.ins().urem(l, r),
                 (BinOp::BitAnd, _) => builder.ins().band(l, r),
                 (BinOp::BitOr, _) => builder.ins().bor(l, r),
                 (BinOp::BitXor, _) => builder.ins().bxor(l, r),
@@ -601,13 +601,13 @@ fn lower_inst(
                 (BinOp::Shr, _) => builder.ins().ushr(l, r),
                 (BinOp::And, _) => builder.ins().band(l, r),
                 (BinOp::Or, _) => builder.ins().bor(l, r),
-                (BinOp::Min, ValType::F64) => builder.ins().fmin(l, r),
-                (BinOp::Max, ValType::F64) => builder.ins().fmax(l, r),
-                (BinOp::Min, ValType::U32) => builder.ins().umin(l, r),
-                (BinOp::Max, ValType::U32) => builder.ins().umax(l, r),
-                (BinOp::Atan2, ValType::F64) => call_libm_f64_binary(module, builder, "atan2", l, r),
-                (BinOp::Pow, ValType::F64) => call_libm_f64_binary(module, builder, "pow", l, r),
-                (BinOp::Hash, ValType::U32) => {
+                (BinOp::Min, ValType::Scalar(ScalarType::F64)) => builder.ins().fmin(l, r),
+                (BinOp::Max, ValType::Scalar(ScalarType::F64)) => builder.ins().fmax(l, r),
+                (BinOp::Min, ValType::Scalar(ScalarType::U32)) => builder.ins().umin(l, r),
+                (BinOp::Max, ValType::Scalar(ScalarType::U32)) => builder.ins().umax(l, r),
+                (BinOp::Atan2, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "atan2", l, r),
+                (BinOp::Pow, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "pow", l, r),
+                (BinOp::Hash, ValType::Scalar(ScalarType::U32)) => {
                     // h = a * 0x45d9f3b + b
                     let hash_k = builder.ins().iconst(I32, 0x45d9f3bu32 as i64);
                     let h = builder.ins().imul(l, hash_k);
@@ -628,8 +628,8 @@ fn lower_inst(
         Inst::Unary { op, arg } => {
             let a = get_scalar(val_map, arg);
             VarValues::Scalar(match (op, binding.ty) {
-                (UnaryOp::Neg, ValType::F64) => builder.ins().fneg(a),
-                (UnaryOp::Neg, ValType::U32) => {
+                (UnaryOp::Neg, ValType::Scalar(ScalarType::F64)) => builder.ins().fneg(a),
+                (UnaryOp::Neg, ValType::Scalar(ScalarType::U32)) => {
                     let zero = builder.ins().iconst(I32, 0);
                     builder.ins().isub(zero, a)
                 }
@@ -637,8 +637,8 @@ fn lower_inst(
                     let one = builder.ins().iconst(I8, 1);
                     builder.ins().bxor(a, one)
                 }
-                (UnaryOp::Abs, ValType::F64) => builder.ins().fabs(a),
-                (UnaryOp::Abs, ValType::U32) => a,
+                (UnaryOp::Abs, ValType::Scalar(ScalarType::F64)) => builder.ins().fabs(a),
+                (UnaryOp::Abs, ValType::Scalar(ScalarType::U32)) => a,
                 (UnaryOp::Sqrt, _) => builder.ins().sqrt(a),
                 (UnaryOp::Floor, _) => builder.ins().floor(a),
                 (UnaryOp::Ceil, _) => builder.ins().ceil(a),
@@ -667,7 +667,7 @@ fn lower_inst(
             let r = get_scalar(val_map, rhs);
             let operand_ty = kernel.var_type(*lhs).unwrap();
             VarValues::Scalar(match operand_ty {
-                ValType::F64 => {
+                ValType::Scalar(ScalarType::F64) => {
                     let cc = match op {
                         CmpOp::Eq => FloatCC::Equal,
                         CmpOp::Ne => FloatCC::NotEqual,
@@ -678,7 +678,7 @@ fn lower_inst(
                     };
                     builder.ins().fcmp(cc, l, r)
                 }
-                ValType::U32 => {
+                ValType::Scalar(ScalarType::U32) => {
                     let cc = match op {
                         CmpOp::Eq => IntCC::Equal,
                         CmpOp::Ne => IntCC::NotEqual,
@@ -694,14 +694,15 @@ fn lower_inst(
         }
         Inst::Conv { op, arg } => {
             let a = get_scalar(val_map, arg);
-            VarValues::Scalar(match op {
-                ConvOp::F64ToU32 => builder.ins().fcvt_to_sint(I32, a),
-                ConvOp::U32ToF64 => builder.ins().fcvt_from_uint(F64, a),
-                ConvOp::U32ToF64Norm => {
+            VarValues::Scalar(match (op.from, op.to, op.norm) {
+                (ScalarType::F64, ScalarType::U32, false) => builder.ins().fcvt_to_sint(I32, a),
+                (ScalarType::U32, ScalarType::F64, false) => builder.ins().fcvt_from_uint(F64, a),
+                (ScalarType::U32, ScalarType::F64, true) => {
                     let f = builder.ins().fcvt_from_uint(F64, a);
                     let recip = builder.ins().f64const(1.0 / 4294967296.0);
                     builder.ins().fmul(f, recip)
                 }
+                _ => unreachable!("unsupported conversion"),
             })
         }
         Inst::Select { cond, then_val, else_val } => {
@@ -763,7 +764,7 @@ fn lower_inst(
         }
         Inst::VecBinary { op, lhs, rhs } => {
             match binding.ty {
-                ValType::Vec2 => {
+                ValType::Vec { len: 2, .. } => {
                     let (lx, ly) = get_vec2(val_map, lhs);
                     let (rx, ry) = get_vec2(val_map, rhs);
                     let apply = |builder: &mut FunctionBuilder, a, b| match op {
@@ -776,7 +777,7 @@ fn lower_inst(
                     };
                     VarValues::Vec2(apply(builder, lx, rx), apply(builder, ly, ry))
                 }
-                ValType::Vec3 => {
+                ValType::Vec { len: 3, .. } => {
                     let (lx, ly, lz) = get_vec3(val_map, lhs);
                     let (rx, ry, rz) = get_vec3(val_map, rhs);
                     let apply = |builder: &mut FunctionBuilder, a, b| match op {
@@ -795,11 +796,11 @@ fn lower_inst(
         Inst::VecScale { scalar, vec } => {
             let s = get_scalar(val_map, scalar);
             match binding.ty {
-                ValType::Vec2 => {
+                ValType::Vec { len: 2, .. } => {
                     let (vx, vy) = get_vec2(val_map, vec);
                     VarValues::Vec2(builder.ins().fmul(s, vx), builder.ins().fmul(s, vy))
                 }
-                ValType::Vec3 => {
+                ValType::Vec { len: 3, .. } => {
                     let (vx, vy, vz) = get_vec3(val_map, vec);
                     VarValues::Vec3(
                         builder.ins().fmul(s, vx),
@@ -812,7 +813,7 @@ fn lower_inst(
         }
         Inst::VecUnary { op: vec_op, arg } => {
             match binding.ty {
-                ValType::Vec2 => {
+                ValType::Vec { len: 2, .. } => {
                     let (ax, ay) = get_vec2(val_map, arg);
                     match vec_op {
                         VecUnaryOp::Neg => VarValues::Vec2(
@@ -835,7 +836,7 @@ fn lower_inst(
                         }
                     }
                 }
-                ValType::Vec3 => {
+                ValType::Vec { len: 3, .. } => {
                     let (ax, ay, az) = get_vec3(val_map, arg);
                     match vec_op {
                         VecUnaryOp::Neg => VarValues::Vec3(
@@ -869,14 +870,14 @@ fn lower_inst(
         Inst::VecDot { lhs, rhs } => {
             let operand_ty = kernel.var_type(*lhs).unwrap();
             VarValues::Scalar(match operand_ty {
-                ValType::Vec2 => {
+                ValType::Vec { len: 2, .. } => {
                     let (lx, ly) = get_vec2(val_map, lhs);
                     let (rx, ry) = get_vec2(val_map, rhs);
                     let xx = builder.ins().fmul(lx, rx);
                     let yy = builder.ins().fmul(ly, ry);
                     builder.ins().fadd(xx, yy)
                 }
-                ValType::Vec3 => {
+                ValType::Vec { len: 3, .. } => {
                     let (lx, ly, lz) = get_vec3(val_map, lhs);
                     let (rx, ry, rz) = get_vec3(val_map, rhs);
                     let xx = builder.ins().fmul(lx, rx);
@@ -891,14 +892,14 @@ fn lower_inst(
         Inst::VecLength { arg } => {
             let operand_ty = kernel.var_type(*arg).unwrap();
             VarValues::Scalar(match operand_ty {
-                ValType::Vec2 => {
+                ValType::Vec { len: 2, .. } => {
                     let (ax, ay) = get_vec2(val_map, arg);
                     let xx = builder.ins().fmul(ax, ax);
                     let yy = builder.ins().fmul(ay, ay);
                     let sum = builder.ins().fadd(xx, yy);
                     builder.ins().sqrt(sum)
                 }
-                ValType::Vec3 => {
+                ValType::Vec { len: 3, .. } => {
                     let (ax, ay, az) = get_vec3(val_map, arg);
                     let xx = builder.ins().fmul(ax, ax);
                     let yy = builder.ins().fmul(ay, ay);
@@ -1109,8 +1110,8 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
                 let offset = builder.ins().iconst(I64, slot.offset as i64);
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
-                    ValType::F64 => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
-                    ValType::U32 => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }

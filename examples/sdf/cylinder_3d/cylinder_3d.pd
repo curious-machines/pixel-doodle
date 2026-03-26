@@ -7,7 +7,7 @@ fn sign(x: f64) -> f64 {
 }
 
 // Exact SDF for a cylinder between endpoints a and b with radius r
-fn sd_cylinder(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
+fn sd_cylinder(p: vec3<f64>, a: vec3<f64>, b: vec3<f64>, r: f64) -> f64 {
     let ba = b - a;
     let pa = p - a;
     let baba = dot(ba, ba);
@@ -26,7 +26,7 @@ fn sd_cylinder(p: vec3, a: vec3, b: vec3, r: f64) -> f64 {
     return sign(d) * sqrt(abs(d)) / baba;
 }
 
-fn map(p: vec3) -> f64 {
+fn map(p: vec3<f64>) -> f64 {
     return sd_cylinder(p,
         vec3(-0.2, -0.3, -0.1),
         vec3(0.3, 0.3, 0.4),
@@ -34,7 +34,7 @@ fn map(p: vec3) -> f64 {
 }
 
 // Tetrahedron technique for SDF normals (iq)
-fn calc_normal(p: vec3) -> vec3 {
+fn calc_normal(p: vec3<f64>) -> vec3<f64> {
     let eps = 0.0005;
     // e.xyy = ( 1,-1,-1) * 0.5773
     // e.yyx = (-1,-1, 1) * 0.5773

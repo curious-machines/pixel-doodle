@@ -1,4 +1,4 @@
-use crate::kernel_ir::ValType;
+use crate::kernel_ir::{ValType, ScalarType};
 use super::ast::*;
 use super::lexer::{self, Token, Spanned};
 use std::cell::RefCell;
@@ -205,10 +205,25 @@ impl Parser {
         match self.peek() {
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
-            Token::TyBool => { self.advance(); Ok(ValType::Bool) }
-            Token::TyVec2 => { self.advance(); Ok(ValType::Vec2) }
-            Token::TyVec3 => { self.advance(); Ok(ValType::Vec3) }
+            Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
+            Token::TyVec2 | Token::TyVec3 => {
+                let len: u8 = if *self.peek() == Token::TyVec2 { 2 } else { 3 };
+                self.advance();
+                self.expect(&Token::Lt)?;
+                let elem = self.parse_scalar_type()?;
+                self.expect(&Token::Gt)?;
+                Ok(ValType::Vec { len, elem })
+            }
             _ => Err(self.error(format!("expected type, got '{}'", self.peek()))),
+        }
+    }
+
+    fn parse_scalar_type(&mut self) -> Result<ScalarType, ParseError> {
+        match self.peek() {
+            Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
+            Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
+            _ => Err(self.error(format!("expected scalar type, got '{}'", self.peek()))),
         }
     }
 

@@ -338,10 +338,12 @@ fn unaryop_name(op: UnaryOp) -> &'static str {
 }
 
 fn convop_name(op: ConvOp) -> &'static str {
-    match op {
-        ConvOp::F64ToU32 => "f64_to_u32",
-        ConvOp::U32ToF64 => "u32_to_f64",
-        ConvOp::U32ToF64Norm => "u32_to_f64_norm",
+    use ScalarType::*;
+    match (op.from, op.to, op.norm) {
+        (F64, U32, false) => "f64_to_u32",
+        (U32, F64, false) => "u32_to_f64",
+        (U32, F64, true) => "u32_to_f64_norm",
+        _ => "conv_unknown",
     }
 }
 
