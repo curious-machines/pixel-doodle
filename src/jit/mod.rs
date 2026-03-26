@@ -1,4 +1,53 @@
-use crate::kernel_ir::Kernel;
+use crate::kernel_ir::{Kernel, ValType};
+
+// ── Built-in parameter names ────────────────────────────────────────────
+// These are provided automatically by the tile loop; everything else in a
+// kernel's param list is a user-defined argument.
+
+pub const PIXEL_BUILTINS: &[&str] = &["x", "y", "px", "py", "sample_index", "time"];
+pub const SIM_BUILTINS: &[&str] = &["px", "py", "width", "height"];
+
+// ── User-argument layout ────────────────────────────────────────────────
+
+/// Describes one user-defined kernel argument and its position in the
+/// packed `user_args` byte buffer.
+#[derive(Debug, Clone)]
+pub struct UserArgSlot {
+    pub name: String,
+    pub offset: usize, // byte offset into the buffer
+    pub ty: ValType,
+}
+
+/// Compute the user-arg layout for a kernel given a set of built-in names.
+/// Returns the slots and the total buffer size in bytes.
+pub fn compute_user_arg_layout(kernel: &Kernel, builtins: &[&str]) -> (Vec<UserArgSlot>, usize) {
+    let mut offset: usize = 0;
+    let mut slots = Vec::new();
+    for param in &kernel.params {
+        if builtins.contains(&param.name.as_str()) {
+            continue;
+        }
+        let size = match param.ty {
+            ValType::F64 => 8usize,
+            ValType::U32 => 4usize,
+            _ => panic!("unsupported user-arg type {:?} for param '{}'", param.ty, param.name),
+        };
+        // Natural alignment
+        let align = size;
+        offset = (offset + align - 1) & !(align - 1);
+        slots.push(UserArgSlot {
+            name: param.name.clone(),
+            offset,
+            ty: param.ty,
+        });
+        offset += size;
+    }
+    // Align total size to 8 bytes for safety
+    let total = (offset + 7) & !7;
+    (slots, total)
+}
+
+// ── Kernel function signatures ──────────────────────────────────────────
 
 /// JIT'd function: writes ARGB pixels for rows [row_start, row_end).
 /// `output` points to the start of this tile's chunk, not the full buffer.
@@ -8,6 +57,9 @@ use crate::kernel_ir::Kernel;
 ///
 /// `time`: elapsed time in seconds since the window opened. Kernels that
 /// declare a `time: f64` parameter receive this value for animation.
+///
+/// `user_args`: pointer to a packed byte buffer of user-defined argument
+/// values. May be null when the kernel has no user args.
 pub type TileKernelFn = unsafe extern "C" fn(
     output: *mut u32,
     width: u32,
@@ -20,11 +72,12 @@ pub type TileKernelFn = unsafe extern "C" fn(
     row_end: u32,
     sample_index: u32,
     time: f64,
+    user_args: *const u8,
 );
 
 pub trait JitBackend {
-    fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel>;
-    fn compile_sim(&self, kernel: &Kernel) -> Box<dyn CompiledSimKernel>;
+    fn compile(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledKernel>;
+    fn compile_sim(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledSimKernel>;
 }
 
 /// A compiled kernel that can be called from multiple threads.
@@ -42,6 +95,9 @@ pub trait CompiledKernel: Send + Sync {
 ///
 /// `buf_ptrs[0..num_read]` are read-only input buffers.
 /// `buf_out_ptrs[0..num_write]` are write-only output buffers.
+///
+/// `user_args`: pointer to a packed byte buffer of user-defined argument
+/// values. May be null when the kernel has no user args.
 pub type SimTileKernelFn = unsafe extern "C" fn(
     output: *mut u32,
     width: u32,
@@ -50,6 +106,7 @@ pub type SimTileKernelFn = unsafe extern "C" fn(
     row_end: u32,
     buf_ptrs: *const *const f64,
     buf_out_ptrs: *const *mut f64,
+    user_args: *const u8,
 );
 
 pub trait CompiledSimKernel: Send + Sync {

@@ -5,7 +5,7 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
-use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn};
+use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn, UserArgSlot};
 use crate::kernel_ir::*;
 
 /// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
@@ -74,15 +74,15 @@ impl CompiledSimKernel for LlvmSimKernel {
 }
 
 impl JitBackend for LlvmBackend {
-    fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel> {
-        Box::new(compile_kernel(kernel))
+    fn compile(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledKernel> {
+        Box::new(compile_kernel(kernel, user_args))
     }
-    fn compile_sim(&self, kernel: &Kernel) -> Box<dyn CompiledSimKernel> {
-        Box::new(compile_sim_kernel(kernel))
+    fn compile_sim(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledSimKernel> {
+        Box::new(compile_sim_kernel(kernel, user_args))
     }
 }
 
-fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
+fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmKernel {
     let context: &'static Context = Box::leak(Box::new(Context::create()));
     let module = context.create_module(&kernel.name);
 
@@ -139,12 +139,13 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
             i32_type.into(),
             i32_type.into(), // sample_index
             f64_type.into(), // time
+            ptr_type.into(), // user_args: *const u8
         ],
         false,
     );
 
     let function = module.add_function(&kernel.name, fn_type, None);
-    build_tile_loop(context, &module, function, kernel);
+    build_tile_loop(context, &module, function, kernel, user_args);
 
     let pass_options = PassBuilderOptions::create();
     module
@@ -157,7 +158,7 @@ fn compile_kernel(kernel: &Kernel) -> LlvmKernel {
 
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32, f64)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32, f64, *const u8)>(
                 &kernel.name,
             )
             .unwrap()
@@ -176,6 +177,7 @@ fn build_tile_loop(
     module: &Module<'static>,
     function: FunctionValue<'static>,
     kernel: &Kernel,
+    user_args: &[UserArgSlot],
 ) {
     let builder = context.create_builder();
     let i32_type = context.i32_type();
@@ -203,6 +205,7 @@ fn build_tile_loop(
     let p_row_end = function.get_nth_param(8).unwrap().into_int_value();
     let p_sample_index = function.get_nth_param(9).unwrap().into_int_value();
     let p_time = function.get_nth_param(10).unwrap().into_float_value();
+    let p_user_args = function.get_nth_param(11).unwrap().into_pointer_value();
 
     let row_ptr = builder.build_alloca(i32_type, "row_ptr").unwrap();
     let col_ptr = builder.build_alloca(i32_type, "col_ptr").unwrap();
@@ -282,7 +285,7 @@ fn build_tile_loop(
 
     let col = builder.build_load(i32_type, col_ptr, "col_k").unwrap().into_int_value();
     let row = builder.build_load(i32_type, row_ptr, "row_k").unwrap().into_int_value();
-    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index, p_time);
+    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index, p_time, p_user_args, user_args);
 
     // Store pixel
     let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
@@ -329,8 +332,14 @@ fn lower_kernel_body(
     row: inkwell::values::IntValue<'static>,
     sample_index: inkwell::values::IntValue<'static>,
     time: inkwell::values::FloatValue<'static>,
+    user_args_ptr: inkwell::values::PointerValue<'static>,
+    user_args: &[UserArgSlot],
 ) -> inkwell::values::IntValue<'static> {
     use std::collections::HashMap;
+
+    let i32_type = context.i32_type();
+    let i64_type = context.i64_type();
+    let f64_type = context.f64_type();
 
     let mut val_map: HashMap<Var, VarValues<'static>> = HashMap::new();
     for param in &kernel.params {
@@ -341,7 +350,19 @@ fn lower_kernel_body(
             "py" => row.into(),
             "sample_index" => sample_index.into(),
             "time" => time.into(),
-            name => panic!("unknown kernel parameter name: '{name}'"),
+            name => {
+                let slot = user_args.iter().find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("unknown kernel parameter: '{name}'"));
+                let offset = i64_type.const_int(slot.offset as u64, false);
+                let addr = unsafe {
+                    builder.build_gep(context.i8_type(), user_args_ptr, &[offset], &format!("arg_{name}_ptr")).unwrap()
+                };
+                match slot.ty {
+                    ValType::F64 => builder.build_load(f64_type, addr, &format!("arg_{name}")).unwrap(),
+                    ValType::U32 => builder.build_load(i32_type, addr, &format!("arg_{name}")).unwrap(),
+                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
+                }
+            }
         };
         val_map.insert(param.var, VarValues::Scalar(val));
     }
@@ -1053,7 +1074,7 @@ fn create_llvm_module_and_machine(context: &'static Context, name: &str) -> (Mod
     (module, machine)
 }
 
-fn compile_sim_kernel(kernel: &Kernel) -> LlvmSimKernel {
+fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmSimKernel {
     let context: &'static Context = Box::leak(Box::new(Context::create()));
     let (module, machine) = create_llvm_module_and_machine(context, &kernel.name);
 
@@ -1061,7 +1082,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> LlvmSimKernel {
     let void_type = context.void_type();
     let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
 
-    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs)
+    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs, user_args)
     let fn_type = void_type.fn_type(
         &[
             ptr_type.into(),  // output: *mut u32
@@ -1071,12 +1092,13 @@ fn compile_sim_kernel(kernel: &Kernel) -> LlvmSimKernel {
             i32_type.into(),  // row_end: u32
             ptr_type.into(),  // buf_ptrs: *const *const f64
             ptr_type.into(),  // buf_out_ptrs: *const *mut f64
+            ptr_type.into(),  // user_args: *const u8
         ],
         false,
     );
 
     let function = module.add_function(&kernel.name, fn_type, None);
-    build_sim_tile_loop(context, &module, function, kernel);
+    build_sim_tile_loop(context, &module, function, kernel, user_args);
 
     let pass_options = PassBuilderOptions::create();
     module
@@ -1089,7 +1111,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> LlvmSimKernel {
 
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, u32, u32, *const *const f64, *const *mut f64)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, u32, u32, *const *const f64, *const *mut f64, *const u8)>(
                 &kernel.name,
             )
             .unwrap()
@@ -1108,10 +1130,12 @@ fn build_sim_tile_loop(
     module: &Module<'static>,
     function: FunctionValue<'static>,
     kernel: &Kernel,
+    user_args: &[UserArgSlot],
 ) {
     let builder = context.create_builder();
     let i32_type = context.i32_type();
     let i64_type = context.i64_type();
+    let f64_type = context.f64_type();
 
     let entry = context.append_basic_block(function, "entry");
     let outer_check = context.append_basic_block(function, "outer_check");
@@ -1131,6 +1155,7 @@ fn build_sim_tile_loop(
     let p_row_end = function.get_nth_param(4).unwrap().into_int_value();
     let p_buf_ptrs = function.get_nth_param(5).unwrap().into_pointer_value();
     let p_buf_out_ptrs = function.get_nth_param(6).unwrap().into_pointer_value();
+    let p_user_args = function.get_nth_param(7).unwrap().into_pointer_value();
 
     let buf_ctx = LlvmBufContext { p_width, p_buf_ptrs, p_buf_out_ptrs };
 
@@ -1171,7 +1196,19 @@ fn build_sim_tile_loop(
             "py" => row.into(),
             "width" => p_width.into(),
             "height" => p_height.into(),
-            name => panic!("unknown sim kernel parameter: '{name}'"),
+            name => {
+                let slot = user_args.iter().find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("unknown sim kernel parameter: '{name}'"));
+                let offset = i64_type.const_int(slot.offset as u64, false);
+                let addr = unsafe {
+                    builder.build_gep(context.i8_type(), p_user_args, &[offset], &format!("arg_{name}_ptr")).unwrap()
+                };
+                match slot.ty {
+                    ValType::F64 => builder.build_load(f64_type, addr, &format!("arg_{name}")).unwrap(),
+                    ValType::U32 => builder.build_load(i32_type, addr, &format!("arg_{name}")).unwrap(),
+                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
+                }
+            }
         };
         val_map.insert(param.var, VarValues::Scalar(val));
     }

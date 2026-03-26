@@ -12,6 +12,8 @@ pub enum Literal {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// Reference to a pdp variable by name.
+    VarRef(String),
 }
 
 /// A named argument: `name: value`.

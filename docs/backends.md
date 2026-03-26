@@ -101,3 +101,5 @@ Both PD and PDIR produce the same Kernel IR. The JIT backend lowers this IR to n
 | `SimTileKernelFn` | Simulation kernels | Buffer-based simulations (gray-scott, smoke) |
 
 Both are `unsafe extern "C"` function pointers called from Rust via rayon parallel tile dispatch.
+
+Both ABIs include a `user_args: *const u8` parameter — a pointer to a packed byte buffer of user-defined argument values. Built-in parameters (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel; `px`, `py`, `width`, `height` for sim) are provided by the tile loop. Non-built-in kernel parameters are loaded from the `user_args` buffer at compile-time-determined byte offsets with typed loads (`f64` = 8 bytes, `u32` = 4 bytes, naturally aligned). When a kernel has no user arguments, `null` is passed.

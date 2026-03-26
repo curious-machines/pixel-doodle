@@ -132,9 +132,9 @@ fn validate_steps(
         match step {
             PipelineStep::Run {
                 kernel_name,
+                args,
                 input_bindings,
                 span,
-                ..
             } => {
                 // 'inject' is a built-in, skip kernel check
                 if kernel_name != "inject" && !kernels.contains(kernel_name) {
@@ -143,6 +143,20 @@ fn validate_steps(
                         col: span.col,
                         message: format!("undeclared kernel '{kernel_name}'"),
                     });
+                }
+                // Validate variable references in run args
+                for arg in args {
+                    if let Literal::VarRef(ref name) = arg.value {
+                        if !vars.contains(name) && !INTRINSICS.contains(&name.as_str()) {
+                            errors.push(ValidationError {
+                                line: arg.span.line,
+                                col: arg.span.col,
+                                message: format!(
+                                    "run argument references undeclared variable '{name}'"
+                                ),
+                            });
+                        }
+                    }
                 }
                 validate_buffer_refs(input_bindings, buffers, *span, errors);
             }

@@ -35,8 +35,10 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 ```
 
 - **Parameters** `x` and `y` receive normalized pixel coordinates (typically mapped to a viewport range like -2.0 to 2.0).
-- Additional parameters `px: u32, py: u32, sample_index: u32` are available for pixel coordinates and progressive sampling.
+- Additional built-in parameters `px: u32, py: u32, sample_index: u32` are available for pixel coordinates and progressive sampling.
 - `time: f64` provides elapsed time in seconds for animation. Kernels that declare this parameter automatically render continuously.
+- **User-defined parameters** — any parameter whose name is not a built-in (e.g., `max_iter: u32`, `threshold: f64`) is a user-defined argument that must be supplied via the `run` statement in the `.pdp` file. See the [PDP reference](pdp.md#user-defined-kernel-arguments) for details.
+- Simulation kernels have built-in names `px`, `py`, `width`, `height`; all other params are user-defined.
 - **Return type** is always `u32` (an ARGB pixel value).
 - **`emit`** evaluates an expression and uses the result as the pixel color.
 - Comments start with `//` and run to end of line.

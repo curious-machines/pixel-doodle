@@ -41,6 +41,10 @@ The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text f
 
 A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel declares explicit parameters and a return type, and produces a value via `emit`.
 
+Parameters fall into two categories:
+- **Built-in**: provided by the tile loop (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel kernels; `px`, `py`, `width`, `height` for sim kernels)
+- **User-defined**: any other parameter (e.g., `max_iter: u32`) — supplied via the `run` statement in `.pdp` files, passed through a packed byte buffer at the ABI level
+
 ### Text Format (.pdir)
 
 ```

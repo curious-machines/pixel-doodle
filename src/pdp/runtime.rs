@@ -6,7 +6,7 @@ use winit::keyboard::KeyCode;
 use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
-use crate::jit::{self, SimTileKernelFn, TileKernelFn};
+use crate::jit::{self, SimTileKernelFn, TileKernelFn, UserArgSlot};
 use crate::kernel_ir::Kernel;
 use crate::progressive::AccumulationBuffer;
 use crate::render;
@@ -18,6 +18,7 @@ enum CompiledKernelEntry {
     Pixel {
         func: TileKernelFn,
         _compiled: Box<dyn jit::CompiledKernel>,
+        user_arg_slots: Vec<UserArgSlot>,
     },
     Sim {
         func: SimTileKernelFn,
@@ -26,6 +27,7 @@ enum CompiledKernelEntry {
         read_slots: Vec<String>,
         /// Write buffer slot names in order.
         write_slots: Vec<String>,
+        user_arg_slots: Vec<UserArgSlot>,
     },
     /// GPU pixel kernel — renders directly to display texture.
     Gpu {
@@ -284,13 +286,16 @@ impl Runtime {
 
             match decl.kind {
                 KernelKind::Pixel => {
-                    let compiled = compile_pixel_kernel(&backend_name, &ir)?;
+                    let (user_arg_slots, _) =
+                        jit::compute_user_arg_layout(&ir, jit::PIXEL_BUILTINS);
+                    let compiled = compile_pixel_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
                     self.kernels.insert(
                         decl.name.clone(),
                         CompiledKernelEntry::Pixel {
                             func,
                             _compiled: compiled,
+                            user_arg_slots,
                         },
                     );
                 }
@@ -307,7 +312,9 @@ impl Runtime {
                         .filter(|b| b.is_output)
                         .map(|b| b.name.clone())
                         .collect();
-                    let compiled = compile_sim_kernel(&backend_name, &ir)?;
+                    let (user_arg_slots, _) =
+                        jit::compute_user_arg_layout(&ir, jit::SIM_BUILTINS);
+                    let compiled = compile_sim_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
                     self.kernels.insert(
                         decl.name.clone(),
@@ -316,6 +323,7 @@ impl Runtime {
                             _compiled: compiled,
                             read_slots,
                             write_slots,
+                            user_arg_slots,
                         },
                     );
                 }
@@ -587,6 +595,58 @@ impl Runtime {
         }
     }
 
+    /// Pack user-defined argument values into a byte buffer matching the compiled layout.
+    fn pack_user_args(&self, slots: &[UserArgSlot], args: &[NamedArg]) -> Vec<u8> {
+        use crate::kernel_ir::ValType;
+        if slots.is_empty() {
+            // Warn if caller passed args to a kernel that has no user params
+            for arg in args {
+                eprintln!("warning: argument '{}' does not match any kernel parameter", arg.name);
+            }
+            return Vec::new();
+        }
+        // Check for unknown args
+        for arg in args {
+            if !slots.iter().any(|s| s.name == arg.name) {
+                eprintln!("warning: argument '{}' does not match any kernel parameter", arg.name);
+            }
+        }
+        // Compute total size from last slot
+        let last = slots.last().unwrap();
+        let last_size = match last.ty {
+            ValType::F64 => 8,
+            ValType::U32 => 4,
+            _ => 8,
+        };
+        let total = ((last.offset + last_size) + 7) & !7;
+        let mut buf = vec![0u8; total];
+        for slot in slots {
+            let value = args.iter().find(|a| a.name == slot.name);
+            let f = match value {
+                Some(a) => match &a.value {
+                    Literal::Float(f) => *f,
+                    Literal::Int(i) => *i as f64,
+                    Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
+                    Literal::Str(_) => 0.0,
+                    Literal::VarRef(name) => *self.variables.get(name)
+                        .unwrap_or_else(|| panic!("undefined variable '{}' in kernel args", name)),
+                },
+                None => panic!("missing argument '{}' for kernel", slot.name),
+            };
+            match slot.ty {
+                ValType::F64 => {
+                    buf[slot.offset..slot.offset + 8].copy_from_slice(&f.to_le_bytes());
+                }
+                ValType::U32 => {
+                    let v = f as u32;
+                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                }
+                _ => panic!("unsupported user-arg type {:?}", slot.ty),
+            }
+        }
+        buf
+    }
+
     /// Execute a kernel via `run`.
     fn execute_run(
         &mut self,
@@ -603,8 +663,11 @@ impl Runtime {
 
         let entry = self.kernels.get(kernel_name);
         match entry {
-            Some(CompiledKernelEntry::Pixel { func, .. }) => {
+            Some(CompiledKernelEntry::Pixel { func, user_arg_slots, .. }) => {
                 let kfn = *func;
+                let packed = self.pack_user_args(user_arg_slots, args);
+                let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
+                let args_addr = args_ptr as usize;
                 let (cx, cy, z, t) = (self.center_x, self.center_y, self.zoom, self.time);
                 let w = self.width as usize;
                 let h = self.height as usize;
@@ -612,16 +675,19 @@ impl Runtime {
                 let buf = &mut self.pixel_buffer;
                 let sample_index = 0xFFFFFFFF; // non-progressive by default
                 with_pool(pool, || {
-                    render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th);
+                    render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8);
                 });
             }
             Some(CompiledKernelEntry::Sim {
                 func,
                 read_slots,
                 write_slots,
+                user_arg_slots,
                 ..
             }) => {
                 let sim_fn = *func;
+                let packed = self.pack_user_args(user_arg_slots, args);
+                let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
                 let w = self.width as usize;
                 let h = self.height as usize;
                 let th = self.tile_height;
@@ -652,7 +718,7 @@ impl Runtime {
                     .collect();
 
                 let pixel_buf = &mut self.pixel_buffer;
-                render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th);
+                render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th, args_ptr);
             }
             Some(CompiledKernelEntry::Gpu { .. }) => {
                 // GPU pixel kernels render directly to the display texture.
@@ -727,11 +793,14 @@ impl Runtime {
             // Find the run step for a pixel kernel inside body and run it with sample_index
             for step in body {
                 match step {
-                    PipelineStep::Run { kernel_name, .. } => {
-                        if let Some(CompiledKernelEntry::Pixel { func, .. }) =
+                    PipelineStep::Run { kernel_name, args, .. } => {
+                        if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, .. }) =
                             self.kernels.get(kernel_name)
                         {
                             let kfn = *func;
+                            let packed = self.pack_user_args(user_arg_slots, args);
+                            let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
+                            let args_addr = args_ptr as usize;
                             let (cx, cy, z, t) =
                                 (self.center_x, self.center_y, self.zoom, self.time);
                             let w = self.width as usize;
@@ -739,7 +808,7 @@ impl Runtime {
                             let th = self.tile_height;
                             let buf = &mut self.pixel_buffer;
                             with_pool(pool, || {
-                                render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th);
+                                render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8);
                             });
                         }
                     }
@@ -1111,17 +1180,18 @@ fn find_accumulate_samples(steps: &[PipelineStep]) -> u32 {
 fn compile_pixel_kernel(
     backend_name: &str,
     kernel: &Kernel,
+    user_args: &[UserArgSlot],
 ) -> Result<Box<dyn jit::CompiledKernel>, String> {
     match backend_name {
         #[cfg(feature = "cranelift-backend")]
         "cranelift" => {
             let backend = jit::cranelift::CraneliftBackend;
-            Ok(jit::JitBackend::compile(&backend, kernel))
+            Ok(jit::JitBackend::compile(&backend, kernel, user_args))
         }
         #[cfg(feature = "llvm-backend")]
         "llvm" => {
             let backend = jit::llvm::LlvmBackend;
-            Ok(jit::JitBackend::compile(&backend, kernel))
+            Ok(jit::JitBackend::compile(&backend, kernel, user_args))
         }
         other => Err(format!("unknown backend '{}'", other)),
     }
@@ -1130,17 +1200,18 @@ fn compile_pixel_kernel(
 fn compile_sim_kernel(
     backend_name: &str,
     kernel: &Kernel,
+    user_args: &[UserArgSlot],
 ) -> Result<Box<dyn jit::CompiledSimKernel>, String> {
     match backend_name {
         #[cfg(feature = "cranelift-backend")]
         "cranelift" => {
             let backend = jit::cranelift::CraneliftBackend;
-            Ok(jit::JitBackend::compile_sim(&backend, kernel))
+            Ok(jit::JitBackend::compile_sim(&backend, kernel, user_args))
         }
         #[cfg(feature = "llvm-backend")]
         "llvm" => {
             let backend = jit::llvm::LlvmBackend;
-            Ok(jit::JitBackend::compile_sim(&backend, kernel))
+            Ok(jit::JitBackend::compile_sim(&backend, kernel, user_args))
         }
         other => Err(format!("unknown backend '{}'", other)),
     }

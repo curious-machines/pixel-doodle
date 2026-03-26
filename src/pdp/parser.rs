@@ -155,6 +155,10 @@ impl Parser {
                 let v = self.parse_number_literal()?;
                 Ok(Literal::Float(v))
             }
+            Token::Ident(name) => {
+                self.advance();
+                Ok(Literal::VarRef(name))
+            }
             other => Err(self.error(format!("expected literal, got '{other}'"))),
         }
     }

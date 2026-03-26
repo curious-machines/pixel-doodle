@@ -7,7 +7,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
-use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn};
+use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn, UserArgSlot};
 use crate::kernel_ir::*;
 
 /// Context for buffer operations in simulation kernels.
@@ -76,16 +76,16 @@ impl CompiledSimKernel for CraneliftSimKernel {
 }
 
 impl JitBackend for CraneliftBackend {
-    fn compile(&self, kernel: &Kernel) -> Box<dyn CompiledKernel> {
-        Box::new(compile_kernel(kernel))
+    fn compile(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledKernel> {
+        Box::new(compile_kernel(kernel, user_args))
     }
-    fn compile_sim(&self, kernel: &Kernel) -> Box<dyn CompiledSimKernel> {
-        Box::new(compile_sim_kernel(kernel))
+    fn compile_sim(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledSimKernel> {
+        Box::new(compile_sim_kernel(kernel, user_args))
     }
 }
 
 
-fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
+fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_codegen::isa::lookup_by_name(
@@ -111,6 +111,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     sig.params.push(AbiParam::new(I32)); // row_end: u32
     sig.params.push(AbiParam::new(I32)); // sample_index: u32
     sig.params.push(AbiParam::new(F64)); // time: f64
+    sig.params.push(AbiParam::new(I64)); // user_args: *const u8
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -133,6 +134,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let v_time = builder.declare_var(F64);
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
+    let v_user_args = builder.declare_var(I64);
 
     // -- Blocks --
     let entry_block = builder.create_block();
@@ -160,6 +162,7 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     builder.def_var(v_row_end, params[8]);
     builder.def_var(v_sample_index, params[9]);
     builder.def_var(v_time, params[10]);
+    builder.def_var(v_user_args, params[11]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -254,7 +257,8 @@ fn compile_kernel(kernel: &Kernel) -> CraneliftKernel {
     let row = builder.use_var(v_row);
     let sample_idx_for_kernel = builder.use_var(v_sample_index);
     let time = builder.use_var(v_time);
-    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel, time);
+    let user_args_ptr = builder.use_var(v_user_args);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel, time, user_args_ptr, user_args);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -328,6 +332,8 @@ fn lower_kernel_body(
     row: cranelift_codegen::ir::Value,
     sample_index: cranelift_codegen::ir::Value,
     time: cranelift_codegen::ir::Value,
+    user_args_ptr: cranelift_codegen::ir::Value,
+    user_args: &[UserArgSlot],
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
@@ -340,7 +346,17 @@ fn lower_kernel_body(
             "py" => row,
             "sample_index" => sample_index,
             "time" => time,
-            name => panic!("unknown kernel parameter name: '{name}'"),
+            name => {
+                let slot = user_args.iter().find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("unknown kernel parameter: '{name}'"));
+                let offset = builder.ins().iconst(I64, slot.offset as i64);
+                let addr = builder.ins().iadd(user_args_ptr, offset);
+                match slot.ty {
+                    ValType::F64 => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::U32 => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
+                }
+            }
         };
         val_map.insert(param.var, VarValues::Scalar(val));
     }
@@ -972,7 +988,7 @@ fn lower_inst(
     }
 }
 
-fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
+fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSimKernel {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_codegen::isa::lookup_by_name(
@@ -986,7 +1002,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
     let mut module =
         JITModule::new(JITBuilder::with_isa(isa, cranelift_module::default_libcall_names()));
 
-    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs)
+    // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs, user_args)
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(I64)); // output: *mut u32
     sig.params.push(AbiParam::new(I32)); // width: u32
@@ -995,6 +1011,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
     sig.params.push(AbiParam::new(I32)); // row_end: u32
     sig.params.push(AbiParam::new(I64)); // buf_ptrs: *const *const f64
     sig.params.push(AbiParam::new(I64)); // buf_out_ptrs: *const *mut f64
+    sig.params.push(AbiParam::new(I64)); // user_args: *const u8
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -1014,6 +1031,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
     let v_buf_out_ptrs = builder.declare_var(I64);
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
+    let v_user_args = builder.declare_var(I64);
 
     let buf_ctx = BufContext { v_width, v_buf_ptrs, v_buf_out_ptrs };
 
@@ -1039,6 +1057,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
     builder.def_var(v_row_end, params[4]);
     builder.def_var(v_buf_ptrs, params[5]);
     builder.def_var(v_buf_out_ptrs, params[6]);
+    builder.def_var(v_user_args, params[7]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -1073,6 +1092,7 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
     let row = builder.use_var(v_row);
     let height = builder.use_var(v_height);
     let width = builder.use_var(v_width);
+    let user_args_ptr = builder.use_var(v_user_args);
 
     // Map kernel params to values
     use std::collections::HashMap;
@@ -1083,7 +1103,17 @@ fn compile_sim_kernel(kernel: &Kernel) -> CraneliftSimKernel {
             "py" => row,
             "width" => width,
             "height" => height,
-            name => panic!("unknown sim kernel parameter: '{name}'"),
+            name => {
+                let slot = user_args.iter().find(|s| s.name == name)
+                    .unwrap_or_else(|| panic!("unknown sim kernel parameter: '{name}'"));
+                let offset = builder.ins().iconst(I64, slot.offset as i64);
+                let addr = builder.ins().iadd(user_args_ptr, offset);
+                match slot.ty {
+                    ValType::F64 => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
+                    ValType::U32 => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
+                }
+            }
         };
         val_map.insert(param.var, VarValues::Scalar(val));
     }

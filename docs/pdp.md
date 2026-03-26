@@ -308,13 +308,52 @@ Included content is merged into the including file as if written inline.
 
 ```
 run kernel_name                                              # no I/O (pixel kernel)
+run mandelbrot(max_iter: 256)                                # user-defined argument
+run mandelbrot(max_iter: max_iters)                          # argument from a variable
 run inject(value: 1.0, radius: 5) { target: out state }     # built-in inject
 run advect { vx_in: vx0, den_in: density0, vx_out: out vx } # sim kernel with bindings
 ```
 
-- **Parameters**: `(name: value, ...)` literal values passed to the kernel
+- **Arguments**: `(name: value, ...)` passed to user-defined kernel parameters (see below)
 - **Buffer bindings**: `{ param: buffer, ... }` maps kernel buffer slots to pipeline buffers
 - **Output bindings**: use the `out` qualifier to mark write buffers: `{ slot: out buffer }`
+
+#### User-defined kernel arguments
+
+Kernels can declare parameters beyond the built-in names (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel kernels; `px`, `py`, `width`, `height` for simulation kernels). Any parameter whose name is not a built-in is a **user-defined argument** that must be supplied in the `run` statement.
+
+For example, a kernel that declares `max_iter: u32`:
+
+```
+# In the .pd kernel file:
+kernel mandelbrot(x: f64, y: f64, max_iter: u32) -> u32 { ... }
+```
+
+Must be called with that argument in the .pdp file:
+
+```
+run mandelbrot(max_iter: 256)
+```
+
+Argument values can be:
+- **Literals**: `256`, `0.037`, `true`
+- **Variable references**: bare identifiers that resolve to a declared variable or intrinsic
+
+```
+max_iters: range(10..500) = 256
+on key(up) max_iters += 10
+on key(down) max_iters -= 10
+
+pipeline pd {
+  pixel kernel "mandelbrot.pd"
+  run mandelbrot(max_iter: max_iters)    # resolved each frame from the variable
+  display
+}
+```
+
+Variable references are resolved at runtime before each kernel dispatch, so changes via key bindings or `--set` take effect immediately.
+
+Supported argument types: `f64` and `u32`. All user args must be explicitly provided — there are no default values.
 
 ### `display` — Show pixels on screen
 

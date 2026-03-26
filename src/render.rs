@@ -15,6 +15,7 @@ pub fn render(
     sample_index: u32,
     time: f64,
     tile_height: usize,
+    user_args: *const u8,
 ) {
     let aspect = width as f64 / height as f64;
     let view_w = 3.5 / zoom;
@@ -26,6 +27,10 @@ pub fn render(
 
     let rows_per_tile = tile_height;
     let num_tiles = (height + rows_per_tile - 1) / rows_per_tile;
+
+    // Safety: user_args points to a Vec<u8> on the caller's stack that
+    // outlives this parallel region. Wrap as usize for Send.
+    let args_addr = user_args as usize;
 
     // Use par_chunks_mut on the buffer, chunked by rows_per_tile * width
     buffer
@@ -49,6 +54,7 @@ pub fn render(
                     row_end as u32,
                     sample_index,
                     time,
+                    args_addr as *const u8,
                 );
             }
         });
@@ -72,12 +78,14 @@ pub fn render_sim(
     bufs_in: &[*const f64],
     bufs_out: &[*mut f64],
     tile_height: usize,
+    user_args: *const u8,
 ) {
     let rows_per_tile = tile_height;
 
     // Stash pointer-to-pointer as usize to satisfy Send+Sync for rayon
     let in_base = bufs_in.as_ptr() as usize;
     let out_base = bufs_out.as_ptr() as usize;
+    let args_addr = user_args as usize;
 
     pixel_output
         .par_chunks_mut(rows_per_tile * width)
@@ -95,6 +103,7 @@ pub fn render_sim(
                     row_end as u32,
                     in_base as *const *const f64,
                     out_base as *const *mut f64,
+                    args_addr as *const u8,
                 );
             }
         });
