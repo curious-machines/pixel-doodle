@@ -128,7 +128,8 @@ impl ValType {
     }
 
     /// Number of scalar components (1 for scalars, 2..4 for vectors, N*N for matrices).
-    /// Panics for structs (use StructDef to query fields).
+    /// For arrays, returns the array size (not recursively flattened).
+    /// Panics for structs (use flat_scalar_count with struct_defs instead).
     pub fn component_count(&self) -> usize {
         match self {
             ValType::Vec { len, .. } => *len as usize,
@@ -136,6 +137,22 @@ impl ValType {
             ValType::Array { size, .. } => *size as usize,
             ValType::Scalar(_) => 1,
             ValType::Struct(_) => panic!("component_count not meaningful for structs"),
+        }
+    }
+
+    /// Total number of scalar values when fully flattened (recursing into arrays/structs).
+    /// Requires struct_defs to resolve struct types.
+    pub fn flat_scalar_count(&self, struct_defs: &[StructDef]) -> usize {
+        match self {
+            ValType::Scalar(_) => 1,
+            ValType::Vec { len, .. } => *len as usize,
+            ValType::Mat { size, .. } => (*size as usize) * (*size as usize),
+            ValType::Array { elem, size } => elem.flat_scalar_count(struct_defs) * (*size as usize),
+            ValType::Struct(name) => {
+                let sd = struct_defs.iter().find(|s| &s.name == name)
+                    .expect("unknown struct type");
+                sd.fields.iter().map(|(_, ty)| ty.flat_scalar_count(struct_defs)).sum()
+            }
         }
     }
 

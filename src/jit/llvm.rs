@@ -11,8 +11,10 @@ use crate::kernel_ir::*;
 /// Decomposed vector values. Backends store vec vars as N scalar values (2, 3, or 4 components).
 enum VarValues<'ctx> {
     Scalar(BasicValueEnum<'ctx>),
-    Vec(Vec<BasicValueEnum<'ctx>>),  // 2, 3, or 4 components
-    Mat(Vec<BasicValueEnum<'ctx>>),  // N*N scalars, column-major
+    Vec(Vec<BasicValueEnum<'ctx>>),    // 2, 3, or 4 components
+    Mat(Vec<BasicValueEnum<'ctx>>),    // N*N scalars, column-major
+    Array(Vec<BasicValueEnum<'ctx>>),  // flat list of scalar LLVM values
+    Struct(Vec<BasicValueEnum<'ctx>>), // flat list of scalar LLVM values
 }
 
 fn get_scalar<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> BasicValueEnum<'ctx> {
@@ -33,6 +35,66 @@ fn get_mat<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>
     match &val_map[var] {
         VarValues::Mat(v) => v,
         _ => panic!("expected mat value for {:?}", var),
+    }
+}
+
+fn get_array<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> &'a [BasicValueEnum<'ctx>] {
+    match &val_map[var] {
+        VarValues::Array(v) => v,
+        _ => panic!("expected array value for {:?}", var),
+    }
+}
+
+fn get_struct<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> &'a [BasicValueEnum<'ctx>] {
+    match &val_map[var] {
+        VarValues::Struct(v) => v,
+        _ => panic!("expected struct value for {:?}", var),
+    }
+}
+
+/// Flatten a VarValues into a flat list of scalar LLVM values.
+fn flatten_values<'ctx>(vv: &VarValues<'ctx>) -> Vec<BasicValueEnum<'ctx>> {
+    match vv {
+        VarValues::Scalar(v) => vec![*v],
+        VarValues::Vec(vs) | VarValues::Mat(vs) | VarValues::Array(vs) | VarValues::Struct(vs) => vs.clone(),
+    }
+}
+
+/// Reconstruct a VarValues from a flat list of scalars, guided by the ValType.
+fn unflatten_values<'ctx>(ty: &ValType, flat: Vec<BasicValueEnum<'ctx>>) -> VarValues<'ctx> {
+    match ty {
+        ValType::Scalar(_) => {
+            assert_eq!(flat.len(), 1);
+            VarValues::Scalar(flat[0])
+        }
+        ValType::Vec { .. } => VarValues::Vec(flat),
+        ValType::Mat { .. } => VarValues::Mat(flat),
+        ValType::Array { .. } => VarValues::Array(flat),
+        ValType::Struct(_) => VarValues::Struct(flat),
+    }
+}
+
+/// Return the LLVM type for each scalar in the flat representation of a ValType.
+fn flat_scalar_types<'ctx>(
+    context: &'ctx Context,
+    ty: &ValType,
+    struct_defs: &[StructDef],
+) -> Vec<inkwell::types::BasicTypeEnum<'ctx>> {
+    match ty {
+        ValType::Scalar(s) => vec![scalar_to_llvm_type(context, *s)],
+        ValType::Vec { len, elem } => vec![scalar_to_llvm_type(context, *elem); *len as usize],
+        ValType::Mat { size, elem } => vec![scalar_to_llvm_type(context, *elem); (*size as usize) * (*size as usize)],
+        ValType::Array { elem, size } => {
+            let elem_types = flat_scalar_types(context, elem, struct_defs);
+            elem_types.iter().cycle().take(elem_types.len() * *size as usize).cloned().collect()
+        }
+        ValType::Struct(name) => {
+            let sd = struct_defs.iter().find(|s| &s.name == name)
+                .expect("unknown struct type");
+            sd.fields.iter()
+                .flat_map(|(_, fty)| flat_scalar_types(context, fty, struct_defs))
+                .collect()
+        }
     }
 }
 
@@ -359,6 +421,9 @@ fn lower_kernel_body(
                 if slot.ty.is_array() {
                     panic!("LLVM backend does not support Array user args (param '{name}')");
                 }
+                if matches!(slot.ty, ValType::Struct(_)) {
+                    panic!("LLVM backend does not support Struct user args (param '{name}')");
+                }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), user_args_ptr, &[offset], &format!("arg_{name}_ptr")).unwrap()
@@ -420,41 +485,30 @@ fn lower_while(
     // -- Loop header: phi nodes for carry vars, then cond_body, then branch --
     builder.position_at_end(loop_header);
 
-    // Create phi nodes for carry variables, expanding vec types into multiple phis
+    // Create phi nodes for carry variables, expanding compound types into multiple phis
     // Each entry: (carry index, list of phi nodes for that carry var)
     let mut carry_phis: Vec<Vec<inkwell::values::PhiValue<'static>>> = Vec::new();
     for cv in &w.carry {
-        let component_count = cv.binding.ty.component_count();
-        let llvm_ty = scalar_to_llvm_type(context, cv.binding.ty.element_scalar());
+        let llvm_types = flat_scalar_types(context, &cv.binding.ty, &kernel.struct_defs);
 
         let mut phis = Vec::new();
-        for comp in 0..component_count {
-            let name = if component_count == 1 {
+        for (comp, llvm_ty) in llvm_types.iter().enumerate() {
+            let name = if llvm_types.len() == 1 {
                 cv.binding.name.clone()
             } else {
                 format!("{}_{}", cv.binding.name, comp)
             };
-            let phi = builder.build_phi(llvm_ty, &name).unwrap();
+            let phi = builder.build_phi(*llvm_ty, &name).unwrap();
 
             // Add incoming from pre-block (initial value)
-            let init_vals = &val_map[&cv.init];
-            let init_val = match init_vals {
-                VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
-                VarValues::Vec(components) | VarValues::Mat(components) => components[comp],
-            };
-            phi.add_incoming(&[(&init_val, pre_block)]);
+            let init_flat = flatten_values(&val_map[&cv.init]);
+            phi.add_incoming(&[(&init_flat[comp], pre_block)]);
             phis.push(phi);
         }
 
         // Map carry var to phi values
         let components: Vec<_> = phis.iter().map(|p| p.as_basic_value()).collect();
-        let vv = match &cv.binding.ty {
-            ValType::Mat { .. } => VarValues::Mat(components),
-            ValType::Vec { .. } => VarValues::Vec(components),
-            ValType::Scalar(_) => VarValues::Scalar(components[0]),
-            ValType::Array { .. } => panic!("LLVM backend does not support Array carry vars"),
-            ValType::Struct(_) => panic!("LLVM backend does not support Struct carry vars"),
-        };
+        let vv = unflatten_values(&cv.binding.ty, components);
         val_map.insert(cv.binding.var, vv);
         carry_phis.push(phis);
     }
@@ -475,13 +529,9 @@ fn lower_while(
     let body_block = builder.get_insert_block().unwrap();
     for (i, phis) in carry_phis.iter().enumerate() {
         let yield_var = &w.yields[i];
-        let yield_vals = &val_map[yield_var];
+        let yield_flat = flatten_values(&val_map[yield_var]);
         for (comp, phi) in phis.iter().enumerate() {
-            let yield_val = match yield_vals {
-                VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
-                VarValues::Vec(components) | VarValues::Mat(components) => components[comp],
-            };
-            phi.add_incoming(&[(&yield_val, body_block)]);
+            phi.add_incoming(&[(&yield_flat[comp], body_block)]);
         }
     }
 
@@ -779,8 +829,32 @@ fn lower_inst(
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_int_value(), e.into_int_value(), "sel").unwrap())
                 }
-                ValType::Array { .. } => panic!("LLVM backend does not support Array in Select"),
-                ValType::Struct(_) => panic!("LLVM backend does not support Struct in Select"),
+                ValType::Array { .. } => {
+                    let t_comps = get_array(val_map, then_val);
+                    let e_comps = get_array(val_map, else_val);
+                    let results: Vec<_> = t_comps.iter().zip(e_comps.iter()).enumerate().map(|(i, (t, e))| {
+                        let name = format!("sel_{}", i);
+                        if t.is_float_value() {
+                            builder.build_select(c, t.into_float_value(), e.into_float_value(), &name).unwrap()
+                        } else {
+                            builder.build_select(c, t.into_int_value(), e.into_int_value(), &name).unwrap()
+                        }
+                    }).collect();
+                    VarValues::Array(results)
+                }
+                ValType::Struct(_) => {
+                    let t_comps = get_struct(val_map, then_val);
+                    let e_comps = get_struct(val_map, else_val);
+                    let results: Vec<_> = t_comps.iter().zip(e_comps.iter()).enumerate().map(|(i, (t, e))| {
+                        let name = format!("sel_{}", i);
+                        if t.is_float_value() {
+                            builder.build_select(c, t.into_float_value(), e.into_float_value(), &name).unwrap()
+                        } else {
+                            builder.build_select(c, t.into_int_value(), e.into_int_value(), &name).unwrap()
+                        }
+                    }).collect();
+                    VarValues::Struct(results)
+                }
             }
         }
         Inst::PackArgb { r, g, b } => {
@@ -1066,11 +1140,118 @@ fn lower_inst(
             VarValues::Scalar(i32_type.const_zero().into())
         }
 
-        Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
-            panic!("LLVM backend does not yet support Array instructions");
+        // -- Array operations --
+        Inst::ArrayNew(elems) => {
+            let mut flat = Vec::new();
+            for elem_var in elems {
+                flat.extend(flatten_values(&val_map[elem_var]));
+            }
+            VarValues::Array(flat)
         }
-        Inst::StructNew(_) | Inst::StructGet { .. } | Inst::StructSet { .. } => {
-            panic!("LLVM backend does not yet support Struct instructions");
+        Inst::ArrayGet { array, index } => {
+            let arr = get_array(val_map, array);
+            let idx = get_scalar(val_map, index).into_int_value();
+            let arr_ty = kernel.binding(*array).unwrap().ty.clone();
+            let (elem_ty, _size) = match &arr_ty {
+                ValType::Array { elem, size } => (elem.as_ref().clone(), *size as usize),
+                _ => panic!("ArrayGet on non-array type"),
+            };
+            let elem_flat_count = elem_ty.flat_scalar_count(&kernel.struct_defs);
+
+            // Select chain: start with element 0, conditionally swap for each subsequent index
+            let mut result: Vec<BasicValueEnum> = arr[..elem_flat_count].to_vec();
+            for i in 1.._size {
+                let i_const = i32_type.const_int(i as u64, false);
+                let cmp = builder.build_int_compare(IntPredicate::EQ, idx, i_const, &format!("aget_cmp_{}", i)).unwrap();
+                let elem_start = i * elem_flat_count;
+                for j in 0..elem_flat_count {
+                    let candidate = arr[elem_start + j];
+                    let name = format!("aget_sel_{}_{}", i, j);
+                    result[j] = if candidate.is_float_value() {
+                        builder.build_select(cmp, candidate.into_float_value(), result[j].into_float_value(), &name).unwrap()
+                    } else {
+                        builder.build_select(cmp, candidate.into_int_value(), result[j].into_int_value(), &name).unwrap()
+                    };
+                }
+            }
+            unflatten_values(&elem_ty, result)
+        }
+        Inst::ArraySet { array, index, val } => {
+            let arr = get_array(val_map, array).to_vec();
+            let idx = get_scalar(val_map, index).into_int_value();
+            let new_vals = flatten_values(&val_map[val]);
+            let arr_ty = kernel.binding(*array).unwrap().ty.clone();
+            let (elem_ty, size) = match &arr_ty {
+                ValType::Array { elem, size } => (elem.as_ref().clone(), *size as usize),
+                _ => panic!("ArraySet on non-array type"),
+            };
+            let elem_flat_count = elem_ty.flat_scalar_count(&kernel.struct_defs);
+
+            // For each array position, conditionally replace with new values if index matches
+            let mut result = arr.clone();
+            for i in 0..size {
+                let i_const = i32_type.const_int(i as u64, false);
+                let cmp = builder.build_int_compare(IntPredicate::EQ, idx, i_const, &format!("aset_cmp_{}", i)).unwrap();
+                let elem_start = i * elem_flat_count;
+                for j in 0..elem_flat_count {
+                    let name = format!("aset_sel_{}_{}", i, j);
+                    result[elem_start + j] = if new_vals[j].is_float_value() {
+                        builder.build_select(cmp, new_vals[j].into_float_value(), result[elem_start + j].into_float_value(), &name).unwrap()
+                    } else {
+                        builder.build_select(cmp, new_vals[j].into_int_value(), result[elem_start + j].into_int_value(), &name).unwrap()
+                    };
+                }
+            }
+            VarValues::Array(result)
+        }
+
+        // -- Struct operations --
+        Inst::StructNew(fields) => {
+            let mut flat = Vec::new();
+            for field_var in fields {
+                flat.extend(flatten_values(&val_map[field_var]));
+            }
+            VarValues::Struct(flat)
+        }
+        Inst::StructGet { val: sval, field } => {
+            let s = get_struct(val_map, sval);
+            let struct_ty = kernel.binding(*sval).unwrap().ty.clone();
+            let struct_name = match &struct_ty {
+                ValType::Struct(name) => name.clone(),
+                _ => panic!("StructGet on non-struct type"),
+            };
+            let sd = kernel.struct_defs.iter().find(|sd| sd.name == struct_name)
+                .expect("unknown struct type");
+
+            // Compute offset: sum of flat_scalar_count of preceding fields
+            let mut offset = 0;
+            for i in 0..(*field as usize) {
+                offset += sd.fields[i].1.flat_scalar_count(&kernel.struct_defs);
+            }
+            let field_ty = &sd.fields[*field as usize].1;
+            let field_count = field_ty.flat_scalar_count(&kernel.struct_defs);
+            let field_vals = s[offset..offset + field_count].to_vec();
+            unflatten_values(field_ty, field_vals)
+        }
+        Inst::StructSet { val: sval, field, new_val } => {
+            let mut s = get_struct(val_map, sval).to_vec();
+            let new_vals = flatten_values(&val_map[new_val]);
+            let struct_ty = kernel.binding(*sval).unwrap().ty.clone();
+            let struct_name = match &struct_ty {
+                ValType::Struct(name) => name.clone(),
+                _ => panic!("StructSet on non-struct type"),
+            };
+            let sd = kernel.struct_defs.iter().find(|sd| sd.name == struct_name)
+                .expect("unknown struct type");
+
+            // Compute offset: sum of flat_scalar_count of preceding fields
+            let mut offset = 0;
+            for i in 0..(*field as usize) {
+                offset += sd.fields[i].1.flat_scalar_count(&kernel.struct_defs);
+            }
+            let field_count = sd.fields[*field as usize].1.flat_scalar_count(&kernel.struct_defs);
+            s[offset..offset + field_count].copy_from_slice(&new_vals);
+            VarValues::Struct(s)
         }
     }
 }
@@ -1361,6 +1542,9 @@ fn build_sim_tile_loop(
                 }
                 if slot.ty.is_array() {
                     panic!("LLVM backend does not support Array user args (param '{name}')");
+                }
+                if matches!(slot.ty, ValType::Struct(_)) {
+                    panic!("LLVM backend does not support Struct user args (param '{name}')");
                 }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {

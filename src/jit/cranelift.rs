@@ -20,8 +20,10 @@ struct BufContext {
 /// Decomposed vector values. Backends store vec vars as N scalar values (2, 3, or 4 components).
 enum VarValues {
     Scalar(cranelift_codegen::ir::Value),
-    Vec(Vec<cranelift_codegen::ir::Value>),  // 2, 3, or 4 components
-    Mat(Vec<cranelift_codegen::ir::Value>),  // N*N scalars, column-major
+    Vec(Vec<cranelift_codegen::ir::Value>),      // 2, 3, or 4 components
+    Mat(Vec<cranelift_codegen::ir::Value>),       // N*N scalars, column-major
+    Array(Vec<cranelift_codegen::ir::Value>),     // flattened scalar components
+    Struct(Vec<cranelift_codegen::ir::Value>),    // flattened scalar components
 }
 
 fn get_scalar(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> cranelift_codegen::ir::Value {
@@ -42,6 +44,56 @@ fn get_mat<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var
     match &val_map[var] {
         VarValues::Mat(v) => v,
         _ => panic!("expected mat value for {:?}", var),
+    }
+}
+
+fn get_array<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var) -> &'a [cranelift_codegen::ir::Value] {
+    match &val_map[var] {
+        VarValues::Array(v) => v,
+        _ => panic!("expected array value for {:?}", var),
+    }
+}
+
+fn get_struct<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var) -> &'a [cranelift_codegen::ir::Value] {
+    match &val_map[var] {
+        VarValues::Struct(v) => v,
+        _ => panic!("expected struct value for {:?}", var),
+    }
+}
+
+/// Flatten any VarValues to a Vec<Value>.
+fn flatten_values(vv: &VarValues) -> Vec<cranelift_codegen::ir::Value> {
+    match vv {
+        VarValues::Scalar(v) => vec![*v],
+        VarValues::Vec(vs) | VarValues::Mat(vs) | VarValues::Array(vs) | VarValues::Struct(vs) => vs.clone(),
+    }
+}
+
+/// Reconstruct a VarValues from a flat slice + a ValType.
+fn unflatten_values(values: &[cranelift_codegen::ir::Value], ty: &ValType) -> VarValues {
+    match ty {
+        ValType::Scalar(_) => VarValues::Scalar(values[0]),
+        ValType::Vec { .. } => VarValues::Vec(values.to_vec()),
+        ValType::Mat { .. } => VarValues::Mat(values.to_vec()),
+        ValType::Array { .. } => VarValues::Array(values.to_vec()),
+        ValType::Struct(_) => VarValues::Struct(values.to_vec()),
+    }
+}
+
+/// Return the flat list of ScalarTypes for a ValType (recursing into arrays/structs).
+fn flat_scalar_types(ty: &ValType, struct_defs: &[StructDef]) -> Vec<ScalarType> {
+    match ty {
+        ValType::Scalar(s) => vec![*s],
+        ValType::Vec { len, elem } => vec![*elem; *len as usize],
+        ValType::Mat { size, elem } => vec![*elem; (*size as usize) * (*size as usize)],
+        ValType::Array { elem, size } => {
+            let inner = flat_scalar_types(elem, struct_defs);
+            inner.repeat(*size as usize)
+        }
+        ValType::Struct(name) => {
+            let sd = struct_defs.iter().find(|s| &s.name == name).unwrap();
+            sd.fields.iter().flat_map(|(_, ty)| flat_scalar_types(ty, struct_defs)).collect()
+        }
     }
 }
 
@@ -447,8 +499,16 @@ fn lower_while(
                 builder.def_var(cl_var, init_val);
                 vec![cl_var]
             }
-            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
-            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
+            ty @ ValType::Array { .. } | ty @ ValType::Struct(_) => {
+                let scalar_types = flat_scalar_types(ty, &kernel.struct_defs);
+                let init_vals = flatten_values(&val_map[&cv.init]);
+                assert_eq!(scalar_types.len(), init_vals.len());
+                scalar_types.iter().zip(init_vals.iter()).map(|(st, iv)| {
+                    let v = builder.declare_var(scalar_to_cl(*st));
+                    builder.def_var(v, *iv);
+                    v
+                }).collect()
+            }
         }
     }).collect();
 
@@ -460,13 +520,7 @@ fn lower_while(
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
         let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-        let vv = match &cv.binding.ty {
-            ValType::Mat { .. } => VarValues::Mat(components),
-            ValType::Vec { .. } => VarValues::Vec(components),
-            ValType::Scalar(_) => VarValues::Scalar(components[0]),
-            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
-            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
-        };
+        let vv = unflatten_values(&components, &cv.binding.ty);
         val_map.insert(cv.binding.var, vv);
     }
 
@@ -485,15 +539,9 @@ fn lower_while(
 
     // Update carry Variables with yield values
     for (i, yv) in w.yields.iter().enumerate() {
-        match &val_map[yv] {
-            VarValues::Scalar(v) => {
-                builder.def_var(carry_vars[i][0], *v);
-            }
-            VarValues::Vec(components) | VarValues::Mat(components) => {
-                for (j, c) in components.iter().enumerate() {
-                    builder.def_var(carry_vars[i][j], *c);
-                }
-            }
+        let flat = flatten_values(&val_map[yv]);
+        for (j, c) in flat.iter().enumerate() {
+            builder.def_var(carry_vars[i][j], *c);
         }
     }
 
@@ -509,13 +557,7 @@ fn lower_while(
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
         let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-        let vv = match &cv.binding.ty {
-            ValType::Mat { .. } => VarValues::Mat(components),
-            ValType::Vec { .. } => VarValues::Vec(components),
-            ValType::Scalar(_) => VarValues::Scalar(components[0]),
-            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
-            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
-        };
+        let vv = unflatten_values(&components, &cv.binding.ty);
         val_map.insert(cv.binding.var, vv);
     }
 }
@@ -886,6 +928,20 @@ fn lower_inst(
                         .collect();
                     VarValues::Mat(components)
                 }
+                (VarValues::Array(tv), VarValues::Array(ev)) => {
+                    assert_eq!(tv.len(), ev.len(), "select branches must have matching array sizes");
+                    let components: Vec<_> = tv.iter().zip(ev.iter())
+                        .map(|(t, e)| builder.ins().select(c, *t, *e))
+                        .collect();
+                    VarValues::Array(components)
+                }
+                (VarValues::Struct(tv), VarValues::Struct(ev)) => {
+                    assert_eq!(tv.len(), ev.len(), "select branches must have matching struct sizes");
+                    let components: Vec<_> = tv.iter().zip(ev.iter())
+                        .map(|(t, e)| builder.ins().select(c, *t, *e))
+                        .collect();
+                    VarValues::Struct(components)
+                }
                 _ => panic!("select branches must have matching types"),
             }
         }
@@ -1133,11 +1189,104 @@ fn lower_inst(
             // Return dummy u32 0
             VarValues::Scalar(builder.ins().iconst(I32, 0))
         }
-        Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
-            todo!("array operations not yet supported in Cranelift JIT")
+        Inst::ArrayNew(elements) => {
+            let mut flat = Vec::new();
+            for elem_var in elements {
+                flat.extend(flatten_values(&val_map[elem_var]));
+            }
+            VarValues::Array(flat)
         }
-        Inst::StructNew(_) | Inst::StructGet { .. } | Inst::StructSet { .. } => {
-            todo!("struct operations not yet supported in Cranelift JIT")
+        Inst::ArrayGet { array, index } => {
+            let arr = get_array(val_map, array);
+            let idx_val = get_scalar(val_map, index);
+
+            let arr_ty = kernel.binding(*array).unwrap().ty.clone();
+            let (elem_ty, arr_size) = match &arr_ty {
+                ValType::Array { elem, size } => (elem.as_ref().clone(), *size as usize),
+                _ => panic!("ArrayGet on non-array"),
+            };
+            let elem_count = elem_ty.flat_scalar_count(&kernel.struct_defs);
+
+            // Dynamic indexing via chain of selects: start with element 0, conditionally replace
+            let mut result: Vec<cranelift_codegen::ir::Value> = arr[0..elem_count].to_vec();
+            for i in 1..arr_size {
+                let i_val = builder.ins().iconst(I32, i as i64);
+                let cond = builder.ins().icmp(IntCC::Equal, idx_val, i_val);
+                for j in 0..elem_count {
+                    let src = arr[i * elem_count + j];
+                    result[j] = builder.ins().select(cond, src, result[j]);
+                }
+            }
+            unflatten_values(&result, &elem_ty)
+        }
+        Inst::ArraySet { array, index, val } => {
+            let arr = get_array(val_map, array);
+            let idx_val = get_scalar(val_map, index);
+            let new_elem = flatten_values(&val_map[val]);
+
+            let arr_ty = kernel.binding(*array).unwrap().ty.clone();
+            let (elem_ty, arr_size) = match &arr_ty {
+                ValType::Array { elem, size } => (elem.as_ref().clone(), *size as usize),
+                _ => panic!("ArraySet on non-array"),
+            };
+            let elem_count = elem_ty.flat_scalar_count(&kernel.struct_defs);
+
+            let mut result = arr.to_vec();
+            for i in 0..arr_size {
+                let i_val = builder.ins().iconst(I32, i as i64);
+                let cond = builder.ins().icmp(IntCC::Equal, idx_val, i_val);
+                for j in 0..elem_count {
+                    let offset = i * elem_count + j;
+                    result[offset] = builder.ins().select(cond, new_elem[j], result[offset]);
+                }
+            }
+            VarValues::Array(result)
+        }
+        Inst::StructNew(fields) => {
+            let mut flat = Vec::new();
+            for field_var in fields {
+                flat.extend(flatten_values(&val_map[field_var]));
+            }
+            VarValues::Struct(flat)
+        }
+        Inst::StructGet { val, field } => {
+            let s = get_struct(val_map, val);
+            let struct_ty = kernel.binding(*val).unwrap().ty.clone();
+            let struct_name = match &struct_ty {
+                ValType::Struct(name) => name.clone(),
+                _ => panic!("StructGet on non-struct"),
+            };
+            let sd = kernel.struct_defs.iter().find(|d| d.name == struct_name).unwrap();
+
+            // Compute offset: sum flat_scalar_count of all fields before this one
+            let mut offset = 0;
+            for i in 0..(*field as usize) {
+                offset += sd.fields[i].1.flat_scalar_count(&kernel.struct_defs);
+            }
+            let field_ty = &sd.fields[*field as usize].1;
+            let field_count = field_ty.flat_scalar_count(&kernel.struct_defs);
+
+            unflatten_values(&s[offset..offset + field_count], field_ty)
+        }
+        Inst::StructSet { val, field, new_val } => {
+            let s = get_struct(val_map, val);
+            let new_field = flatten_values(&val_map[new_val]);
+            let struct_ty = kernel.binding(*val).unwrap().ty.clone();
+            let struct_name = match &struct_ty {
+                ValType::Struct(name) => name.clone(),
+                _ => panic!("StructSet on non-struct"),
+            };
+            let sd = kernel.struct_defs.iter().find(|d| d.name == struct_name).unwrap();
+
+            let mut offset = 0;
+            for i in 0..(*field as usize) {
+                offset += sd.fields[i].1.flat_scalar_count(&kernel.struct_defs);
+            }
+            let field_count = sd.fields[*field as usize].1.flat_scalar_count(&kernel.struct_defs);
+
+            let mut result = s.to_vec();
+            result[offset..offset + field_count].copy_from_slice(&new_field);
+            VarValues::Struct(result)
         }
     }
 }
