@@ -15,6 +15,8 @@ struct Lowerer {
     call_count: u32,
     /// Maps buffer names to indices.
     buf_names: HashMap<String, u32>,
+    /// Struct type definitions.
+    struct_defs: Vec<StructDef>,
 }
 
 impl Lowerer {
@@ -26,6 +28,7 @@ impl Lowerer {
             fn_defs: HashMap::new(),
             call_count: 0,
             buf_names: HashMap::new(),
+            struct_defs: Vec::new(),
         }
     }
 
@@ -87,7 +90,7 @@ impl Lowerer {
                     ValType::Scalar(ScalarType::I32) => Const::I32(*v as i32),
                     ValType::Scalar(ScalarType::I64) => Const::I64(*v as i64),
                     ValType::Scalar(ScalarType::U64) => Const::U64(*v),
-                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } | ValType::Mat { .. } | ValType::Array { .. } => unreachable!(),
+                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } | ValType::Mat { .. } | ValType::Array { .. } | ValType::Struct(_) => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(), Inst::Const(c))));
                 var
@@ -149,20 +152,57 @@ impl Lowerer {
             TExpr::Ident(name, _) => {
                 self.lookup(name)
             }
-            TExpr::FieldAccess { expr, field, .. } => {
-                let vec_var = self.lower_expr(expr, out);
-                let index = match field.as_str() {
-                    "x" => 0u8,
-                    "y" => 1,
-                    "z" => 2,
-                    "w" => 3,
-                    _ => unreachable!(),
-                };
-                let elem_ty = expr.ty().element_scalar();
-                let var = self.auto_var("tmp", ValType::Scalar(elem_ty));
+            TExpr::FieldAccess { expr, field, ty } => {
+                let val_var = self.lower_expr(expr, out);
+                match &expr.ty() {
+                    ValType::Struct(sname) => {
+                        // Look up field index from struct_defs
+                        let sdef = self.struct_defs.iter()
+                            .find(|sd| sd.name == *sname)
+                            .expect("struct def not found (should have been caught by typechecker)");
+                        let (idx, _) = sdef.field_index(field)
+                            .expect("field not found (should have been caught by typechecker)");
+                        let var = self.auto_var("tmp", ty.clone());
+                        let vname = self.binding_name(var);
+                        out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty.clone(),
+                            Inst::StructGet { val: val_var, field: idx as u32 })));
+                        var
+                    }
+                    _ => {
+                        // Vec component access
+                        let index = match field.as_str() {
+                            "x" => 0u8,
+                            "y" => 1,
+                            "z" => 2,
+                            "w" => 3,
+                            _ => unreachable!(),
+                        };
+                        let elem_ty = expr.ty().element_scalar();
+                        let var = self.auto_var("tmp", ValType::Scalar(elem_ty));
+                        let vname = self.binding_name(var);
+                        out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Scalar(elem_ty),
+                            Inst::VecExtract { vec: val_var, index })));
+                        var
+                    }
+                }
+            }
+            TExpr::StructLit { name, fields, .. } => {
+                // Look up struct def to get canonical field order
+                let sdef = self.struct_defs.iter()
+                    .find(|sd| sd.name == *name)
+                    .expect("struct def not found (should have been caught by typechecker)")
+                    .clone();
+                // Lower fields in definition order
+                let mut field_vars = vec![Var(0); sdef.fields.len()];
+                for (fname, fexpr) in fields {
+                    let (idx, _) = sdef.field_index(fname).unwrap();
+                    field_vars[idx] = self.lower_expr(fexpr, out);
+                }
+                let ty = ValType::Struct(name.clone());
+                let var = self.auto_var("tmp", ty.clone());
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Scalar(elem_ty),
-                    Inst::VecExtract { vec: vec_var, index })));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                    Inst::StructNew(field_vars))));
                 var
             }
             TExpr::BinOp { op, lhs, rhs, ty } => {
@@ -1079,6 +1119,7 @@ impl Lowerer {
 
 pub fn lower(program: &TProgram) -> Kernel {
     let mut lowerer = Lowerer::new();
+    lowerer.struct_defs = program.struct_defs.clone();
 
     // Register inline functions
     for f in &program.fns {
@@ -1117,5 +1158,6 @@ pub fn lower(program: &TProgram) -> Kernel {
         body,
         emit,
         buffers: buf_decls,
+        struct_defs: program.struct_defs.clone(),
     }
 }

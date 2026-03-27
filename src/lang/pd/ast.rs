@@ -81,6 +81,11 @@ pub enum Expr {
         field: String,
         span: Span,
     },
+    StructLit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -105,6 +110,7 @@ impl Expr {
             Expr::Cast { span, .. } => span,
             Expr::IfElse { span, .. } => span,
             Expr::FieldAccess { span, .. } => span,
+            Expr::StructLit { span, .. } => span,
         }
     }
 }
@@ -164,6 +170,13 @@ pub struct BufferParam {
 }
 
 #[derive(Debug, Clone)]
+pub struct AstStructDef {
+    pub name: String,
+    pub fields: Vec<(String, ValType)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
     pub params: Vec<Param>,
@@ -184,6 +197,7 @@ pub struct KernelDef {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub struct_defs: Vec<AstStructDef>,
     pub fns: Vec<FnDef>,
     pub kernel: KernelDef,
 }

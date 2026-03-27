@@ -453,6 +453,7 @@ fn lower_while(
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
             ValType::Array { .. } => panic!("LLVM backend does not support Array carry vars"),
+            ValType::Struct(_) => panic!("LLVM backend does not support Struct carry vars"),
         };
         val_map.insert(cv.binding.var, vv);
         carry_phis.push(phis);
@@ -779,6 +780,7 @@ fn lower_inst(
                     VarValues::Scalar(builder.build_select(c, t.into_int_value(), e.into_int_value(), "sel").unwrap())
                 }
                 ValType::Array { .. } => panic!("LLVM backend does not support Array in Select"),
+                ValType::Struct(_) => panic!("LLVM backend does not support Struct in Select"),
             }
         }
         Inst::PackArgb { r, g, b } => {
@@ -1066,6 +1068,9 @@ fn lower_inst(
 
         Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
             panic!("LLVM backend does not yet support Array instructions");
+        }
+        Inst::StructNew(_) | Inst::StructGet { .. } | Inst::StructSet { .. } => {
+            panic!("LLVM backend does not yet support Struct instructions");
         }
     }
 }

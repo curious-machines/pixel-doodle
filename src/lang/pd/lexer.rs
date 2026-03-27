@@ -20,6 +20,7 @@ pub enum Token {
     Buffers,
     Read,
     Write,
+    Struct,
     // Types
     TyF32,
     TyF64,
@@ -109,6 +110,7 @@ impl fmt::Display for Token {
             Token::Buffers => write!(f, "buffers"),
             Token::Read => write!(f, "read"),
             Token::Write => write!(f, "write"),
+            Token::Struct => write!(f, "struct"),
             Token::TyF32 => write!(f, "f32"),
             Token::TyF64 => write!(f, "f64"),
             Token::TyI8 => write!(f, "i8"),
@@ -342,6 +344,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "buffers" => Token::Buffers,
                 "read" => Token::Read,
                 "write" => Token::Write,
+                "struct" => Token::Struct,
                 "f32" => Token::TyF32,
                 "f64" => Token::TyF64,
                 "i8" => Token::TyI8,

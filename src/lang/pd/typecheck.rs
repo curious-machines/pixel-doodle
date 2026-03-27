@@ -1,4 +1,4 @@
-use crate::kernel_ir::{ScalarType, ValType};
+use crate::kernel_ir::{ScalarType, StructDef, ValType};
 use super::ast::*;
 use std::collections::HashMap;
 
@@ -69,6 +69,11 @@ pub enum TExpr {
         field: String,
         ty: ValType,
     },
+    StructLit {
+        name: String,
+        fields: Vec<(String, TExpr)>,
+        ty: ValType,
+    },
 }
 
 impl TExpr {
@@ -93,6 +98,7 @@ impl TExpr {
             TExpr::Cast { to, .. } => to.clone(),
             TExpr::IfElse { ty, .. } => ty.clone(),
             TExpr::FieldAccess { ty, .. } => ty.clone(),
+            TExpr::StructLit { ty, .. } => ty.clone(),
         }
     }
 }
@@ -151,6 +157,7 @@ pub struct TKernelDef {
 
 #[derive(Debug, Clone)]
 pub struct TProgram {
+    pub struct_defs: Vec<StructDef>,
     pub fns: Vec<TFnDef>,
     pub kernel: TKernelDef,
 }
@@ -162,6 +169,8 @@ struct Checker {
     fn_sigs: HashMap<String, (Vec<Param>, ValType)>,
     /// Buffer declarations (name → is_output).
     buffers: HashMap<String, bool>,
+    /// Struct type definitions (name → StructDef).
+    struct_defs: HashMap<String, StructDef>,
 }
 
 impl Checker {
@@ -170,6 +179,7 @@ impl Checker {
             scopes: vec![HashMap::new()],
             fn_sigs: HashMap::new(),
             buffers: HashMap::new(),
+            struct_defs: HashMap::new(),
         }
     }
 
@@ -271,6 +281,7 @@ impl Checker {
                     ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
                     ValType::Mat { .. } => Err(err(span, "cannot use integer literal as mat type".into())),
                     ValType::Array { .. } => Err(err(span, "cannot use integer literal as array type".into())),
+                    ValType::Struct(_) => Err(err(span, "cannot use integer literal as struct type".into())),
                 }
             }
 
@@ -292,7 +303,7 @@ impl Checker {
                         let negatable = match &ty {
                             ValType::Scalar(s) => s.is_float() || s.is_integer(),
                             ValType::Vec { .. } => true,
-                            ValType::Mat { .. } | ValType::Array { .. } => false,
+                            ValType::Mat { .. } | ValType::Array { .. } | ValType::Struct(_) => false,
                         };
                         if !negatable {
                             return Err(err(span, format!("cannot negate {}", ty)));
@@ -329,27 +340,75 @@ impl Checker {
             Expr::FieldAccess { expr: inner, field, span } => {
                 let inner = self.check_expr(inner, None)?;
                 let inner_ty = inner.ty();
-                match (&inner_ty, field.as_str()) {
-                    (ValType::Vec { len: 2, .. }, "x") | (ValType::Vec { len: 2, .. }, "y") |
-                    (ValType::Vec { len: 3, .. }, "x") | (ValType::Vec { len: 3, .. }, "y") | (ValType::Vec { len: 3, .. }, "z") |
-                    (ValType::Vec { len: 4, .. }, "x") | (ValType::Vec { len: 4, .. }, "y") | (ValType::Vec { len: 4, .. }, "z") | (ValType::Vec { len: 4, .. }, "w") => {
-                        let elem = inner_ty.element_scalar();
+                match &inner_ty {
+                    ValType::Vec { len, .. } => {
+                        let valid = match (len, field.as_str()) {
+                            (2, "x") | (2, "y") => true,
+                            (3, "x") | (3, "y") | (3, "z") => true,
+                            (4, "x") | (4, "y") | (4, "z") | (4, "w") => true,
+                            _ => false,
+                        };
+                        if valid {
+                            let elem = inner_ty.element_scalar();
+                            Ok(TExpr::FieldAccess {
+                                expr: Box::new(inner),
+                                field: field.clone(),
+                                ty: ValType::Scalar(elem),
+                            })
+                        } else {
+                            Err(err(span, format!("vec{} has no '{}' component", len, field)))
+                        }
+                    }
+                    ValType::Struct(sname) => {
+                        let sdef = self.struct_defs.get(sname).ok_or_else(|| {
+                            err(span, format!("undefined struct type '{}'", sname))
+                        })?;
+                        let (_, fty) = sdef.field_index(field).ok_or_else(|| {
+                            err(span, format!("struct '{}' has no field '{}'", sname, field))
+                        })?;
+                        let fty = fty.clone();
                         Ok(TExpr::FieldAccess {
                             expr: Box::new(inner),
                             field: field.clone(),
-                            ty: ValType::Scalar(elem),
+                            ty: fty,
                         })
-                    }
-                    (ValType::Vec { len: 2, .. }, "z") | (ValType::Vec { len: 2, .. }, "w") => {
-                        Err(err(span, format!("vec2 has no '{}' component", field)))
-                    }
-                    (ValType::Vec { len: 3, .. }, "w") => {
-                        Err(err(span, "vec3 has no 'w' component".into()))
                     }
                     _ => {
                         Err(err(span, format!("type {} has no field '{}'", inner_ty, field)))
                     }
                 }
+            }
+
+            Expr::StructLit { name, fields, span } => {
+                let sdef = self.struct_defs.get(name).ok_or_else(|| {
+                    err(span, format!("undefined struct type '{}'", name))
+                })?.clone();
+                if fields.len() != sdef.fields.len() {
+                    return Err(err(span, format!(
+                        "struct '{}' has {} fields, but {} provided",
+                        name, sdef.fields.len(), fields.len()
+                    )));
+                }
+                let mut tfields = Vec::new();
+                for (fname, fexpr) in fields {
+                    let (_, expected_ty) = sdef.field_index(fname).ok_or_else(|| {
+                        err(span, format!("struct '{}' has no field '{}'", name, fname))
+                    })?;
+                    let expected_ty = expected_ty.clone();
+                    let texpr = self.check_expr(fexpr, Some(expected_ty.clone()))?;
+                    if texpr.ty() != expected_ty {
+                        return Err(err(fexpr.span(), format!(
+                            "field '{}': expected {}, got {}",
+                            fname, expected_ty, texpr.ty()
+                        )));
+                    }
+                    tfields.push((fname.clone(), texpr));
+                }
+                Ok(TExpr::StructLit {
+                    name: name.clone(),
+                    fields: tfields,
+                    ty: ValType::Struct(name.clone()),
+                })
             }
 
             Expr::IfElse { cond, then_expr, else_expr, span } => {
@@ -1052,7 +1111,7 @@ fn expected_for_arith(expr: &Expr, check: &dyn Fn(&Expr) -> TypeResult<TExpr>) -
         Expr::U64Lit(_, _) => Some(ValType::U64),
         Expr::BoolLit(_, _) => None,
         Expr::IntLit(_, _) => None,
-        Expr::Ident(_, _) | Expr::Call { .. } | Expr::Cast { .. } | Expr::IfElse { .. } | Expr::FieldAccess { .. } => {
+        Expr::Ident(_, _) | Expr::Call { .. } | Expr::Cast { .. } | Expr::IfElse { .. } | Expr::FieldAccess { .. } | Expr::StructLit { .. } => {
             check(expr).ok().map(|t| t.ty())
         }
         Expr::BinOp { .. } | Expr::UnaryOp { .. } => {
@@ -1063,6 +1122,17 @@ fn expected_for_arith(expr: &Expr, check: &dyn Fn(&Expr) -> TypeResult<TExpr>) -
 
 pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     let mut checker = Checker::new();
+
+    // Register struct definitions
+    let mut ir_struct_defs = Vec::new();
+    for sd in &program.struct_defs {
+        let sdef = StructDef {
+            name: sd.name.clone(),
+            fields: sd.fields.clone(),
+        };
+        checker.struct_defs.insert(sd.name.clone(), sdef.clone());
+        ir_struct_defs.push(sdef);
+    }
 
     // Register fn signatures
     for f in &program.fns {
@@ -1099,6 +1169,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     let tbody = checker.check_stmts(&program.kernel.body)?;
 
     Ok(TProgram {
+        struct_defs: ir_struct_defs,
         fns: tfns,
         kernel: TKernelDef {
             name: program.kernel.name.clone(),

@@ -85,6 +85,20 @@ impl Parser {
         }
     }
 
+    /// Lookahead: after seeing Ident and peeking LBrace, check if this is a
+    /// struct literal (Ident LBrace Ident Colon ...) vs. a block.
+    fn is_struct_lit_ahead(&self) -> bool {
+        // Current peek is LBrace. Check pos+1 for Ident, pos+2 for Colon.
+        let p1 = self.pos + 1;
+        let p2 = self.pos + 2;
+        if p2 < self.tokens.len() {
+            matches!(&self.tokens[p1].token, Token::Ident(_))
+                && matches!(&self.tokens[p2].token, Token::Colon)
+        } else {
+            false
+        }
+    }
+
     fn error(&self, message: String) -> ParseError {
         ParseError {
             line: self.tokens[self.pos].line,
@@ -95,6 +109,7 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut fns = Vec::new();
+        let mut struct_defs = Vec::new();
         let mut kernel = None;
 
         loop {
@@ -103,6 +118,7 @@ impl Parser {
                     let use_fns = self.parse_use()?;
                     fns.extend(use_fns);
                 }
+                Token::Struct => struct_defs.push(self.parse_struct_def()?),
                 Token::Fn => fns.push(self.parse_fn_def()?),
                 Token::Kernel => {
                     if kernel.is_some() {
@@ -111,12 +127,34 @@ impl Parser {
                     kernel = Some(self.parse_kernel_def()?);
                 }
                 Token::Eof => break,
-                _ => return Err(self.error(format!("expected 'use', 'fn', or 'kernel', got '{}'", self.peek()))),
+                _ => return Err(self.error(format!("expected 'use', 'struct', 'fn', or 'kernel', got '{}'", self.peek()))),
             }
         }
 
         let kernel = kernel.ok_or_else(|| self.error("no kernel defined".into()))?;
-        Ok(Program { fns, kernel })
+        Ok(Program { struct_defs, fns, kernel })
+    }
+
+    /// Parse `struct Name { field: type, ... }`
+    fn parse_struct_def(&mut self) -> Result<AstStructDef, ParseError> {
+        let span = self.span();
+        self.expect(&Token::Struct)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+        let mut fields = Vec::new();
+        while *self.peek() != Token::RBrace {
+            let (fname, _) = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let ty = self.parse_type()?;
+            fields.push((fname, ty));
+            if *self.peek() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(AstStructDef { name, fields, span })
     }
 
     /// Parse `use "path";` and return the function definitions from the included file.
@@ -239,6 +277,11 @@ impl Parser {
                 let elem = self.parse_scalar_type()?;
                 self.expect(&Token::Gt)?;
                 Ok(ValType::Mat { size, elem })
+            }
+            Token::Ident(name) => {
+                let name = name.clone();
+                self.advance();
+                Ok(ValType::Struct(name))
             }
             _ => Err(self.error(format!("expected type, got '{}'", self.peek()))),
         }
@@ -688,6 +731,27 @@ impl Parser {
                     }
                     self.expect(&Token::RParen)?;
                     Ok(Expr::Call { name, args, span })
+                } else if *self.peek() == Token::LBrace && self.is_struct_lit_ahead() {
+                    // Struct literal: Name { field: expr, ... }
+                    self.advance(); // {
+                    let mut fields = Vec::new();
+                    if *self.peek() != Token::RBrace {
+                        loop {
+                            let (fname, _) = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
+                            let expr = self.parse_expr()?;
+                            fields.push((fname, expr));
+                            if *self.peek() != Token::Comma {
+                                break;
+                            }
+                            self.advance();
+                            if *self.peek() == Token::RBrace {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&Token::RBrace)?;
+                    Ok(Expr::StructLit { name, fields, span })
                 } else {
                     Ok(Expr::Ident(name, span))
                 }

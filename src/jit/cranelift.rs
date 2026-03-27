@@ -448,6 +448,7 @@ fn lower_while(
                 vec![cl_var]
             }
             ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
+            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
         }
     }).collect();
 
@@ -464,6 +465,7 @@ fn lower_while(
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
             ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
+            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
         };
         val_map.insert(cv.binding.var, vv);
     }
@@ -512,6 +514,7 @@ fn lower_while(
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
             ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
+            ValType::Struct(_) => todo!("struct carry vars not yet supported in Cranelift JIT"),
         };
         val_map.insert(cv.binding.var, vv);
     }
@@ -1132,6 +1135,9 @@ fn lower_inst(
         }
         Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
             todo!("array operations not yet supported in Cranelift JIT")
+        }
+        Inst::StructNew(_) | Inst::StructGet { .. } | Inst::StructSet { .. } => {
+            todo!("struct operations not yet supported in Cranelift JIT")
         }
     }
 }

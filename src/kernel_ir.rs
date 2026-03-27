@@ -73,12 +73,29 @@ impl std::fmt::Display for ScalarType {
     }
 }
 
+/// A struct type definition: named collection of typed fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, ValType)>,
+}
+
+impl StructDef {
+    /// Find a field by name, returning (index, type).
+    pub fn field_index(&self, name: &str) -> Option<(usize, &ValType)> {
+        self.fields.iter().enumerate()
+            .find(|(_, (n, _))| n == name)
+            .map(|(i, (_, ty))| (i, ty))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValType {
     Scalar(ScalarType),
     Vec { len: u8, elem: ScalarType },  // len in {2, 3, 4}
     Mat { size: u8, elem: ScalarType }, // square matrix, size in {2, 3, 4}; column-major
     Array { elem: Box<ValType>, size: u32 }, // fixed-size array
+    Struct(String), // references a StructDef by name
 }
 
 impl ValType {
@@ -111,21 +128,25 @@ impl ValType {
     }
 
     /// Number of scalar components (1 for scalars, 2..4 for vectors, N*N for matrices).
+    /// Panics for structs (use StructDef to query fields).
     pub fn component_count(&self) -> usize {
         match self {
             ValType::Vec { len, .. } => *len as usize,
             ValType::Mat { size, .. } => (*size as usize) * (*size as usize),
             ValType::Array { size, .. } => *size as usize,
             ValType::Scalar(_) => 1,
+            ValType::Struct(_) => panic!("component_count not meaningful for structs"),
         }
     }
 
     /// The element type of a vector/matrix, or the scalar type itself.
+    /// Panics for structs.
     pub fn element_scalar(&self) -> ScalarType {
         match self {
             ValType::Vec { elem, .. } | ValType::Mat { elem, .. } => *elem,
             ValType::Scalar(s) => *s,
             ValType::Array { elem, .. } => elem.element_scalar(),
+            ValType::Struct(_) => panic!("element_scalar not meaningful for structs"),
         }
     }
 
@@ -171,6 +192,7 @@ impl std::fmt::Display for ValType {
             ValType::Vec { len, elem } => write!(f, "vec{}<{}>", len, elem),
             ValType::Mat { size, elem } => write!(f, "mat{}<{}>", size, elem),
             ValType::Array { elem, size } => write!(f, "array<{}; {}>", elem, size),
+            ValType::Struct(name) => write!(f, "{}", name),
         }
     }
 }
@@ -344,6 +366,14 @@ pub enum Inst {
     // Column extraction (matN -> vecN, by column index)
     MatCol { mat: Var, index: u8 },
 
+    // Struct operations
+    /// Create a struct from field values (in definition order).
+    StructNew(Vec<Var>),
+    /// Get a field from a struct by field index.
+    StructGet { val: Var, field: u32 },
+    /// Set a field in a struct, producing a new struct value.
+    StructSet { val: Var, field: u32, new_val: Var },
+
     // Array operations
     /// Create a fixed-size array from elements.
     ArrayNew(Vec<Var>),
@@ -409,6 +439,8 @@ pub struct Kernel {
     pub emit: Var,
     /// Buffer declarations for simulation kernels. Empty for standard pixel kernels.
     pub buffers: Vec<BufDecl>,
+    /// Struct type definitions used by this kernel.
+    pub struct_defs: Vec<StructDef>,
 }
 
 impl Kernel {

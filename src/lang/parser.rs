@@ -2120,6 +2120,9 @@ impl Parser {
                 ValType::Array { .. } => {
                     panic!("identity copy for Array types not yet supported in inline expansion")
                 }
+                ValType::Struct(_) => {
+                    panic!("identity copy for Struct types not yet supported in inline expansion")
+                }
             }
         }
     }
@@ -2156,6 +2159,9 @@ impl Parser {
             Inst::ArrayNew(elems) => Inst::ArrayNew(elems.iter().map(&remap).collect()),
             Inst::ArrayGet { array, index } => Inst::ArrayGet { array: remap(array), index: remap(index) },
             Inst::ArraySet { array, index, val } => Inst::ArraySet { array: remap(array), index: remap(index), val: remap(val) },
+            Inst::StructNew(fields) => Inst::StructNew(fields.iter().map(&remap).collect()),
+            Inst::StructGet { val, field } => Inst::StructGet { val: remap(val), field: *field },
+            Inst::StructSet { val, field, new_val } => Inst::StructSet { val: remap(val), field: *field, new_val: remap(new_val) },
         }
     }
 
@@ -2363,7 +2369,7 @@ impl Parser {
         self.expect_tok(&Token::RBrace)?;
 
         let buffers = std::mem::take(&mut self.buf_decls);
-        Ok(Kernel { name, params, return_ty, body, emit: emit_var, buffers })
+        Ok(Kernel { name, params, return_ty, body, emit: emit_var, buffers, struct_defs: vec![] })
     }
 }
 

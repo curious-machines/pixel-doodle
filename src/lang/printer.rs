@@ -283,6 +283,23 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *val, kernel);
         }
+        Inst::StructNew(fields) => {
+            out.push_str("struct_new");
+            for f in fields {
+                out.push(' ');
+                print_operand(out, *f, kernel);
+            }
+        }
+        Inst::StructGet { val, field } => {
+            out.push_str(&format!("struct_get {} ", field));
+            print_operand(out, *val, kernel);
+        }
+        Inst::StructSet { val, field, new_val } => {
+            out.push_str(&format!("struct_set {} ", field));
+            print_operand(out, *val, kernel);
+            out.push(' ');
+            print_operand(out, *new_val, kernel);
+        }
     }
 }
 
