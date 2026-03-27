@@ -10,6 +10,7 @@ on key(bracket_left) iterations -= 1
 pipeline pd {
   kernel "game_of_life.pd"
   kernel init_state = "init/random_binary.pd"
+  kernel inject = "../../shared/inject.pd"
 
   buffer state = constant(0.0)
   buffer age = constant(0.0)
@@ -20,8 +21,8 @@ pipeline pd {
     run init_state { out: out state }
   }
   on click(continuous: true) {
-    run inject(value: 1.0, radius: 3) { target: out state }
-    run inject(value: 0.0, radius: 3) { target: out age }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0, falloff_quadratic: 0) { target: state, target_out: out state }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0, falloff_quadratic: 0) { target: age, target_out: out age }
   }
   loop(iterations: iterations) {
     run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }

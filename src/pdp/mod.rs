@@ -74,6 +74,7 @@ mod tests {
             pipeline {
               kernel "game_of_life.pd"
               kernel init_state = "init/random_binary.pd"
+              kernel inject = "shared/inject.pd"
 
               buffer state = constant(0.0)
               buffer age = constant(0.0)
@@ -84,8 +85,8 @@ mod tests {
                 run init_state { out: out state }
               }
               on click(continuous: true) {
-                run inject(value: 1.0, radius: 3) { target: out state }
-                run inject(value: 0.0, radius: 3) { target: out age }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) { target: state, target_out: out state }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) { target: age, target_out: out age }
               }
               loop(iterations: iterations) {
                 run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
@@ -99,7 +100,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.title.as_deref(), Some("Game of Life"));
-        assert_eq!(config.pipelines[0].kernels.len(), 2);
+        assert_eq!(config.pipelines[0].kernels.len(), 3);
         assert_eq!(config.pipelines[0].buffers.len(), 4);
         assert_eq!(config.variables.len(), 1);
         assert_eq!(config.key_bindings.len(), 4);
@@ -119,6 +120,7 @@ mod tests {
               kernel divergence = "smoke/divergence.pd"
               kernel jacobi = "smoke/jacobi.pd"
               kernel project = "smoke/project.pd"
+              kernel inject = "shared/inject.pd"
 
               buffer vx = constant(0.0)
               buffer vy = constant(0.0)
@@ -131,8 +133,8 @@ mod tests {
               buffer divergence = constant(0.0)
 
               on click(continuous: true) {
-                run inject(value: -3.0, radius: 15) { target: out vy }
-                run inject(value: 0.5, radius: 15) { target: out density }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
               }
               swap vx <-> vx0, vy <-> vy0, density <-> density0
               run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
@@ -149,7 +151,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.pipelines[0].kernels.len(), 4);
+        assert_eq!(config.pipelines[0].kernels.len(), 5);
         assert_eq!(config.pipelines[0].buffers.len(), 9);
     }
 

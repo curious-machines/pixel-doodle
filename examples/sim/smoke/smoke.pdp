@@ -8,6 +8,7 @@ pipeline pd {
   kernel divergence = "divergence.pd"
   kernel jacobi = "jacobi.pd"
   kernel project = "project.pd"
+  kernel inject = "../../shared/inject.pd"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -20,8 +21,8 @@ pipeline pd {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out vy }
-    run inject(value: 0.5, radius: 15, falloff: "quadratic") { target: out density }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
   }
   swap vx <-> vx0, vy <-> vy0, density <-> density0
   run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
@@ -40,6 +41,7 @@ pipeline pdir {
   kernel divergence = "divergence.pdir"
   kernel jacobi = "jacobi.pdir"
   kernel project = "project.pdir"
+  kernel inject = "../../shared/inject.pd"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -52,8 +54,8 @@ pipeline pdir {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out vy }
-    run inject(value: 0.5, radius: 15, falloff: "quadratic") { target: out density }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
   }
   swap vx <-> vx0, vy <-> vy0, density <-> density0
   run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }

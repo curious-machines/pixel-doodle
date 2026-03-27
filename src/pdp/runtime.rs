@@ -632,8 +632,7 @@ impl Runtime {
                     Literal::Int(i) => *i as f64,
                     Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
                     Literal::Str(_) => 0.0,
-                    Literal::VarRef(name) => *self.variables.get(name)
-                        .unwrap_or_else(|| panic!("undefined variable '{}' in kernel args", name)),
+                    Literal::VarRef(name) => self.get_variable(name),
                 },
                 None => panic!("missing argument '{}' for kernel", slot.name),
             };
@@ -683,12 +682,6 @@ impl Runtime {
         args: &[NamedArg],
         pool: &Option<rayon::ThreadPool>,
     ) {
-        // Handle built-in inject
-        if kernel_name == "inject" {
-            self.execute_inject(input_bindings, args);
-            return;
-        }
-
         let entry = self.kernels.get(kernel_name);
         match entry {
             Some(CompiledKernelEntry::Pixel { func, user_arg_slots, .. }) => {
@@ -851,88 +844,6 @@ impl Runtime {
         accum.accumulate(&self.pixel_buffer);
         let disp = self.display_buffer.as_mut().unwrap();
         accum.resolve(disp);
-    }
-
-    /// Built-in inject: write a value into a buffer around the mouse position.
-    fn execute_inject(&mut self, bindings: &[BufferBinding], args: &[NamedArg]) {
-        let out_binding = match bindings.iter().find(|b| b.is_output) {
-            Some(b) => b,
-            None => return,
-        };
-        let buf_name = &out_binding.buffer_name;
-
-        let mut value = 0.0f64;
-        let mut radius = 5.0f64;
-        let mut falloff = "flat";
-        for arg in args {
-            match arg.name.as_str() {
-                "value" => {
-                    if let Literal::Float(v) = &arg.value {
-                        value = *v;
-                    }
-                }
-                "radius" => {
-                    if let Literal::Float(v) = &arg.value {
-                        radius = *v;
-                    }
-                }
-                "falloff" => {
-                    // falloff is passed as identifier, stored as string
-                }
-                _ => {}
-            }
-        }
-        // Check for "falloff" in args — it might be stored differently
-        // For now, check the raw string representation
-        let use_quadratic = args.iter().any(|a| {
-            a.name == "falloff" && matches!(&a.value, Literal::Str(s) if s == "quadratic")
-        });
-        if use_quadratic {
-            falloff = "quadratic";
-        }
-
-        let w = self.width as usize;
-        let h = self.height as usize;
-        let mx = self.mouse_x as isize;
-        let my = self.mouse_y as isize;
-        let r = radius as isize;
-
-        // Check if this is a GPU buffer
-        if let Some(runner) = &self.gpu_sim_runner {
-            if !self.buffers.contains_key(buf_name) {
-                // GPU buffer — inject via runner
-                runner.inject_value(
-                    buf_name,
-                    mx.max(0) as u32,
-                    my.max(0) as u32,
-                    r as u32,
-                    value,
-                );
-                return;
-            }
-        }
-
-        if let Some(buf) = self.buffers.get_mut(buf_name) {
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let px = mx + dx;
-                    let py = my + dy;
-                    if px >= 0 && px < w as isize && py >= 0 && py < h as isize {
-                        let d2 = (dx * dx + dy * dy) as f64;
-                        let r2 = (r * r) as f64;
-                        if d2 <= r2 {
-                            let idx = py as usize * w + px as usize;
-                            if falloff == "quadratic" {
-                                let factor = 1.0 - d2 / r2;
-                                buf[idx] += value * factor;
-                            } else {
-                                buf[idx] = value;
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Handle a key press event. Returns `true` if the app should quit.

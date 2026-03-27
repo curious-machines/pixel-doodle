@@ -7,6 +7,7 @@ pipeline pd {
   kernel "gray_scott.pd"
   kernel init_u = "init/gray_scott_u.pd"
   kernel init_v = "init/gray_scott_v.pd"
+  kernel inject = "../../shared/inject.pd"
 
   buffer u = constant(0.0)
   buffer v = constant(0.0)
@@ -18,7 +19,7 @@ pipeline pd {
     run init_v { out: out v }
   }
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 5) { target: out v }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) { target: v, target_out: out v }
   }
   loop(iterations: 8) {
     run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
@@ -32,6 +33,7 @@ pipeline pdir {
   kernel "gray_scott.pdir"
   kernel init_u = "init/gray_scott_u.pd"
   kernel init_v = "init/gray_scott_v.pd"
+  kernel inject = "../../shared/inject.pd"
 
   buffer u = constant(0.0)
   buffer v = constant(0.0)
@@ -43,7 +45,7 @@ pipeline pdir {
     run init_v { out: out v }
   }
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 5) { target: out v }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) { target: v, target_out: out v }
   }
   loop(iterations: 8) {
     run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }

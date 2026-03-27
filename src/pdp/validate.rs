@@ -136,8 +136,7 @@ fn validate_steps(
                 input_bindings,
                 span,
             } => {
-                // 'inject' is a built-in, skip kernel check
-                if kernel_name != "inject" && !kernels.contains(kernel_name) {
+                if !kernels.contains(kernel_name) {
                     errors.push(ValidationError {
                         line: span.line,
                         col: span.col,
@@ -350,8 +349,9 @@ mod tests {
     }
 
     #[test]
-    fn inject_is_builtin() {
-        parse_and_validate(
+    fn inject_kernel_must_be_declared() {
+        // inject is no longer a built-in — it must be declared like any other kernel
+        let result = parse_and_validate(
             r#"
             pipeline {
               kernel "test.pd"
@@ -363,8 +363,8 @@ mod tests {
               display
             }
             "#,
-        )
-        .unwrap();
+        );
+        assert!(result.is_err(), "inject should require a kernel declaration");
     }
 
     #[test]
