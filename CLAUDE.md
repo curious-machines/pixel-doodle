@@ -45,6 +45,15 @@ Parameters fall into two categories:
 - **Built-in**: provided by the tile loop (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel kernels; `px`, `py`, `width`, `height` for sim kernels)
 - **User-defined**: any other parameter (e.g., `max_iter: u32`) — supplied via the `run` statement in `.pdp` files, passed through a packed byte buffer at the ABI level
 
+### Type System
+
+- **Scalars**: `f32`, `f64`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`
+- **Vectors**: `vec2<T>`, `vec3<T>`, `vec4<T>` — parameterized, explicit element type required
+- **Matrices**: `mat2<T>`, `mat3<T>`, `mat4<T>` — column-major, parameterized
+- **Fixed-size arrays**: `array<T; N>` — semicolon separates type from count
+- **Structs**: `struct Name { field: type, ... }` — user-defined composite types
+- No implicit type coercion — explicit `as` casts required
+
 ### Text Format (.pdir)
 
 ```

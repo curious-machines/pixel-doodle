@@ -21,13 +21,55 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 
 ## Types
 
+### Scalars
+
 | Type   | Description                    |
 |--------|--------------------------------|
+| `f32`  | 32-bit floating point          |
 | `f64`  | 64-bit floating point          |
+| `i8`   | 8-bit signed integer           |
+| `u8`   | 8-bit unsigned integer         |
+| `i16`  | 16-bit signed integer          |
+| `u16`  | 16-bit unsigned integer        |
+| `i32`  | 32-bit signed integer          |
 | `u32`  | 32-bit unsigned integer        |
+| `i64`  | 64-bit signed integer          |
+| `u64`  | 64-bit unsigned integer        |
 | `bool` | Boolean (true/false)           |
-| `vec2` | 2-component vector (2× f64)   |
-| `vec3` | 3-component vector (3× f64)   |
+
+### Vectors
+
+Parameterized by element type. The element type must always be specified — bare `vec2` is not valid.
+
+| Type       | Description                                |
+|------------|--------------------------------------------|
+| `vec2<T>`  | 2-component vector (e.g., `vec2<f64>`)     |
+| `vec3<T>`  | 3-component vector (e.g., `vec3<f32>`)     |
+| `vec4<T>`  | 4-component vector (e.g., `vec4<u8>`)      |
+
+`T` can be any numeric scalar type (not `bool`).
+
+### Matrices
+
+Column-major storage, parameterized by element type.
+
+| Type       | Description                                |
+|------------|--------------------------------------------|
+| `mat2<T>`  | 2x2 matrix (e.g., `mat2<f64>`)            |
+| `mat3<T>`  | 3x3 matrix (e.g., `mat3<f32>`)            |
+| `mat4<T>`  | 4x4 matrix (e.g., `mat4<f64>`)            |
+
+### Arrays
+
+Fixed-size arrays with explicit element type and length.
+
+| Type          | Description                              |
+|---------------|------------------------------------------|
+| `array<T; N>` | Fixed-size array (e.g., `array<f64; 8>`) |
+
+### Structs
+
+User-defined named field types, declared before use. (Syntax TBD — structs are defined in the kernel preamble and referenced by name.)
 
 There are no implicit conversions. Use explicit conversion ops to move between types.
 
@@ -58,36 +100,39 @@ count: u32 = const 42
 flag: bool = const true
 ```
 
-### Arithmetic (f64, u32)
+### Arithmetic (all numeric types)
 
-| Op    | Description     | Types      |
-|-------|-----------------|------------|
-| `add` | Addition        | f64, u32   |
-| `sub` | Subtraction     | f64, u32   |
-| `mul` | Multiplication  | f64, u32   |
-| `div` | Division        | f64, u32   |
-| `rem` | Remainder       | f64, u32   |
-| `min` | Minimum         | f64, u32   |
-| `max` | Maximum         | f64, u32   |
+| Op    | Description     |
+|-------|-----------------|
+| `add` | Addition        |
+| `sub` | Subtraction     |
+| `mul` | Multiplication  |
+| `div` | Division        |
+| `rem` | Remainder       |
+| `min` | Minimum         |
+| `max` | Maximum         |
+
+All numeric scalar types are supported: f32, f64, i8, u8, i16, u16, i32, u32, i64, u64. Both operands must be the same type. Signed types (i8, i16, i32, i64) use signed division and signed remainder.
 
 ```
 sum: f64 = add a b
 d: f64 = min d_circle d_box
+offset: i32 = add base 1i32
 ```
 
-### Unary (f64 unless noted)
+### Unary
 
-| Op      | Description              | Types      |
-|---------|--------------------------|------------|
-| `neg`   | Negate                   | f64, u32   |
-| `abs`   | Absolute value           | f64, u32   |
-| `sqrt`  | Square root              | f64        |
-| `floor` | Floor                    | f64        |
-| `ceil`  | Ceiling                  | f64        |
-| `round` | Round to nearest integer | f64        |
-| `trunc` | Truncate toward zero     | f64        |
-| `fract` | Fractional part (x - floor(x)) | f64  |
-| `not`   | Logical NOT              | bool       |
+| Op      | Description              | Types              |
+|---------|--------------------------|---------------------|
+| `neg`   | Negate                   | all numeric         |
+| `abs`   | Absolute value           | all numeric         |
+| `sqrt`  | Square root              | f32, f64            |
+| `floor` | Floor                    | f32, f64            |
+| `ceil`  | Ceiling                  | f32, f64            |
+| `round` | Round to nearest integer | f32, f64            |
+| `trunc` | Truncate toward zero     | f32, f64            |
+| `fract` | Fractional part (x - floor(x)) | f32, f64     |
+| `not`   | Logical NOT              | bool                |
 
 ```
 dist: f64 = sqrt sum_sq
@@ -128,19 +173,22 @@ falloff: f64 = exp neg_dist_sq
 brightness: f64 = pow base exponent
 ```
 
-### Bitwise (u32)
+### Bitwise (all integer types)
 
-| Op        | Description         |
-|-----------|---------------------|
-| `bit_and` | Bitwise AND         |
-| `bit_or`  | Bitwise OR          |
-| `bit_xor` | Bitwise XOR         |
-| `shl`     | Shift left          |
-| `shr`     | Shift right (logical) |
+| Op        | Description                                      |
+|-----------|--------------------------------------------------|
+| `bit_and` | Bitwise AND                                      |
+| `bit_or`  | Bitwise OR                                       |
+| `bit_xor` | Bitwise XOR                                      |
+| `shl`     | Shift left                                       |
+| `shr`     | Shift right (logical for unsigned, arithmetic for signed) |
+
+All integer types are supported: i8, u8, i16, u16, i32, u32, i64, u64. Both operands must be the same type. Signed types (i8, i16, i32, i64) use arithmetic shift right (sign-extending).
 
 ```
 masked: u32 = bit_and color 0xFF
 shifted: u32 = shl r 16
+flags: i32 = bit_or a b
 ```
 
 Note: inline literals in bitwise ops must be integers (e.g. `16`, not `16.0`).
@@ -167,22 +215,37 @@ both: bool = and cond_a cond_b
 | `gt` | Greater than         |
 | `ge` | Greater than or equal |
 
-Operands must be the same type (f64 or u32). The result is always `bool`.
+Operands must be the same numeric type. All numeric scalar types are supported. Signed types use signed comparisons. The result is always `bool`.
 
 ```
 inside: bool = lt dist radius
+positive: bool = gt count 0i32
 ```
 
 ### Conversions
 
-| Op          | From | To  |
-|-------------|------|-----|
-| `f64_to_u32`| f64  | u32 |
-| `u32_to_f64`| u32  | f64 |
+Any scalar-to-scalar cast is valid (except conversions to or from `bool`). The instruction name follows the pattern `{from}_to_{to}`:
 
 ```
 channel: u32 = f64_to_u32 intensity
 coord: f64 = u32_to_f64 pixel_count
+half: f32 = f64_to_f32 precise_val
+wide: i64 = i32_to_i64 narrow_val
+byte: u8 = u32_to_u8 color_channel
+signed: i32 = u32_to_i32 raw_bits
+```
+
+### Literal suffixes
+
+Numeric literals can carry a type suffix to disambiguate. Unsuffixed literals default to `f64` (floating point) or `u32` (integer) for backward compatibility.
+
+```
+a: f32 = const 1.0f32
+b: i32 = const 42i32
+c: u8 = const 255u8
+d: i64 = const -1i64
+e: f64 = const 3.14        # defaults to f64
+f: u32 = const 42           # defaults to u32
 ```
 
 ### Select
@@ -207,24 +270,28 @@ Equivalent to `0xFF000000 | (r << 16) | (g << 8) | b`.
 
 ## Vector operations
 
+Vectors can have any numeric element type (not just f64). All vector operations require operands to have the same vector type (same dimension and element type).
+
 ### Construction
 
 ```
-pos: vec2 = make_vec2 x y
-color: vec3 = make_vec3 r g b
+pos: vec2<f64> = make_vec2 x y
+color: vec3<f32> = make_vec3 r g b
+rgba: vec4<u8> = make_vec4 r g b a
 ```
 
-Both `make_vec2` and `make_vec3` take f64 components and produce a vec2 or vec3.
+`make_vec2`, `make_vec3`, and `make_vec4` take scalar components and produce the corresponding vector type. The component types must match the vector's element type.
 
 ### Component extraction
 
 ```
 px: f64 = extract_x pos
 py: f64 = extract_y pos
-pz: f64 = extract_z color    # vec3 only
+pz: f64 = extract_z color    # vec3, vec4 only
+pw: f64 = extract_w quat     # vec4 only
 ```
 
-Extracts a single f64 component from a vector. `extract_z` is only valid for vec3.
+Extracts a single scalar component from a vector. The result type matches the vector's element type.
 
 ### Component-wise arithmetic (vec op vec -> vec)
 
@@ -240,17 +307,17 @@ Extracts a single f64 component from a vector. `extract_z` is only valid for vec
 Both operands must be the same vec type. The result is the same vec type.
 
 ```
-sum: vec2 = vec_add a b
-diff: vec3 = vec_sub position offset
+sum: vec2<f64> = vec_add a b
+diff: vec3<f32> = vec_sub position offset
 ```
 
-### Scalar-vector multiply (f64 × vec -> vec)
+### Scalar-vector multiply (scalar x vec -> vec)
 
 ```
-scaled: vec2 = vec_scale factor pos
+scaled: vec2<f64> = vec_scale factor pos
 ```
 
-The first operand must be f64, the second must be vec2 or vec3. The result matches the vec type.
+The first operand must be a scalar matching the vector's element type. The second must be a vec. The result matches the vec type.
 
 ### Unary vector operations (vec -> vec)
 
@@ -261,11 +328,11 @@ The first operand must be f64, the second must be vec2 or vec3. The result match
 | `vec_normalize` | Normalize to unit length           |
 
 ```
-flipped: vec2 = vec_neg pos
-unit: vec3 = vec_normalize direction
+flipped: vec2<f64> = vec_neg pos
+unit: vec3<f32> = vec_normalize direction
 ```
 
-### Reduction operations (vec -> f64)
+### Reduction operations (vec -> scalar)
 
 | Op           | Description                          |
 |--------------|--------------------------------------|
@@ -274,26 +341,137 @@ unit: vec3 = vec_normalize direction
 
 ```
 d: f64 = vec_dot a b
-len: f64 = vec_length pos
+len: f32 = vec_length pos
 ```
 
-Both operands of `vec_dot` must be the same vec type.
+Both operands of `vec_dot` must be the same vec type. The result type matches the vector's element type.
 
-### Cross product (vec3 × vec3 -> vec3)
+### Cross product (vec3 x vec3 -> vec3)
 
 ```
-normal: vec3 = vec_cross a b
+normal: vec3<f64> = vec_cross a b
 ```
 
-Both operands must be vec3.
+Both operands must be the same vec3 type.
 
 ### Select with vectors
 
 `select` works with vec types — both branches must be the same vec type:
 
 ```
-chosen: vec2 = select cond pos_a pos_b
+chosen: vec2<f64> = select cond pos_a pos_b
 ```
+
+## Matrix operations
+
+Matrices use column-major storage and are parameterized by element type. All matrix operations require consistent element types across operands.
+
+### Construction
+
+Construct a matrix from column vectors:
+
+```
+col0: vec2<f64> = make_vec2 a b
+col1: vec2<f64> = make_vec2 c d
+m: mat2<f64> = make_mat2 col0 col1
+
+c0: vec3<f32> = make_vec3 a b c
+c1: vec3<f32> = make_vec3 d e f
+c2: vec3<f32> = make_vec3 g h i
+m3: mat3<f32> = make_mat3 c0 c1 c2
+
+# make_mat4 takes 4 vec4 columns
+m4: mat4<f64> = make_mat4 col0 col1 col2 col3
+```
+
+### Matrix-vector multiply
+
+```
+transformed: vec3<f64> = mat_mul_vec m v
+```
+
+The matrix column count must match the vector dimension. The result is a vector with dimension equal to the matrix row count.
+
+### Matrix-matrix multiply
+
+```
+combined: mat3<f64> = mat_mul a b
+```
+
+Both operands must be the same matrix type. The result is the same matrix type.
+
+### Transpose
+
+```
+mt: mat3<f64> = mat_transpose m
+```
+
+### Column extraction
+
+```
+c0: vec3<f64> = mat_col0 m
+c1: vec3<f64> = mat_col1 m
+c2: vec3<f64> = mat_col2 m    # mat3, mat4 only
+c3: vec4<f64> = mat_col3 m4   # mat4 only
+```
+
+Extracts a column vector from a matrix. The result type matches the matrix's column vector type.
+
+## Array operations
+
+Fixed-size arrays with explicit element type and length.
+
+### Construction
+
+```
+arr: array<f64; 4> = array_new a b c d
+```
+
+The number of arguments must match the array length. All arguments must match the element type.
+
+### Element access
+
+```
+val: f64 = array_get arr 2
+```
+
+The index operand is a constant integer. Zero-based indexing.
+
+### Element update
+
+```
+arr2: array<f64; 4> = array_set arr 2 new_val
+```
+
+Produces a new array with the element at the given index replaced. The original array is unchanged (SSA).
+
+## Struct operations
+
+User-defined structs with named fields. Fields are accessed by index (matching declaration order).
+
+### Construction
+
+```
+pt: MyStruct = struct_new x_val y_val z_val
+```
+
+Arguments must match the struct's field types in declaration order.
+
+### Field access
+
+```
+x: f64 = struct_get pt 0
+```
+
+The index operand is a constant integer identifying the field (zero-based, matching declaration order).
+
+### Field update
+
+```
+pt2: MyStruct = struct_set pt 0 new_x
+```
+
+Produces a new struct with the field at the given index replaced. The original struct is unchanged (SSA).
 
 ## Control flow
 

@@ -49,19 +49,45 @@ Coordinate parameters (`x`, `y`) are view-space coordinates computed by the tile
 Defined in `src/kernel_ir.rs`.
 
 ```rust
-pub enum ValType { F64, U32, Bool, Vec2, Vec3 }  // Vec2/Vec3 are 2x/3x f64
+pub enum ScalarType {
+    F32, F64, I8, U8, I16, U16, I32, U32, I64, U64, Bool,
+}
+
+pub enum ValType {
+    Scalar(ScalarType),
+    Vec { len: u8, elem: ScalarType },    // vec2<T>, vec3<T>, vec4<T>; len in {2, 3, 4}
+    Mat { size: u8, elem: ScalarType },   // mat2<T>, mat3<T>, mat4<T>; column-major
+    Array { elem: Box<ValType>, size: u32 }, // fixed-size array
+    Struct(String),                       // references StructDef by name
+}
+
+pub struct StructDef { name: String, fields: Vec<(String, ValType)> }
+
 pub struct Var(pub u32);
 pub struct Binding { var: Var, name: String, ty: ValType }
-pub enum Const { F64(f64), U32(u32), Bool(bool) }
+
+pub enum Const {
+    F32(f32), F64(f64), I8(i8), U8(u8), I16(i16), U16(u16),
+    I32(i32), U32(u32), I64(i64), U64(u64), Bool(bool),
+}
 
 pub enum BinOp {
-    Add, Sub, Mul, Div, Rem,           // arithmetic (f64 or u32)
-    BitAnd, BitOr, BitXor, Shl, Shr,  // bitwise (u32 only)
+    Add, Sub, Mul, Div, Rem,           // arithmetic (any matching numeric type)
+    BitAnd, BitOr, BitXor, Shl, Shr,  // bitwise (integer types only)
     And, Or,                           // logical (bool only)
+    Min, Max,                          // numeric min/max
+    Atan2, Pow, Hash,                  // math builtins
 }
 pub enum CmpOp { Eq, Ne, Lt, Le, Gt, Ge }
-pub enum UnaryOp { Neg, Not, Abs, Sqrt, Floor, Ceil }
-pub enum ConvOp { F64ToU32, U32ToF64 }
+pub enum UnaryOp {
+    Neg, Not, Abs, Sqrt, Floor, Ceil,
+    Sin, Cos, Tan, Asin, Acos, Atan,
+    Exp, Exp2, Log, Log2, Log10,
+    Round, Trunc, Fract,
+}
+
+/// Type conversion. `norm` = normalizing conversion (e.g. u32 -> f64 / 2^32).
+pub struct ConvOp { from: ScalarType, to: ScalarType, norm: bool }
 
 // Vector-specific operation enums
 pub enum VecBinOp { Add, Sub, Mul, Div, Min, Max }
@@ -76,16 +102,36 @@ pub enum Inst {
     Select { cond: Var, then_val: Var, else_val: Var },
     PackArgb { r: Var, g: Var, b: Var },
 
-    // Vector instructions
-    MakeVec2 { x: Var, y: Var },                    // f64, f64 -> vec2
-    MakeVec3 { x: Var, y: Var, z: Var },            // f64, f64, f64 -> vec3
-    VecExtract { vec: Var, index: u8 },              // vec -> f64 (0=x, 1=y, 2=z)
-    VecBinary { op: VecBinOp, lhs: Var, rhs: Var },  // vec op vec -> vec
-    VecScale { scalar: Var, vec: Var },              // f64 * vec -> vec
-    VecUnary { op: VecUnaryOp, arg: Var },           // vec -> vec
-    VecDot { lhs: Var, rhs: Var },                   // vec, vec -> f64
-    VecLength { arg: Var },                          // vec -> f64
-    VecCross { lhs: Var, rhs: Var },                 // vec3, vec3 -> vec3
+    // Vector instructions (unified: length of Vec<Var> determines vec2/3/4)
+    MakeVec(Vec<Var>),
+    VecExtract { vec: Var, index: u8 },              // vec -> scalar (0=x, 1=y, 2=z, 3=w)
+    VecBinary { op: VecBinOp, lhs: Var, rhs: Var },
+    VecScale { scalar: Var, vec: Var },
+    VecUnary { op: VecUnaryOp, arg: Var },
+    VecDot { lhs: Var, rhs: Var },
+    VecLength { arg: Var },
+    VecCross { lhs: Var, rhs: Var },                 // vec3 x vec3 -> vec3
+
+    // Matrix instructions
+    MakeMat(Vec<Var>),                               // from column vectors
+    MatMulVec { mat: Var, vec: Var },                 // matN * vecN -> vecN
+    MatMul { lhs: Var, rhs: Var },                    // matN * matN -> matN
+    MatTranspose { arg: Var },                        // matN -> matN
+    MatCol { mat: Var, index: u8 },                   // matN -> vecN
+
+    // Struct operations
+    StructNew(Vec<Var>),                              // field values in definition order
+    StructGet { val: Var, field: u32 },               // get field by index
+    StructSet { val: Var, field: u32, new_val: Var }, // set field, produce new struct
+
+    // Array operations
+    ArrayNew(Vec<Var>),                               // create fixed-size array
+    ArrayGet { array: Var, index: Var },              // get element at index
+    ArraySet { array: Var, index: Var, val: Var },    // set element, produce new array
+
+    // Buffer operations (simulation kernels)
+    BufLoad { buf: u32, x: Var, y: Var },
+    BufStore { buf: u32, x: Var, y: Var, val: Var },
 }
 
 pub struct Statement { binding: Binding, inst: Inst }
@@ -97,9 +143,9 @@ pub struct CarryVar {
 
 pub struct While {
     carry: Vec<CarryVar>,
-    cond_body: Vec<Statement>,  // computes condition from carry vars
+    cond_body: Vec<BodyItem>,   // computes condition (can contain nested while)
     cond: Var,                  // Bool — loop continues while true
-    body: Vec<Statement>,       // computes next values
+    body: Vec<BodyItem>,        // computes next values (can contain nested while)
     yields: Vec<Var>,           // new values for carry vars
 }
 
@@ -108,12 +154,16 @@ pub enum BodyItem {
     While(While),
 }
 
+pub struct BufDecl { name: String, is_output: bool }
+
 pub struct Kernel {
     name: String,
     params: Vec<Binding>,
     return_ty: ValType,
     body: Vec<BodyItem>,
     emit: Var,
+    buffers: Vec<BufDecl>,         // buffer declarations (simulation kernels)
+    struct_defs: Vec<StructDef>,   // struct type definitions used by this kernel
 }
 ```
 
@@ -187,6 +237,7 @@ ident_list  = IDENT (IDENT)*
 
 instruction = const_inst | binary_inst | unary_inst | cmp_inst
             | conv_inst | select_inst | pack_inst | vec_inst
+            | mat_inst | struct_inst | array_inst | buf_inst
 const_inst  = "const" literal
 binary_inst = binop operand operand
 unary_inst  = unaryop operand
@@ -196,8 +247,16 @@ select_inst = "select" operand operand operand
 pack_inst   = "pack_argb" operand operand operand
 vec_inst    = vec_make | vec_extract | vec_binop | vec_unaryop
             | vec_scale | vec_dot | vec_length | vec_cross
-vec_make    = "make_vec2" operand operand | "make_vec3" operand operand operand
-vec_extract = ("extract_x" | "extract_y" | "extract_z") operand
+mat_inst    = "make_mat" operand+ | "mat_mul_vec" operand operand
+            | "mat_mul" operand operand | "mat_transpose" operand
+            | "mat_col" operand INT
+struct_inst = "struct_new" operand* | "struct_get" operand INT
+            | "struct_set" operand INT operand
+array_inst  = "array_new" operand* | "array_get" operand operand
+            | "array_set" operand operand operand
+buf_inst    = "buf_load" INT operand operand | "buf_store" INT operand operand operand
+vec_make    = "make_vec" operand+       (2-4 operands determine vec size)
+vec_extract = ("extract_x" | "extract_y" | "extract_z" | "extract_w") operand
 vec_binop   = ("vec_add"|"vec_sub"|"vec_mul"|"vec_div"|"vec_min"|"vec_max") operand operand
 vec_unaryop = ("vec_neg" | "vec_abs" | "vec_normalize") operand
 vec_scale   = "vec_scale" operand operand     (f64, vec -> vec)
@@ -206,13 +265,20 @@ vec_length  = "vec_length" operand            (vec -> f64)
 vec_cross   = "vec_cross" operand operand     (vec3, vec3 -> vec3)
 operand     = IDENT | literal   (inline literals create implicit consts)
 
-type        = "f64" | "u32" | "bool" | "vec2" | "vec3"
+type        = scalar_type | vec_type | mat_type | array_type | IDENT
+scalar_type = "f32" | "f64" | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "bool"
+vec_type    = ("vec2" | "vec3" | "vec4") "<" scalar_type ">"
+mat_type    = ("mat2" | "mat3" | "mat4") "<" scalar_type ">"
+array_type  = "array" "<" type ";" INT ">"
 binop       = "add" | "sub" | "mul" | "div" | "rem"
             | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
-            | "and" | "or"
+            | "and" | "or" | "min" | "max" | "atan2" | "pow" | "hash"
 cmpop       = "eq" | "ne" | "lt" | "le" | "gt" | "ge"
 unaryop     = "neg" | "not" | "abs" | "sqrt" | "floor" | "ceil"
-convop      = "f64_to_u32" | "u32_to_f64"
+            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+            | "exp" | "exp2" | "log" | "log2" | "log10"
+            | "round" | "trunc" | "fract"
+convop      = SCALAR_TYPE "_to_" SCALAR_TYPE  (e.g. "f64_to_u32", "i32_to_f64", "f32_to_u32")
 literal     = FLOAT | INT | "true" | "false"
 
 IDENT       = [a-zA-Z_][a-zA-Z0-9_]*
@@ -234,39 +300,62 @@ comment     = "#" ... newline
 ## Type Checking Rules
 
 ### Scalar operations
-- `add/sub/mul/div/rem`: both operands same type (f64 or u32), result same type
-- `bit_and/bit_or/bit_xor/shl/shr`: u32 only
+- `add/sub/mul/div/rem`: both operands same numeric type (any of f32, f64, i8..u64), result same type
+- `min/max`: both operands same numeric type, result same type
+- `bit_and/bit_or/bit_xor/shl/shr`: integer types only (i8..u64)
 - `and/or`: bool only
 - `eq/ne/lt/le/gt/ge`: both operands same type, result is bool
-- `neg/abs`: f64 or u32, result same type
+- `neg/abs`: any numeric type, result same type
 - `not`: bool only
-- `sqrt/floor/ceil`: f64 only
-- `f64_to_u32`: f64 → u32 (truncation toward zero)
-- `u32_to_f64`: u32 → f64
-- `select`: cond must be bool, then/else must be same type (including vec types), result is that type
+- `sqrt/floor/ceil/sin/cos/tan/asin/acos/atan/exp/exp2/log/log2/log10/round/trunc/fract`: float types only (f32, f64)
+- `atan2/pow`: both operands same float type, result same type
+- `hash`: integer operands, result same type
+- Conversion (`ConvOp`): any scalar-to-scalar conversion via `from_to_to` syntax (e.g. `f64_to_u32`, `i32_to_f64`, `f32_to_u32`). `norm` flag for normalizing conversions (e.g. u32 -> f64 divides by 2^32)
+- `select`: cond must be bool, then/else must be same type (including compound types), result is that type
 - `pack_argb`: three u32 args (r, g, b in [0,255]), result is u32
 - `emit`: must reference a variable matching the declared return type
 - SSA: each name defined exactly once (carry vars scope to their while block and after)
 
 ### Vector operations
-- `make_vec2`: two f64 args → vec2
-- `make_vec3`: three f64 args → vec3
-- `extract_x/extract_y`: vec2 or vec3 → f64
-- `extract_z`: vec3 only → f64
+- `make_vec`: 2-4 scalar args of same type → vec{2,3,4}<T> (length determined by arg count)
+- `extract_x/extract_y`: vec2+ → scalar element type
+- `extract_z`: vec3+ → scalar element type
+- `extract_w`: vec4 → scalar element type
 - `vec_add/vec_sub/vec_mul/vec_div/vec_min/vec_max`: both operands same vec type, result same vec type
-- `vec_scale`: f64 × vec → vec (same vec type)
+- `vec_scale`: scalar × vec → vec (scalar must match vec element type)
 - `vec_neg/vec_abs`: vec → vec (same type)
 - `vec_normalize`: vec → vec (same type)
-- `vec_dot`: both operands same vec type → f64
-- `vec_length`: vec → f64
+- `vec_dot`: both operands same vec type → scalar (element type)
+- `vec_length`: vec → scalar (element type)
 - `vec_cross`: vec3 × vec3 → vec3
 
-### PD operator overloading for vec types
-In the PD higher-level language, standard operators work on vec types:
+### Matrix operations
+- `make_mat`: N column vectors of vecN → matN (N in {2, 3, 4})
+- `mat_mul_vec`: matN × vecN → vecN
+- `mat_mul`: matN × matN → matN
+- `mat_transpose`: matN → matN
+- `mat_col`: matN, index → vecN (extract column by index)
+
+### Struct operations
+- `struct_new`: field values in definition order → Struct
+- `struct_get`: struct value, field index → field type
+- `struct_set`: struct value, field index, new field value → Struct (produces new value)
+
+### Array operations
+- `array_new`: element values → Array (all elements must match declared element type)
+- `array_get`: array, integer index → element type
+- `array_set`: array, integer index, value → Array (produces new value)
+
+### PD operator overloading for compound types
+In the PD higher-level language, standard operators work on vec and mat types:
 - `vec + vec`, `vec - vec`, `vec * vec`, `vec / vec` → component-wise, same vec type
-- `f64 * vec`, `vec * f64` → scalar-vector multiply (lowers to `VecScale`)
+- `scalar * vec`, `vec * scalar` → scalar-vector multiply (lowers to `VecScale`)
+- `mat * vec` → matrix-vector multiply (lowers to `MatMulVec`)
+- `mat * mat` → matrix-matrix multiply (lowers to `MatMul`)
 - `-vec` → component-wise negation
-- `vec.x`, `vec.y`, `vec.z` → field access, extracts f64 component
+- `vec.x`, `vec.y`, `vec.z`, `vec.w` → field access, extracts scalar component
+- `struct.field_name` → field access (lowers to `StructGet`)
+- `array[index]` → element access (lowers to `ArrayGet`)
 - Built-in functions `dot()`, `length()`, `normalize()`, `cross()`, `distance()`, `mix()`, `min()`, `max()`, `abs()` are overloaded for vec types
 
 ## Backend Lowering Strategy
@@ -301,24 +390,26 @@ Both backends split into:
 
 ### Vector Decomposition in Backends
 
-Vec types are first-class in the IR but decomposed to scalars by the backends. Neither Cranelift nor LLVM has a native geometric vec3 type, so backends store each vec var as 2–3 scalar f64 values using a `VarValues` enum:
+Vec, mat, struct, and array types are first-class in the IR but decomposed to scalars by the backends. Neither Cranelift nor LLVM has a native geometric vec3 type, so backends store each compound var as N scalar values using a `VarValues` enum:
 
 ```rust
 enum VarValues {
     Scalar(Value),
-    Vec2(Value, Value),
-    Vec3(Value, Value, Value),
+    Multi(Vec<Value>),  // vec2..4, mat2..4, struct fields, array elements
 }
 ```
 
-- `MakeVec2/3` → store component values as `VarValues::Vec2/3`
+- `MakeVec` → store component values as `VarValues::Multi`
 - `VecExtract` → read indexed component from VarValues
 - `VecBinary` → apply scalar op to each component pair
 - `VecDot` → multiply pairwise, sum
 - `VecLength` → dot(v,v), sqrt
 - `VecCross` → standard cross product formula on components
 - `VecNormalize` → divide each component by length
-- While loop carry vars with vec type expand to 2–3 individual `Variable`s (Cranelift) or phi nodes (LLVM)
+- `MakeMat` → flatten column vectors into scalar components
+- `MatMulVec` / `MatMul` → expanded to scalar multiply-accumulate
+- Struct/array ops → index into the flattened scalar components
+- While loop carry vars with compound types expand to N individual `Variable`s (Cranelift) or phi nodes (LLVM)
 
 ### While Loop Lowering
 
