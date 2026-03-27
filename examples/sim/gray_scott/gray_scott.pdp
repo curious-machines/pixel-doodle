@@ -69,7 +69,8 @@ pipeline gpu {
     run init_field { field_out: out field }
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) { buf_in: field, buf_out: out field }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) { buf_in: field, buf_out: out field_next }
+    swap field <-> field_next
   }
   loop(iterations: 8) {
     run step { field_in: field, field_out: out field_next }

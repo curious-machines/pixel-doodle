@@ -46,7 +46,8 @@ pipeline gpu {
     run init_grid { grid: out grid }
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { buf_in: grid, buf_out: out grid }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { buf_in: grid, buf_out: out grid_next }
+    swap grid <-> grid_next
   }
   loop(iterations: iterations) {
     run step { grid_in: grid, grid_out: out grid_next }
