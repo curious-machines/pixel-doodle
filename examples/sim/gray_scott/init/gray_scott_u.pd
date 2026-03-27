@@ -2,9 +2,9 @@
 // Places 8 random blobs using deterministic hash for positions.
 
 fn hash_u32(n: u32) -> u32 {
-    let a = n ^ (n >> 13u32);
-    let b = a * 1274126177u32;
-    return b ^ (b >> 16u32);
+    let a = n ^ (n >> 13);
+    let b = a * 1274126177;
+    return b ^ (b >> 16);
 }
 
 kernel init_gray_scott_u(px: u32, py: u32, width: u32, height: u32) -> u32
@@ -18,8 +18,8 @@ kernel init_gray_scott_u(px: u32, py: u32, width: u32, height: u32) -> u32
         break_if i >= 8;
         let hx = hash_u32(i * 2);
         let hy = hash_u32(i * 2 + 1);
-        let cx = (hx & 65535u32) as f64 / 65536.0 * width as f64;
-        let cy = (hy & 65535u32) as f64 / 65536.0 * height as f64;
+        let cx = (hx & 65535) as f64 / 65536.0 * width as f64;
+        let cy = (hy & 65535) as f64 / 65536.0 * height as f64;
         let dx = px as f64 - cx;
         let dy = py as f64 - cy;
         let d2 = dx * dx + dy * dy;

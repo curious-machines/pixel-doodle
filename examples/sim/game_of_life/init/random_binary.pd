@@ -4,11 +4,11 @@ kernel init_random_binary(px: u32, py: u32, width: u32, height: u32) -> u32
   buffers(out: write)
 {
     // Hash position for deterministic random
-    let h1 = px * 374761393u32 + py * 668265263u32 + 12345;
-    let h2 = h1 ^ (h1 >> 13u32);
-    let h3 = h2 * 1274126177u32;
-    let h4 = h3 ^ (h3 >> 16u32);
-    let hf = (h4 & 65535u32) as f64 / 65536.0;
+    let h1 = px * 374761393 + py * 668265263 + 12345;
+    let h2 = h1 ^ (h1 >> 13);
+    let h3 = h2 * 1274126177;
+    let h4 = h3 ^ (h3 >> 16);
+    let hf = (h4 & 65535) as f64 / 65536.0;
 
     let val = if hf < 0.3 { 1.0 } else { 0.0 };
     buf_store(out, px, py, val);
