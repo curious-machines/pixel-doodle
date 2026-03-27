@@ -526,11 +526,6 @@ impl Runtime {
             self.execute_steps(&steps, pool);
         }
 
-        // Ensure all GPU work completes before presenting
-        if let Some(runner) = &self.gpu_sim_runner {
-            runner.poll_wait();
-        }
-
         self.frames_executed = self.frame;
         true
     }

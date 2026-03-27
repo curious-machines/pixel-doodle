@@ -467,6 +467,12 @@ impl ApplicationHandler for PdpApp {
                 }
 
                 if self.runtime.needs_continuous_redraw() || !self.keys_down.is_empty() {
+                    // Cap frame rate to ~120fps to avoid starving the event loop
+                    let frame_time = t0.elapsed();
+                    let min_frame = std::time::Duration::from_micros(8333); // ~120fps
+                    if frame_time < min_frame {
+                        std::thread::sleep(min_frame - frame_time);
+                    }
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
