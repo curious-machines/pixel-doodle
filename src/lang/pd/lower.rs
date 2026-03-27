@@ -634,22 +634,6 @@ impl Lowerer {
 
         // Conversion builtins
         match name {
-            "f64_to_u32" => {
-                let arg = self.lower_expr(&args[0], out);
-                let var = self.auto_var("conv", ValType::U32);
-                let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
-                    Inst::Conv { op: ConvOp::F64_TO_U32, arg })));
-                return Some(var);
-            }
-            "u32_to_f64" => {
-                let arg = self.lower_expr(&args[0], out);
-                let var = self.auto_var("conv", ValType::F64);
-                let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
-                    Inst::Conv { op: ConvOp::U32_TO_F64, arg })));
-                return Some(var);
-            }
             "norm" => {
                 let arg = self.lower_expr(&args[0], out);
                 let var = self.auto_var("conv", ValType::F64);

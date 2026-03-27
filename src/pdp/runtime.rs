@@ -488,8 +488,17 @@ impl Runtime {
                 }
             });
             if let Some(source) = wgsl {
+                // Gather textures declared in the selected pipeline
+                let tex_names: Vec<String> = self
+                    .selected_pipeline()
+                    .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
+                    .unwrap_or_default();
+                let tex_refs: Vec<&TextureData> = tex_names
+                    .iter()
+                    .filter_map(|name| self.textures.get(name.as_str()))
+                    .collect();
                 self.gpu_backend = Some(GpuBackend::new(
-                    display, self.width, self.height, 256, &source,
+                    display, self.width, self.height, 256, &source, &tex_refs,
                 ));
             }
         }
@@ -1156,8 +1165,16 @@ impl Runtime {
             }
         });
         if let Some(source) = wgsl {
+            let tex_names: Vec<String> = self
+                .selected_pipeline()
+                .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
+                .unwrap_or_default();
+            let tex_refs: Vec<&TextureData> = tex_names
+                .iter()
+                .filter_map(|name| self.textures.get(name.as_str()))
+                .collect();
             let (gpu, device, queue) = GpuBackend::new_headless(
-                self.width, self.height, 256, &source,
+                self.width, self.height, 256, &source, &tex_refs,
             );
             gpu.dispatch_compute(
                 &device, &queue,

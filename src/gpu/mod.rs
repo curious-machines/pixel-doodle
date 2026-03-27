@@ -1,6 +1,7 @@
 pub mod sim_runner;
 
 use crate::display::Display;
+use crate::texture::TextureData;
 
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
@@ -28,12 +29,21 @@ struct Params {
     _pad: [u32; 1],
 }
 
+/// A GPU-side texture resource (texture view + uploaded data).
+struct GpuTexture {
+    view: wgpu::TextureView,
+}
+
 pub struct GpuBackend {
     compute_pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     storage_buffer: wgpu::Buffer,
     accum_buffer: wgpu::Buffer,
+    /// Sampler shared by all textures (created only when textures are present).
+    sampler: Option<wgpu::Sampler>,
+    /// GPU texture resources, one per declared texture.
+    gpu_textures: Vec<GpuTexture>,
     width: u32,
     height: u32,
     max_iter: u32,
@@ -44,51 +54,78 @@ impl GpuBackend {
     /// Build pipeline and buffers on the given device.
     fn build(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         width: u32,
         height: u32,
         max_iter: u32,
         wgsl_source: &str,
+        textures: &[&TextureData],
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compute kernel"),
             source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
         });
 
+        // Base layout entries: uniform (0), storage output (1), accum (2)
+        let mut layout_entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
+
+        // If textures are present: binding 3 = sampler, binding 4+ = texture_2d
+        if !textures.is_empty() {
+            layout_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            });
+            for i in 0..textures.len() {
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 4 + i as u32,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+            }
+        }
+
         let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("gpu compute"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &layout_entries,
             });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -131,12 +168,63 @@ impl GpuBackend {
             mapped_at_creation: false,
         });
 
+        // Upload textures to GPU
+        let mut gpu_textures = Vec::new();
+        let sampler = if !textures.is_empty() {
+            for (i, tex) in textures.iter().enumerate() {
+                let size = wgpu::Extent3d {
+                    width: tex.width,
+                    height: tex.height,
+                    depth_or_array_layers: 1,
+                };
+                let gpu_tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(&format!("texture_{i}")),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &gpu_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &tex.data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(tex.width * 4),
+                        rows_per_image: Some(tex.height),
+                    },
+                    size,
+                );
+                let view = gpu_tex.create_view(&wgpu::TextureViewDescriptor::default());
+                gpu_textures.push(GpuTexture { view });
+            }
+            Some(device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("tex_sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }))
+        } else {
+            None
+        };
+
         Self {
             compute_pipeline,
             bind_group_layout,
             uniform_buffer,
             storage_buffer,
             accum_buffer,
+            sampler,
+            gpu_textures,
             width,
             height,
             max_iter,
@@ -144,8 +232,46 @@ impl GpuBackend {
         }
     }
 
-    pub fn new(display: &Display, width: u32, height: u32, max_iter: u32, wgsl_source: &str) -> Self {
-        Self::build(&display.device, width, height, max_iter, wgsl_source)
+    /// Build bind group entries including textures if present.
+    fn bind_group_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: self.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.storage_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: self.accum_buffer.as_entire_binding(),
+            },
+        ];
+        if let Some(ref sampler) = self.sampler {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            });
+            for (i, gpu_tex) in self.gpu_textures.iter().enumerate() {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 4 + i as u32,
+                    resource: wgpu::BindingResource::TextureView(&gpu_tex.view),
+                });
+            }
+        }
+        entries
+    }
+
+    pub fn new(
+        display: &Display,
+        width: u32,
+        height: u32,
+        max_iter: u32,
+        wgsl_source: &str,
+        textures: &[&TextureData],
+    ) -> Self {
+        Self::build(&display.device, &display.queue, width, height, max_iter, wgsl_source, textures)
     }
 
     /// Zero the accumulation buffer (call on pan/zoom reset).
@@ -189,6 +315,21 @@ impl GpuBackend {
         }
     }
 
+    /// Write params + user args to the uniform buffer.
+    fn write_uniforms(&self, queue: &wgpu::Queue, params: &Params, user_args: &[f32]) {
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(params));
+        if !user_args.is_empty() {
+            let arg_bytes: Vec<u8> = user_args.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            queue.write_buffer(
+                &self.uniform_buffer,
+                std::mem::size_of::<Params>() as u64,
+                &arg_bytes,
+            );
+        }
+    }
+
     /// Dispatch the compute shader and copy results to the display texture.
     pub fn render(
         &self,
@@ -202,42 +343,15 @@ impl GpuBackend {
         user_args: &[f32],
     ) {
         let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
+        self.write_uniforms(&display.queue, &params, user_args);
 
-        display
-            .queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&params));
-
-        // Write user args after Params (offset 48)
-        if !user_args.is_empty() {
-            let arg_bytes: Vec<u8> = user_args.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            display.queue.write_buffer(
-                &self.uniform_buffer,
-                std::mem::size_of::<Params>() as u64,
-                &arg_bytes,
-            );
-        }
-
+        let entries = self.bind_group_entries();
         let bind_group = display
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("gpu compute"),
                 layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.storage_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.accum_buffer.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             });
 
         let mut encoder =
@@ -292,6 +406,7 @@ impl GpuBackend {
         height: u32,
         max_iter: u32,
         wgsl_source: &str,
+        textures: &[&TextureData],
     ) -> (Self, wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -312,7 +427,7 @@ impl GpuBackend {
             },
         ))
         .expect("failed to create device");
-        let backend = Self::build(&device, width, height, max_iter, wgsl_source);
+        let backend = Self::build(&device, &queue, width, height, max_iter, wgsl_source, textures);
         (backend, device, queue)
     }
 
@@ -330,37 +445,13 @@ impl GpuBackend {
         user_args: &[f32],
     ) {
         let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&params));
+        self.write_uniforms(queue, &params, user_args);
 
-        // Write user args after Params (offset 48)
-        if !user_args.is_empty() {
-            let arg_bytes: Vec<u8> = user_args.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            queue.write_buffer(
-                &self.uniform_buffer,
-                std::mem::size_of::<Params>() as u64,
-                &arg_bytes,
-            );
-        }
-
+        let entries = self.bind_group_entries();
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu compute"),
             layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.storage_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.accum_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &entries,
         });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

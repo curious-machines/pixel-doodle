@@ -954,20 +954,6 @@ impl Checker {
                 let b = self.check_expr(&args[2], Some(ValType::U32))?;
                 return Ok(Some(TExpr::Call { name: "pack_argb".into(), args: vec![r, g, b], ty: ValType::U32 }));
             }
-            "f64_to_u32" => {
-                if args.len() != 1 {
-                    return Err(err(span, "f64_to_u32 expects 1 argument".into()));
-                }
-                let v = self.check_expr(&args[0], Some(ValType::F64))?;
-                return Ok(Some(TExpr::Call { name: "f64_to_u32".into(), args: vec![v], ty: ValType::U32 }));
-            }
-            "u32_to_f64" => {
-                if args.len() != 1 {
-                    return Err(err(span, "u32_to_f64 expects 1 argument".into()));
-                }
-                let v = self.check_expr(&args[0], Some(ValType::U32))?;
-                return Ok(Some(TExpr::Call { name: "u32_to_f64".into(), args: vec![v], ty: ValType::F64 }));
-            }
             "buf_load" => {
                 if args.len() != 3 {
                     return Err(err(span, "buf_load expects 3 arguments: buf_load(buffer, x, y)".into()));

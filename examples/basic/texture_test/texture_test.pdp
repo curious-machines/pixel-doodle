@@ -6,3 +6,10 @@ pipeline pd {
   run texture_test
   display
 }
+
+pipeline gpu {
+  pixel kernel "texture_test.wgsl"
+  texture img = file("../../images/lake-2.jpg")
+  run texture_test
+  display
+}

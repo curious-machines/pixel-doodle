@@ -1,12 +1,12 @@
 kernel texture_test(px: u32, py: u32, width: u32, height: u32) -> u32 textures(img) {
     // Map pixel coords to [0,1] UV, preserving texture aspect ratio
-    let tw = u32_to_f64(tex_width(img));
-    let th = u32_to_f64(tex_height(img));
+    let tw = f64(tex_width(img));
+    let th = f64(tex_height(img));
     let tex_aspect = tw / th;
-    let scr_aspect = u32_to_f64(width) / u32_to_f64(height);
+    let scr_aspect = f64(width) / f64(height);
 
-    let u_raw = u32_to_f64(px) / u32_to_f64(width);
-    let v_raw = u32_to_f64(py) / u32_to_f64(height);
+    let u_raw = f64(px) / f64(width);
+    let v_raw = f64(py) / f64(height);
 
     // Fit texture to screen (letterbox/pillarbox)
     let u_scale = if scr_aspect > tex_aspect { tex_aspect / scr_aspect } else { 1.0 };
@@ -20,6 +20,6 @@ kernel texture_test(px: u32, py: u32, width: u32, height: u32) -> u32 textures(i
     let r = f64(rgba.x) * 255.0;
     let g = f64(rgba.y) * 255.0;
     let b = f64(rgba.z) * 255.0;
-    let color = pack_argb(f64_to_u32(r), f64_to_u32(g), f64_to_u32(b));
+    let color = pack_argb(u32(r), u32(g), u32(b));
     emit if in_bounds { color } else { 4278190080u32 };
 }
