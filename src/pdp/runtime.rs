@@ -70,6 +70,9 @@ pub struct Runtime {
     pub frame: u64,
     frames_executed: u64,
     pub mouse_down: bool,
+    mouse_was_down: bool,
+    mouse_down_edge: bool,
+    mouse_up_edge: bool,
 
     pub tile_height: usize,
     pub animated: bool,
@@ -85,6 +88,8 @@ pub struct Runtime {
     pub has_gpu_kernels: bool,
     /// Tracks whether GPU rendered directly to display this frame.
     gpu_rendered_this_frame: bool,
+    /// Whether the last executed frame used GPU rendering (persists across skipped frames).
+    last_frame_was_gpu: bool,
     /// Name of the GPU pixel buffer for sim display steps.
     gpu_pixel_buffer_name: Option<String>,
     /// User args for GPU pixel kernels, resolved at execute_run time.
@@ -134,6 +139,9 @@ impl Runtime {
             frame: 0,
             frames_executed: 0,
             mouse_down: false,
+            mouse_was_down: false,
+            mouse_down_edge: false,
+            mouse_up_edge: false,
             tile_height: render::DEFAULT_TILE_HEIGHT,
             animated: false,
             backend_name: "cranelift".into(),
@@ -143,6 +151,7 @@ impl Runtime {
             gpu_sim_runner: None,
             has_gpu_kernels: false,
             gpu_rendered_this_frame: false,
+            last_frame_was_gpu: false,
             gpu_pixel_buffer_name: None,
             gpu_user_args: Vec::new(),
             config_path: None,
@@ -510,6 +519,11 @@ impl Runtime {
         self.time = time;
         self.gpu_rendered_this_frame = false;
 
+        // Detect mouse button edges
+        self.mouse_down_edge = self.mouse_down && !self.mouse_was_down;
+        self.mouse_up_edge = self.mouse_was_down && !self.mouse_down;
+        self.mouse_was_down = self.mouse_down;
+
         // Auto-increment frame when not paused
         if !self.paused {
             self.frame += 1;
@@ -527,6 +541,7 @@ impl Runtime {
         }
 
         self.frames_executed = self.frame;
+        self.last_frame_was_gpu = self.gpu_rendered_this_frame;
         true
     }
 
@@ -579,11 +594,11 @@ impl Runtime {
                 PipelineStep::Accumulate { samples, body, .. } => {
                     self.execute_accumulate(*samples, body, pool);
                 }
-                PipelineStep::OnClick { continuous, body, .. } => {
-                    let should_run = if *continuous {
-                        self.mouse_down
-                    } else {
-                        self.mouse_down // TODO: edge detection for single-fire
+                PipelineStep::OnMouse { kind, body, .. } => {
+                    let should_run = match kind {
+                        MouseEventKind::Mousedown => self.mouse_down,
+                        MouseEventKind::Click => self.mouse_down_edge,
+                        MouseEventKind::Mouseup => self.mouse_up_edge,
                     };
                     if should_run {
                         self.execute_steps(body, pool);
@@ -861,42 +876,72 @@ impl Runtime {
         accum.resolve(disp);
     }
 
-    /// Handle a key press event. Returns `true` if the app should quit.
-    pub fn handle_key_press(&mut self, key_name: &str) -> bool {
-        let bindings: Vec<KeyBinding> = self.config.key_bindings.clone();
+    /// Handle a keydown event. Returns `true` if the app should quit.
+    pub fn handle_keydown(&mut self, key_name: &str) -> bool {
+        let bindings: Vec<EventBinding> = self.config.event_bindings.clone();
         let mut quit = false;
         for binding in &bindings {
-            if binding.key_name == key_name {
-                for action in &binding.actions {
-                    match action {
-                        Action::Toggle(var) => {
-                            let val = self.get_variable(var);
-                            self.set_variable(var, if val == 0.0 { 1.0 } else { 0.0 });
+            if binding.kind == EventKind::Keydown && binding.key_name == key_name {
+                quit |= self.execute_actions(&binding.actions);
+            }
+        }
+        quit
+    }
+
+    /// Handle a keypress event (fires once on initial press). Returns `true` if the app should quit.
+    pub fn handle_keypress(&mut self, key_name: &str) -> bool {
+        let bindings: Vec<EventBinding> = self.config.event_bindings.clone();
+        let mut quit = false;
+        for binding in &bindings {
+            if binding.kind == EventKind::Keypress && binding.key_name == key_name {
+                quit |= self.execute_actions(&binding.actions);
+            }
+        }
+        quit
+    }
+
+    /// Handle a keyup event. Returns `true` if the app should quit.
+    pub fn handle_keyup(&mut self, key_name: &str) -> bool {
+        let bindings: Vec<EventBinding> = self.config.event_bindings.clone();
+        let mut quit = false;
+        for binding in &bindings {
+            if binding.kind == EventKind::Keyup && binding.key_name == key_name {
+                quit |= self.execute_actions(&binding.actions);
+            }
+        }
+        quit
+    }
+
+    fn execute_actions(&mut self, actions: &[Action]) -> bool {
+        let mut quit = false;
+        for action in actions {
+            match action {
+                Action::Toggle(var) => {
+                    let val = self.get_variable(var);
+                    self.set_variable(var, if val == 0.0 { 1.0 } else { 0.0 });
+                }
+                Action::CompoundAssign { target, op, value } | Action::BinAssign { target, op, value } => {
+                    let current = self.get_variable(target);
+                    let val = self.eval_value_expr(value);
+                    let new_val = match op {
+                        CompoundOp::Add => current + val,
+                        CompoundOp::Sub => current - val,
+                        CompoundOp::Mul => current * val,
+                        CompoundOp::Div => {
+                            if val != 0.0 {
+                                current / val
+                            } else {
+                                current
+                            }
                         }
-                        Action::CompoundAssign { target, op, value } | Action::BinAssign { target, op, value } => {
-                            let current = self.get_variable(target);
-                            let val = self.eval_value_expr(value);
-                            let new_val = match op {
-                                CompoundOp::Add => current + val,
-                                CompoundOp::Sub => current - val,
-                                CompoundOp::Mul => current * val,
-                                CompoundOp::Div => {
-                                    if val != 0.0 {
-                                        current / val
-                                    } else {
-                                        current
-                                    }
-                                }
-                            };
-                            self.set_variable(target, new_val);
-                        }
-                        Action::Assign { target, value } => {
-                            self.set_variable(target, *value);
-                        }
-                        Action::Quit => {
-                            quit = true;
-                        }
-                    }
+                    };
+                    self.set_variable(target, new_val);
+                }
+                Action::Assign { target, value } => {
+                    self.set_variable(target, *value);
+                }
+                Action::Quit => {
+                    quit = true;
                 }
             }
         }
@@ -987,6 +1032,35 @@ impl Runtime {
     /// Get the pixel buffer to display.
     /// If the last frame used GPU rendering, dispatch the GPU and present.
     /// Returns true if GPU rendered (caller should NOT upload_and_present).
+    /// Re-present the last GPU frame (for use when pipeline was skipped, e.g. paused).
+    pub fn re_present_gpu_frame(&self, display: &Display) -> bool {
+        if !self.last_frame_was_gpu {
+            return false;
+        }
+        // GPU pixel kernel path
+        if let Some(ref gpu) = self.gpu_backend {
+            gpu.render(
+                display,
+                self.center_x,
+                self.center_y,
+                self.zoom,
+                0xFFFFFFFF,
+                0,
+                self.time,
+                &self.gpu_user_args,
+            );
+            return true;
+        }
+        // GPU sim kernel path — re-present the pixel buffer
+        if let Some(ref runner) = self.gpu_sim_runner {
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name {
+                runner.present_pixels(display, buf_name);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn render_gpu_frame(&self, display: &Display) -> bool {
         if !self.gpu_rendered_this_frame {
             return false;

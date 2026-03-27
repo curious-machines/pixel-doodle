@@ -5,8 +5,8 @@ builtin var frame: u64
 builtin const mouse_x: f64
 builtin const mouse_y: f64
 
-on key(space) paused = !paused
-on key(period) frame += 1
+on keypress(space) paused = !paused
+on keypress(period) frame += 1
 
 pipeline pd {
   kernel "gray_scott.pd"
@@ -23,7 +23,7 @@ pipeline pd {
     run init_u with(out: out u)
     run init_v with(out: out v)
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) with(target: v, target_out: out v)
   }
   loop(iterations: 8) {
@@ -49,7 +49,7 @@ pipeline pdir {
     run init_u with(out: out u)
     run init_v with(out: out v)
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) with(target: v, target_out: out v)
   }
   loop(iterations: 8) {
@@ -73,7 +73,7 @@ pipeline gpu {
   init {
     run init_field with(field_out: out field)
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) with(buf_in: field, buf_out: out field_next)
     swap field, field_next
   }

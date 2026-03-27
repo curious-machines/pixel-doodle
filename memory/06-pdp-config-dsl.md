@@ -142,21 +142,30 @@ settings {
 }
 ```
 
-### Key Bindings and Event Handlers
+### Event Handlers
 
-#### Key bindings (top-level)
+Six event types, split between top-level config and pipeline steps:
+
+#### Key events (top-level, action syntax)
+
+- **`on keydown(name)`** — fires every frame while key is held (continuous)
+- **`on keypress(name)`** — fires once on initial key press (single-fire)
+- **`on keyup(name)`** — fires once on key release
 
 ```
-on key(space) paused = !paused
-on key(period) frame += 1
-on key(bracket_right) iterations += 1
-on key(bracket_left) iterations -= 1
-on key(up) gravity += 0.1
-on key(down) gravity -= 0.1
-on key(left) center_x -= 0.1
-on key(right) center_x += 0.1
-on key(plus) zoom *= 1.1
-on key(minus) zoom /= 1.1
+# Continuous (fires every frame while held) — pan/zoom
+on keydown(left) center_x -= 0.1
+on keydown(right) center_x += 0.1
+on keydown(up) gravity += 0.1
+on keydown(down) gravity -= 0.1
+on keydown(plus) zoom *= 1.1
+on keydown(minus) zoom /= 1.1
+
+# Single-fire (fires once on press) — toggles, discrete actions
+on keypress(space) paused = !paused
+on keypress(period) frame += 1
+on keypress(bracket_right) iterations += 1
+on keypress(bracket_left) iterations -= 1
 ```
 
 Supported expression forms:
@@ -168,18 +177,20 @@ Supported expression forms:
 
 Variables with `range()` are clamped (or wrapped) automatically.
 
-#### Event handlers (inside pipeline)
+#### Mouse events (inside pipeline, pipeline step syntax)
+
+- **`on mousedown { steps }`** — fires every frame while mouse button is held (continuous)
+- **`on click { steps }`** — fires once on initial mouse press (single-fire)
+- **`on mouseup { steps }`** — fires once on mouse button release
 
 ```
-on click(continuous: true) {
-  state = run inject(value: 1.0, radius: 3)
-  age = run inject(value: 0.0, radius: 3)
+on mousedown {
+  run inject(value: 1.0, radius: 3) with(target: out state)
+  run inject(value: 0.0, radius: 3) with(target: out age)
 }
 ```
 
 Event handler body contains regular pipeline operations. Position in pipeline determines when injection happens relative to other steps. `inject` is a built-in convenience kernel; users can write custom injection kernels.
-
-Future event types: scroll, drag, mouse buttons — noted for later.
 
 ### Pipeline
 
@@ -249,8 +260,8 @@ Spreads iterations across frames with averaging. Resets on viewport change.
 #### Event Handlers in Pipeline
 
 ```
-on click(continuous: true) {
-  state = run inject(value: 1.0, radius: 3)
+on mousedown {
+  run inject(value: 1.0, radius: 3) with(target: out state)
 }
 ```
 
@@ -316,10 +327,10 @@ builtin const mouse_y: f64
 
 var iterations: range(1..10) = 1
 
-on key(space) paused = !paused
-on key(period) frame += 1
-on key(bracket_right) iterations += 1
-on key(bracket_left) iterations -= 1
+on keypress(space) paused = !paused
+on keypress(period) frame += 1
+on keypress(bracket_right) iterations += 1
+on keypress(bracket_left) iterations -= 1
 
 pipeline {
   kernel "game_of_life.pd"
@@ -334,7 +345,7 @@ pipeline {
   init {
     run init_state { out: out state }
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { target: state, target_out: out state }
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0) { target: age, target_out: out age }
   }
@@ -370,7 +381,7 @@ pipeline {
 
 ## Open Items (Future Work)
 
-- Additional event types: scroll, drag, mouse buttons
+- Additional event types: scroll, drag
 - Buffer element types beyond f64
 - External native backend plugin loading (.so/.dylib/.dll)
 - UI for runtime parameter adjustment

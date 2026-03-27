@@ -190,7 +190,7 @@ impl Parser {
             builtins: Vec::new(),
             variables: Vec::new(),
             settings: Settings::default(),
-            key_bindings: Vec::new(),
+            event_bindings: Vec::new(),
             pipelines: Vec::new(),
         };
 
@@ -218,7 +218,7 @@ impl Parser {
                     config.pipelines.push(self.parse_pipeline()?);
                 }
                 Token::On => {
-                    config.key_bindings.push(self.parse_key_binding()?);
+                    config.event_bindings.push(self.parse_event_binding()?);
                 }
                 Token::Include => {
                     let included = self.parse_include()?;
@@ -227,7 +227,7 @@ impl Parser {
                     }
                     config.builtins.extend(included.builtins);
                     config.variables.extend(included.variables);
-                    config.key_bindings.extend(included.key_bindings);
+                    config.event_bindings.extend(included.event_bindings);
                     config.settings.entries.extend(included.settings.entries);
                 }
                 Token::Builtin => {
@@ -509,10 +509,19 @@ impl Parser {
 
     // ── Key bindings ──
 
-    fn parse_key_binding(&mut self) -> Result<KeyBinding, ParseError> {
+    fn parse_event_binding(&mut self) -> Result<EventBinding, ParseError> {
         let span = self.span();
         self.expect(&Token::On)?;
-        self.expect(&Token::Key)?;
+        let kind = match self.peek().clone() {
+            Token::Keydown => { self.advance(); EventKind::Keydown }
+            Token::Keypress => { self.advance(); EventKind::Keypress }
+            Token::Keyup => { self.advance(); EventKind::Keyup }
+            other => {
+                return Err(self.error(format!(
+                    "expected 'keydown', 'keypress', or 'keyup' after 'on', got '{other}'"
+                )));
+            }
+        };
         self.expect(&Token::LParen)?;
         let key_name = match self.peek().clone() {
             Token::Ident(s) => { self.advance(); s }
@@ -528,23 +537,28 @@ impl Parser {
         };
         self.expect(&Token::RParen)?;
 
-        let actions = if self.at(&Token::LBrace) {
+        let actions = self.parse_action_block()?;
+
+        Ok(EventBinding {
+            kind,
+            key_name,
+            actions,
+            span,
+        })
+    }
+
+    fn parse_action_block(&mut self) -> Result<Vec<Action>, ParseError> {
+        if self.at(&Token::LBrace) {
             self.advance();
             let mut actions = Vec::new();
             while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
                 actions.push(self.parse_action()?);
             }
             self.expect(&Token::RBrace)?;
-            actions
+            Ok(actions)
         } else {
-            vec![self.parse_action()?]
-        };
-
-        Ok(KeyBinding {
-            key_name,
-            actions,
-            span,
-        })
+            Ok(vec![self.parse_action()?])
+        }
     }
 
     fn parse_action(&mut self) -> Result<Action, ParseError> {
@@ -683,7 +697,7 @@ impl Parser {
                 builtins: Vec::new(),
                 variables: Vec::new(),
                 settings: Settings::default(),
-                key_bindings: Vec::new(),
+                event_bindings: Vec::new(),
                 pipelines: Vec::new(),
             });
         }
@@ -709,7 +723,7 @@ impl Parser {
             builtins: Vec::new(),
             variables: Vec::new(),
             settings: Settings::default(),
-            key_bindings: Vec::new(),
+            event_bindings: Vec::new(),
             pipelines: Vec::new(),
         };
 
@@ -739,7 +753,7 @@ impl Parser {
                     config.settings = self.parse_settings()?;
                 }
                 Token::On => {
-                    config.key_bindings.push(self.parse_key_binding()?);
+                    config.event_bindings.push(self.parse_event_binding()?);
                 }
                 Token::Include => {
                     let included = self.parse_include()?;
@@ -748,7 +762,7 @@ impl Parser {
                     }
                     config.builtins.extend(included.builtins);
                     config.variables.extend(included.variables);
-                    config.key_bindings.extend(included.key_bindings);
+                    config.event_bindings.extend(included.event_bindings);
                     config.settings.entries.extend(included.settings.entries);
                 }
                 Token::Builtin => {
@@ -845,10 +859,10 @@ impl Parser {
             Token::Swap => self.parse_swap_step(),
             Token::Loop => self.parse_loop_step(),
             Token::Accumulate => self.parse_accumulate_step(),
-            Token::On => self.parse_on_event_step(),
+            Token::On => self.parse_on_mouse_step(),
             Token::Init => self.parse_init_block(),
             other => Err(self.error(format!(
-                "expected pipeline step (run, display, swap, loop, accumulate, on, init), got '{other}'"
+                "expected pipeline step (run, display, swap, loop, accumulate, on mousedown/click/mouseup, init), got '{other}'"
             ))),
         }
     }
@@ -1017,62 +1031,30 @@ impl Parser {
         })
     }
 
-    fn parse_on_event_step(&mut self) -> Result<PipelineStep, ParseError> {
+    fn parse_on_mouse_step(&mut self) -> Result<PipelineStep, ParseError> {
         let span = self.span();
         self.expect(&Token::On)?;
 
-        match self.peek().clone() {
-            Token::Click => {
-                self.advance();
-                // Parse options: (continuous: true)
-                let mut continuous = false;
-                if self.at(&Token::LParen) {
-                    self.advance();
-                    while !self.at(&Token::RParen) {
-                        let key = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        match key.as_str() {
-                            "continuous" => {
-                                continuous = match self.peek() {
-                                    Token::True => {
-                                        self.advance();
-                                        true
-                                    }
-                                    Token::False => {
-                                        self.advance();
-                                        false
-                                    }
-                                    other => {
-                                        return Err(self.error(format!(
-                                            "expected 'true' or 'false', got '{other}'"
-                                        )))
-                                    }
-                                };
-                            }
-                            _ => {
-                                return Err(
-                                    self.error(format!("unknown click option '{key}'"))
-                                )
-                            }
-                        }
-                        if !self.at(&Token::RParen) {
-                            self.expect(&Token::Comma)?;
-                        }
-                    }
-                    self.expect(&Token::RParen)?;
-                }
-                self.expect(&Token::LBrace)?;
-                let body = self.parse_pipeline_steps()?;
-                self.expect(&Token::RBrace)?;
-
-                Ok(PipelineStep::OnClick {
-                    continuous,
-                    body,
-                    span,
-                })
+        let kind = match self.peek().clone() {
+            Token::Mousedown => { self.advance(); MouseEventKind::Mousedown }
+            Token::Click => { self.advance(); MouseEventKind::Click }
+            Token::Mouseup => { self.advance(); MouseEventKind::Mouseup }
+            other => {
+                return Err(self.error(format!(
+                    "expected 'mousedown', 'click', or 'mouseup' after 'on', got '{other}'"
+                )));
             }
-            other => Err(self.error(format!("expected 'click', got '{other}'"))),
-        }
+        };
+
+        self.expect(&Token::LBrace)?;
+        let body = self.parse_pipeline_steps()?;
+        self.expect(&Token::RBrace)?;
+
+        Ok(PipelineStep::OnMouse {
+            kind,
+            body,
+            span,
+        })
     }
 }
 
@@ -1157,9 +1139,9 @@ mod tests {
     fn parse_mandelbrot_progressive() {
         let config = parse_str(
             r#"
-            on key(left) center_x -= 0.1
-            on key(right) center_x += 0.1
-            on key(plus) zoom *= 1.1
+            on keydown(left) center_x -= 0.1
+            on keydown(right) center_x += 0.1
+            on keydown(plus) zoom *= 1.1
 
             pipeline {
               pixel kernel "mandelbrot.pd"
@@ -1173,7 +1155,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.pipelines[0].kernels.len(), 1);
-        assert_eq!(config.key_bindings.len(), 3);
+        assert_eq!(config.event_bindings.len(), 3);
         let pipeline = config.pipelines.into_iter().next().unwrap();
         assert_eq!(pipeline.steps.len(), 1);
         assert!(matches!(&pipeline.steps[0], PipelineStep::Accumulate { samples: 256, .. }));
@@ -1185,8 +1167,8 @@ mod tests {
             r#"
             title = "Gray-Scott"
 
-            on key(space) paused = !paused
-            on key(period) frame += 1
+            on keypress(space) paused = !paused
+            on keypress(period) frame += 1
 
             pipeline {
               kernel "gray_scott.pd"
@@ -1202,7 +1184,7 @@ mod tests {
                 run init_u with(out: out u)
                 run init_v with(out: out v)
               }
-              on click(continuous: true) {
+              on mousedown {
                 run inject(value: 0.5, radius: 5) with(target: out v)
               }
               loop(iterations: 8) {
@@ -1220,12 +1202,12 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels.len(), 3);
         assert_eq!(config.pipelines[0].buffers.len(), 4);
         assert!(matches!(&config.pipelines[0].buffers[0].init, BufferInit::Constant(v) if *v == 0.0));
-        assert_eq!(config.key_bindings.len(), 2);
+        assert_eq!(config.event_bindings.len(), 2);
 
         let pipeline = config.pipelines.into_iter().next().unwrap();
-        assert_eq!(pipeline.steps.len(), 3); // init, on click, loop
+        assert_eq!(pipeline.steps.len(), 3); // init, on mousedown, loop
         assert!(matches!(&pipeline.steps[0], PipelineStep::Init { .. }));
-        assert!(matches!(&pipeline.steps[1], PipelineStep::OnClick { continuous: true, .. }));
+        assert!(matches!(&pipeline.steps[1], PipelineStep::OnMouse { kind: MouseEventKind::Mousedown, .. }));
         if let PipelineStep::Loop { body, .. } = &pipeline.steps[2] {
             assert_eq!(body.len(), 4); // run, display, swap, swap
         } else {
@@ -1285,10 +1267,10 @@ mod tests {
             r#"
             var iterations: range<u32>(1..10) = 1
 
-            on key(space) paused = !paused
-            on key(period) frame += 1
-            on key(bracket_right) iterations += 1
-            on key(bracket_left) iterations -= 1
+            on keypress(space) paused = !paused
+            on keypress(period) frame += 1
+            on keypress(bracket_right) iterations += 1
+            on keypress(bracket_left) iterations -= 1
 
             pipeline {
               kernel "game_of_life.pd"
@@ -1302,7 +1284,7 @@ mod tests {
               init {
                 run init_state with(out: out state)
               }
-              on click(continuous: true) {
+              on mousedown {
                 run inject(value: 1.0, radius: 3) with(target: out state)
                 run inject(value: 0.0, radius: 3) with(target: out age)
               }
@@ -1326,7 +1308,7 @@ mod tests {
         assert_eq!(range.max, 10.0);
         assert!(!range.wrap);
 
-        assert_eq!(config.key_bindings.len(), 4);
+        assert_eq!(config.event_bindings.len(), 4);
     }
 
     #[test]
@@ -1406,7 +1388,7 @@ mod tests {
             r#"
             title = "Gray-Scott"
 
-            on key(space) paused = !paused
+            on keypress(space) paused = !paused
 
             pipeline pd {
               kernel "gray_scott.pd"
@@ -1446,15 +1428,15 @@ mod tests {
         // GPU pipeline has its own kernels and buffers
         assert_eq!(config.pipelines[1].kernels.len(), 2);
         assert_eq!(config.pipelines[1].buffers.len(), 3);
-        // Shared key bindings at top level
-        assert_eq!(config.key_bindings.len(), 1);
+        // Shared event bindings at top level
+        assert_eq!(config.event_bindings.len(), 1);
     }
 
     #[test]
     fn parse_key_block() {
         let config = parse_str(
             r#"
-            on key(0) {
+            on keydown(0) {
               center_x = 0.0
               center_y = 0.0
               zoom = 1.0
@@ -1468,8 +1450,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.key_bindings.len(), 1);
-        let kb = &config.key_bindings[0];
+        assert_eq!(config.event_bindings.len(), 1);
+        let kb = &config.event_bindings[0];
+        assert_eq!(kb.kind, EventKind::Keydown);
         assert_eq!(kb.key_name, "0");
         assert_eq!(kb.actions.len(), 3);
         assert!(matches!(&kb.actions[0], Action::Assign { target, value } if target == "center_x" && *value == 0.0));
@@ -1481,8 +1464,8 @@ mod tests {
     fn parse_direct_assign() {
         let config = parse_str(
             r#"
-            on key(0) zoom = 1.0
-            on key(1) center_x = -0.5
+            on keydown(0) zoom = 1.0
+            on keydown(1) center_x = -0.5
 
             pipeline {
               pixel kernel "gradient.pd"
@@ -1492,9 +1475,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.key_bindings.len(), 2);
-        assert!(matches!(&config.key_bindings[0].actions[0], Action::Assign { target, value } if target == "zoom" && *value == 1.0));
-        assert!(matches!(&config.key_bindings[1].actions[0], Action::Assign { target, value } if target == "center_x" && *value == -0.5));
+        assert_eq!(config.event_bindings.len(), 2);
+        assert!(matches!(&config.event_bindings[0].actions[0], Action::Assign { target, value } if target == "zoom" && *value == 1.0));
+        assert!(matches!(&config.event_bindings[1].actions[0], Action::Assign { target, value } if target == "center_x" && *value == -0.5));
     }
 
     #[test]

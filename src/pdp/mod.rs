@@ -69,10 +69,10 @@ mod tests {
 
             var iterations: range<u32>(1..10) = 1
 
-            on key(space) paused = !paused
-            on key(period) frame += 1
-            on key(bracket_right) iterations += 1
-            on key(bracket_left) iterations -= 1
+            on keypress(space) paused = !paused
+            on keypress(period) frame += 1
+            on keypress(bracket_right) iterations += 1
+            on keypress(bracket_left) iterations -= 1
 
             pipeline {
               kernel "game_of_life.pd"
@@ -87,7 +87,7 @@ mod tests {
               init {
                 run init_state with(out: out state)
               }
-              on click(continuous: true) {
+              on mousedown {
                 run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
                 run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
               }
@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels.len(), 3);
         assert_eq!(config.pipelines[0].buffers.len(), 4);
         assert_eq!(config.variables.len(), 1);
-        assert_eq!(config.key_bindings.len(), 4);
+        assert_eq!(config.event_bindings.len(), 4);
     }
 
     #[test]
@@ -118,8 +118,8 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
 
-            on key(space) paused = !paused
-            on key(period) frame += 1
+            on keypress(space) paused = !paused
+            on keypress(period) frame += 1
 
             pipeline {
               kernel advect = "smoke/advect.pd"
@@ -138,7 +138,7 @@ mod tests {
               buffer pressure_tmp = constant(0.0)
               buffer divergence = constant(0.0)
 
-              on click(continuous: true) {
+              on mousedown {
                 run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
                 run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
               }
@@ -204,7 +204,7 @@ mod tests {
         let dir = make_test_dir("include_kb");
         std::fs::write(
             dir.join("pan_zoom.pdp"),
-            "builtin var center_x: f64\non key(left) center_x -= 0.1\non key(right) center_x += 0.1\n",
+            "builtin var center_x: f64\non keydown(left) center_x -= 0.1\non keydown(right) center_x += 0.1\n",
         )
         .unwrap();
 
@@ -218,9 +218,9 @@ mod tests {
             "}\n",
         );
         let config = parse(source, &dir).unwrap();
-        assert_eq!(config.key_bindings.len(), 2);
-        assert_eq!(config.key_bindings[0].key_name, "left");
-        assert_eq!(config.key_bindings[1].key_name, "right");
+        assert_eq!(config.event_bindings.len(), 2);
+        assert_eq!(config.event_bindings[0].key_name, "left");
+        assert_eq!(config.event_bindings[1].key_name, "right");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -247,12 +247,12 @@ mod tests {
         let dir = make_test_dir("include_circular");
         std::fs::write(
             dir.join("a.pdp"),
-            "builtin var center_x: f64\ninclude \"b.pdp\"\non key(left) center_x -= 0.1\n",
+            "builtin var center_x: f64\ninclude \"b.pdp\"\non keydown(left) center_x -= 0.1\n",
         )
         .unwrap();
         std::fs::write(
             dir.join("b.pdp"),
-            "builtin var center_x: f64\ninclude \"a.pdp\"\non key(right) center_x += 0.1\n",
+            "builtin var center_x: f64\ninclude \"a.pdp\"\non keydown(right) center_x += 0.1\n",
         )
         .unwrap();
 
@@ -263,7 +263,7 @@ mod tests {
         )
         .unwrap();
         // Should have key bindings from both files without infinite loop
-        assert!(config.key_bindings.len() >= 2);
+        assert!(config.event_bindings.len() >= 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

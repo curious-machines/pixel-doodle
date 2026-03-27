@@ -384,19 +384,30 @@ impl ApplicationHandler for PdpApp {
                         }
                         if !self.keys_down.contains(&code) {
                             self.keys_down.push(code);
-                            // Fire key binding on initial press only (not OS repeats)
+                            // Fire keypress on initial press (single-fire)
                             if let Some(name) = pdp::runtime::key_code_to_name(code) {
-                                if self.runtime.handle_key_press(name) {
+                                if self.runtime.handle_keypress(name) {
                                     event_loop.exit();
                                     return;
                                 }
-                                if let Some(window) = &self.window {
-                                    window.request_redraw();
-                                }
+                            }
+                            // Request redraw so keydown fires on next frame
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
                             }
                         }
                     } else {
                         self.keys_down.retain(|k| *k != code);
+                        // Fire keyup on release
+                        if let Some(name) = pdp::runtime::key_code_to_name(code) {
+                            if self.runtime.handle_keyup(name) {
+                                event_loop.exit();
+                                return;
+                            }
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
+                        }
                     }
                 }
             }
@@ -415,15 +426,12 @@ impl ApplicationHandler for PdpApp {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Handle held keys for continuous pan/zoom
+                // Fire keydown for all held keys every frame
                 for code in &self.keys_down.clone() {
                     if let Some(name) = pdp::runtime::key_code_to_name(*code) {
-                        // Only re-fire for pan/zoom keys (held down behavior)
-                        match name {
-                            "left" | "right" | "up" | "down" | "plus" | "minus" => {
-                                self.runtime.handle_key_press(name);
-                            }
-                            _ => {}
+                        if self.runtime.handle_keydown(name) {
+                            event_loop.exit();
+                            return;
                         }
                     }
                 }
@@ -463,10 +471,12 @@ impl ApplicationHandler for PdpApp {
                 } else if self.display.is_some() {
                     // Re-present existing buffer even if not updated
                     let display = self.display.as_ref().unwrap();
-                    display.upload_and_present(self.runtime.display_pixels());
+                    if !self.runtime.re_present_gpu_frame(display) {
+                        display.upload_and_present(self.runtime.display_pixels());
+                    }
                 }
 
-                if self.runtime.needs_continuous_redraw() || !self.keys_down.is_empty() {
+                if self.runtime.needs_continuous_redraw() || !self.keys_down.is_empty() || self.runtime.mouse_down {
                     // Cap frame rate to ~120fps to avoid starving the event loop
                     let frame_time = t0.elapsed();
                     let min_frame = std::time::Duration::from_micros(8333); // ~120fps

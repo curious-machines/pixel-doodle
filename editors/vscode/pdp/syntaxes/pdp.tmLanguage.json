@@ -43,8 +43,7 @@
         { "include": "#buffer-declaration" },
         { "include": "#swap-statement" },
         { "include": "#accumulate-block" },
-        { "include": "#on-click-block" },
-        { "include": "#on-key-block" },
+        { "include": "#on-mouse-block" },
         { "include": "#display-statement" },
         { "include": "#run-expression" },
         { "include": "#string" },
@@ -131,7 +130,7 @@
         { "include": "#display-statement" },
         { "include": "#run-expression" },
         { "include": "#loop-block" },
-        { "include": "#on-click-block" },
+        { "include": "#on-mouse-block" },
         { "include": "#string" },
         { "include": "#number" },
         { "include": "#boolean" },
@@ -156,8 +155,8 @@
         { "include": "#identifier" }
       ]
     },
-    "on-click-block": {
-      "begin": "\\b(on)\\s+(click)\\s*\\([^)]*\\)\\s*\\{",
+    "on-mouse-block": {
+      "begin": "\\b(on)\\s+(mousedown|click|mouseup)\\s*\\{",
       "beginCaptures": {
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" }
@@ -176,7 +175,7 @@
       ]
     },
     "on-key-block": {
-      "begin": "\\b(on)\\s+(key)\\s*\\([^)]*\\)\\s*\\{",
+      "begin": "\\b(on)\\s+(keydown|keypress|keyup)\\s*\\([^)]*\\)\\s*\\{",
       "beginCaptures": {
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" }
@@ -214,7 +213,7 @@
       }
     },
     "event-handler": {
-      "match": "\\b(on)\\s+(key)\\s*\\(([a-zA-Z_][a-zA-Z0-9_]*|[0-9])\\)",
+      "match": "\\b(on)\\s+(keydown|keypress|keyup)\\s*\\(([a-zA-Z_][a-zA-Z0-9_]*|[0-9])\\)",
       "captures": {
         "1": { "name": "keyword.control.event.pdp" },
         "2": { "name": "keyword.other.event-type.pdp" },
@@ -329,7 +328,7 @@
       ]
     },
     "identifier": {
-      "match": "\\b(constant|iterations|samples|continuous|radius|value|falloff|wrap|out|target|with)\\b",
+      "match": "\\b(constant|iterations|samples|radius|value|falloff|wrap|out|target|with)\\b",
       "name": "variable.parameter.pdp"
     }
   }

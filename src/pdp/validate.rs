@@ -88,8 +88,8 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
         }
     }
 
-    // ── Check key bindings reference valid variables and respect const-ness ──
-    for kb in &config.key_bindings {
+    // ── Check event bindings reference valid variables and respect const-ness ──
+    for kb in &config.event_bindings {
         for action in &kb.actions {
             let target = match action {
                 Action::Toggle(var) => var,
@@ -363,7 +363,7 @@ fn validate_steps(
             PipelineStep::Accumulate { body, .. } => {
                 validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
-            PipelineStep::OnClick { body, .. } => {
+            PipelineStep::OnMouse { body, .. } => {
                 validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
         }
@@ -495,7 +495,7 @@ mod tests {
     fn undeclared_var_in_key_binding() {
         let result = parse_and_validate(
             r#"
-            on key(space) nonexistent = !nonexistent
+            on keypress(space) nonexistent = !nonexistent
             pipeline {
               pixel kernel "test.pd"
               display test
@@ -510,7 +510,7 @@ mod tests {
         parse_and_validate(
             r#"
             builtin var paused: bool
-            on key(space) paused = !paused
+            on keypress(space) paused = !paused
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -525,7 +525,7 @@ mod tests {
     fn undeclared_intrinsic_in_key_binding() {
         let result = parse_and_validate(
             r#"
-            on key(space) paused = !paused
+            on keypress(space) paused = !paused
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -595,7 +595,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             const max_iter = 256
-            on key(space) max_iter += 1
+            on keypress(space) max_iter += 1
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -614,7 +614,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             builtin const time: f64
-            on key(space) time += 1.0
+            on keypress(space) time += 1.0
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -634,7 +634,7 @@ mod tests {
             r#"
             builtin var zoom: f64
             builtin var zoom: f64
-            on key(plus) zoom *= 1.1
+            on keydown(plus) zoom *= 1.1
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -652,7 +652,7 @@ mod tests {
             r#"
             builtin const zoom: f64
             builtin var zoom: f64
-            on key(plus) zoom *= 1.1
+            on keydown(plus) zoom *= 1.1
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -729,7 +729,7 @@ mod tests {
             pipeline {
               kernel "test.pd"
               buffer state = constant(0.0)
-              on click(continuous: true) {
+              on mousedown {
                 run inject(value: 1.0, radius: 3) with(target: out state)
               }
               run test

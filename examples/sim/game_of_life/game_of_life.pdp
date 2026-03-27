@@ -7,10 +7,10 @@ builtin const mouse_y: f64
 
 var iterations: range<u32>(1..10) = 1
 
-on key(space) paused = !paused
-on key(period) frame += 1
-on key(bracket_right) iterations += 1
-on key(bracket_left) iterations -= 1
+on keypress(space) paused = !paused
+on keypress(period) frame += 1
+on keypress(bracket_right) iterations += 1
+on keypress(bracket_left) iterations -= 1
 
 pipeline pd {
   kernel "game_of_life.pd"
@@ -25,7 +25,7 @@ pipeline pd {
   init {
     run init_state with(out: out state)
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
   }
@@ -50,7 +50,7 @@ pipeline gpu {
   init {
     run init_grid with(grid: out grid)
   }
-  on click(continuous: true) {
+  on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) with(buf_in: grid, buf_out: out grid_next)
     swap grid, grid_next
   }

@@ -215,8 +215,23 @@ pub enum CompoundOp {
     Div,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Keydown,
+    Keypress,
+    Keyup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEventKind {
+    Mousedown,
+    Click,
+    Mouseup,
+}
+
 #[derive(Debug, Clone)]
-pub struct KeyBinding {
+pub struct EventBinding {
+    pub kind: EventKind,
     pub key_name: String,
     pub actions: Vec<Action>,
     pub span: Span,
@@ -281,9 +296,9 @@ pub enum PipelineStep {
         body: Vec<PipelineStep>,
         span: Span,
     },
-    /// `on click(continuous: true) { steps }`
-    OnClick {
-        continuous: bool,
+    /// `on mousedown { steps }` or `on mouseup { steps }`
+    OnMouse {
+        kind: MouseEventKind,
         body: Vec<PipelineStep>,
         span: Span,
     },
@@ -313,7 +328,7 @@ pub struct Config {
     pub builtins: Vec<BuiltinDecl>,
     pub variables: Vec<VarDecl>,
     pub settings: Settings,
-    pub key_bindings: Vec<KeyBinding>,
+    pub event_bindings: Vec<EventBinding>,
     /// One or more named pipelines. First pipeline is the default.
     pub pipelines: Vec<Pipeline>,
 }

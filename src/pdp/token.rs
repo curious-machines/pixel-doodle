@@ -22,8 +22,12 @@ pub enum Token {
     Accumulate,
     // Events
     On,
-    Key,
+    Keydown,
+    Keypress,
+    Keyup,
+    Mousedown,
     Click,
+    Mouseup,
     // Buffer bindings keyword
     With,
     // Include
@@ -86,8 +90,12 @@ impl fmt::Display for Token {
             Token::Loop => write!(f, "loop"),
             Token::Accumulate => write!(f, "accumulate"),
             Token::On => write!(f, "on"),
-            Token::Key => write!(f, "key"),
+            Token::Keydown => write!(f, "keydown"),
+            Token::Keypress => write!(f, "keypress"),
+            Token::Keyup => write!(f, "keyup"),
+            Token::Mousedown => write!(f, "mousedown"),
             Token::Click => write!(f, "click"),
+            Token::Mouseup => write!(f, "mouseup"),
             Token::With => write!(f, "with"),
             Token::Include => write!(f, "include"),
             Token::Settings => write!(f, "settings"),
