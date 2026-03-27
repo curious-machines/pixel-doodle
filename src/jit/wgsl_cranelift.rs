@@ -267,8 +267,10 @@ struct ShaderCompiler<'a, 'b> {
     jit_module: &'b mut JITModule,
     /// Cached cranelift values for naga expressions.
     expr_values: HashMap<Handle<Expression>, Vec<cranelift_codegen::ir::Value>>,
-    /// Cranelift Variables for naga LocalVariables.
+    /// Cranelift Variables for naga LocalVariables (per active function scope).
     local_vars: HashMap<Handle<naga::LocalVariable>, Vec<Variable>>,
+    /// Return values captured from inlined function calls, keyed by CallResult expression handle.
+    call_results: HashMap<Handle<Expression>, Vec<cranelift_codegen::ir::Value>>,
     // Function parameters.
     p_output: cranelift_codegen::ir::Value,
     p_params: cranelift_codegen::ir::Value,
@@ -335,6 +337,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             jit_module,
             expr_values: HashMap::new(),
             local_vars: HashMap::new(),
+            call_results: HashMap::new(),
             p_output,
             p_params,
             p_width,
@@ -433,9 +436,14 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
     // ── Expression evaluation ───────────────────────────────────────────
 
     fn get_expr(&self, handle: Handle<Expression>) -> &[cranelift_codegen::ir::Value] {
-        self.expr_values
-            .get(&handle)
-            .unwrap_or_else(|| panic!("expression {handle:?} not yet evaluated"))
+        // Check expr_values first, then call_results for CallResult expressions.
+        if let Some(vals) = self.expr_values.get(&handle) {
+            return vals;
+        }
+        if let Some(vals) = self.call_results.get(&handle) {
+            return vals;
+        }
+        panic!("expression {handle:?} not yet evaluated")
     }
 
     fn get_expr_scalar(&self, handle: Handle<Expression>) -> cranelift_codegen::ir::Value {
@@ -773,29 +781,28 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
 
             Expression::As { expr, kind, convert } => {
                 self.eval_expr(*expr, func)?;
-                let val = self.get_expr_scalar(*expr);
-                let src_ty = self.resolve_expr_type(*expr, func);
-                let src_scalar = match src_ty {
-                    TypeInner::Scalar(s) => s,
-                    _ => return Err(format!("As cast on non-scalar: {src_ty:?}")),
+                // Copy scalar info to avoid borrow conflict with cast_scalar.
+                let (is_vector, src_scalar, vec_size) = {
+                    let src_ty = self.resolve_expr_type(*expr, func);
+                    match src_ty {
+                        TypeInner::Scalar(s) => (false, *s, 0),
+                        TypeInner::Vector { scalar, size } => (true, *scalar, *size as usize),
+                        _ => return Err(format!("As cast on unsupported type: {src_ty:?}")),
+                    }
                 };
-                let result = match convert {
-                    Some(width) => match (src_scalar.kind, src_scalar.width, kind, width) {
-                        (ScalarKind::Uint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_uint(F32, val),
-                        (ScalarKind::Sint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_sint(F32, val),
-                        (ScalarKind::Float, 4, ScalarKind::Sint, 4) => self.builder.ins().fcvt_to_sint(I32, val),
-                        (ScalarKind::Float, 4, ScalarKind::Uint, 4) => self.builder.ins().fcvt_to_uint(I32, val),
-                        (ScalarKind::Sint, 4, ScalarKind::Uint, 4) | (ScalarKind::Uint, 4, ScalarKind::Sint, 4) => val,
-                        _ => return Err(format!("unsupported As convert: {:?}/{} → {:?}/{}", src_scalar.kind, src_scalar.width, kind, width)),
-                    },
-                    None => match (src_scalar.kind, src_scalar.width, kind) {
-                        (ScalarKind::Sint, 4, ScalarKind::Uint) | (ScalarKind::Uint, 4, ScalarKind::Sint) => val,
-                        (ScalarKind::Float, 4, ScalarKind::Uint) | (ScalarKind::Float, 4, ScalarKind::Sint) => self.builder.ins().bitcast(I32, MemFlags::new(), val),
-                        (ScalarKind::Uint, 4, ScalarKind::Float) | (ScalarKind::Sint, 4, ScalarKind::Float) => self.builder.ins().bitcast(F32, MemFlags::new(), val),
-                        _ => return Err(format!("unsupported bitcast: {:?}/{} → {:?}", src_scalar.kind, src_scalar.width, kind)),
-                    },
-                };
-                vec![result]
+                if is_vector {
+                    let vals = self.get_expr(*expr).to_vec();
+                    let mut results = Vec::with_capacity(vec_size);
+                    for v in &vals {
+                        let r = self.cast_scalar(*v, &src_scalar, *kind, *convert)?;
+                        results.push(r);
+                    }
+                    results
+                } else {
+                    let val = self.get_expr_scalar(*expr);
+                    let result = self.cast_scalar(val, &src_scalar, *kind, *convert)?;
+                    vec![result]
+                }
             }
 
             Expression::Compose { components, .. } => {
@@ -839,6 +846,15 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
 
             Expression::Relational { .. } => {
                 vec![self.builder.ins().iconst(I8, 0)]
+            }
+
+            Expression::CallResult(_) => {
+                // The value was placed by Statement::Call handling.
+                if let Some(vals) = self.call_results.get(&handle) {
+                    vals.clone()
+                } else {
+                    return Err("CallResult without preceding Call".into());
+                }
             }
 
             Expression::Math { fun, arg, arg1, arg2, arg3: _ } => {
@@ -1011,6 +1027,32 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         }
     }
 
+    /// Cast a single scalar value from one type to another.
+    fn cast_scalar(
+        &mut self,
+        val: cranelift_codegen::ir::Value,
+        src: &naga::Scalar,
+        dst_kind: ScalarKind,
+        convert: Option<u8>,
+    ) -> Result<cranelift_codegen::ir::Value, String> {
+        Ok(match convert {
+            Some(width) => match (src.kind, src.width, dst_kind, width) {
+                (ScalarKind::Uint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_uint(F32, val),
+                (ScalarKind::Sint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_sint(F32, val),
+                (ScalarKind::Float, 4, ScalarKind::Sint, 4) => self.builder.ins().fcvt_to_sint(I32, val),
+                (ScalarKind::Float, 4, ScalarKind::Uint, 4) => self.builder.ins().fcvt_to_uint(I32, val),
+                (ScalarKind::Sint, 4, ScalarKind::Uint, 4) | (ScalarKind::Uint, 4, ScalarKind::Sint, 4) => val,
+                _ => return Err(format!("unsupported cast: {:?}/{} → {:?}/{}", src.kind, src.width, dst_kind, width)),
+            },
+            None => match (src.kind, src.width, dst_kind) {
+                (ScalarKind::Sint, 4, ScalarKind::Uint) | (ScalarKind::Uint, 4, ScalarKind::Sint) => val,
+                (ScalarKind::Float, 4, ScalarKind::Uint) | (ScalarKind::Float, 4, ScalarKind::Sint) => self.builder.ins().bitcast(I32, MemFlags::new(), val),
+                (ScalarKind::Uint, 4, ScalarKind::Float) | (ScalarKind::Sint, 4, ScalarKind::Float) => self.builder.ins().bitcast(F32, MemFlags::new(), val),
+                _ => return Err(format!("unsupported bitcast: {:?}/{} → {:?}", src.kind, src.width, dst_kind)),
+            },
+        })
+    }
+
     fn call_libm_f32(&mut self, name: &str, arg: cranelift_codegen::ir::Value) -> cranelift_codegen::ir::Value {
         let mut sig = self.jit_module.make_signature();
         sig.params.push(AbiParam::new(F32));
@@ -1124,7 +1166,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 self.builder.ins().jump(loop_body_block, &[]);
 
                 self.builder.switch_to_block(loop_body_block);
-                self.builder.seal_block(loop_body_block);
+                // Don't seal yet — back-edge comes later.
                 self.loop_stack.push((loop_exit, loop_continuing_block));
                 self.terminated = false;
                 self.lower_block(body, func)?;
@@ -1143,6 +1185,8 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.builder.ins().jump(loop_body_block, &[]);
                 }
 
+                // Seal body after back-edge.
+                self.builder.seal_block(loop_body_block);
                 self.loop_stack.pop();
                 self.builder.switch_to_block(loop_exit);
                 self.builder.seal_block(loop_exit);
@@ -1218,7 +1262,202 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 self.terminated = false;
             }
 
+            Statement::Call { function, arguments, result } => {
+                self.inline_call(*function, arguments, *result, func)?;
+            }
+
             _ => {} // Ignore unsupported statements.
+        }
+        Ok(())
+    }
+
+    /// Inline a function call: evaluate args, lower callee body, capture return value.
+    fn inline_call(
+        &mut self,
+        callee_handle: Handle<naga::Function>,
+        caller_args: &[Handle<Expression>],
+        result_expr: Option<Handle<Expression>>,
+        caller_func: &naga::Function,
+    ) -> Result<(), String> {
+        let callee = &self.naga_module.functions[callee_handle];
+
+        // Evaluate caller argument expressions.
+        let arg_values: Vec<Vec<cranelift_codegen::ir::Value>> = caller_args
+            .iter()
+            .map(|a| {
+                self.eval_expr(*a, caller_func).ok();
+                self.get_expr(*a).to_vec()
+            })
+            .collect();
+
+        // Save caller state.
+        let saved_expr_values = std::mem::take(&mut self.expr_values);
+        let saved_local_vars = std::mem::take(&mut self.local_vars);
+        let saved_return_block = self.return_block;
+        let saved_terminated = self.terminated;
+
+        // Create a return block for the inlined function.
+        let inline_return_block = self.builder.create_block();
+        self.return_block = inline_return_block;
+        self.terminated = false;
+
+        // Seed callee FunctionArgument expressions with caller arg values.
+        for (handle, expr) in callee.expressions.iter() {
+            if let Expression::FunctionArgument(idx) = expr {
+                self.expr_values.insert(handle, arg_values[*idx as usize].clone());
+            }
+        }
+
+        // Declare callee local variables.
+        for (handle, local) in callee.local_variables.iter() {
+            let cl_ty = self.naga_type_to_cl(&self.naga_module.types[local.ty].inner);
+            let components = self.type_component_count(&self.naga_module.types[local.ty].inner);
+            let mut vars = Vec::new();
+            for _ in 0..components {
+                let v = self.alloc_var(cl_ty);
+                let zero = self.zero_value(cl_ty);
+                self.builder.def_var(v, zero);
+                vars.push(v);
+            }
+            // Initialize from init value if present.
+            if let Some(init) = local.init {
+                self.eval_expr(init, callee)?;
+                let init_vals = self.get_expr(init).to_vec();
+                for (i, v) in vars.iter().enumerate() {
+                    if i < init_vals.len() {
+                        self.builder.def_var(*v, init_vals[i]);
+                    }
+                }
+            }
+            self.local_vars.insert(handle, vars);
+        }
+
+        // We need to capture return values. Use a Cranelift Variable to carry
+        // the return value out of the inline body (since there may be multiple
+        // return paths).
+        let ret_var = if result_expr.is_some() {
+            // Determine return type from callee.
+            let ret_ty = callee.result.as_ref().map(|r| {
+                self.naga_type_to_cl(&self.naga_module.types[r.ty].inner)
+            }).unwrap_or(I32);
+            let rv = self.alloc_var(ret_ty);
+            let zero = self.zero_value(ret_ty);
+            self.builder.def_var(rv, zero);
+            Some(rv)
+        } else {
+            None
+        };
+
+        // Lower callee body, intercepting Return statements to capture values.
+        self.lower_block_with_return(&callee.body, callee, ret_var)?;
+
+        // Jump to the inline return block if not already terminated.
+        if !self.terminated {
+            self.builder.ins().jump(inline_return_block, &[]);
+        }
+        self.builder.switch_to_block(inline_return_block);
+        self.builder.seal_block(inline_return_block);
+
+        // Capture return value.
+        let return_values = ret_var.map(|rv| vec![self.builder.use_var(rv)]);
+
+        // Restore caller state.
+        self.expr_values = saved_expr_values;
+        self.local_vars = saved_local_vars;
+        self.return_block = saved_return_block;
+        self.terminated = saved_terminated;
+
+        // Store the return value for CallResult expression.
+        if let (Some(result_handle), Some(vals)) = (result_expr, return_values) {
+            self.call_results.insert(result_handle, vals);
+        }
+
+        Ok(())
+    }
+
+    /// Lower a block, converting Return statements to store the value and jump.
+    fn lower_block_with_return(
+        &mut self,
+        block: &naga::Block,
+        func: &naga::Function,
+        ret_var: Option<Variable>,
+    ) -> Result<(), String> {
+        for stmt in block.iter() {
+            if self.terminated { break; }
+            match stmt {
+                Statement::Return { value } => {
+                    if let (Some(val_handle), Some(rv)) = (value, ret_var) {
+                        self.eval_expr(*val_handle, func)?;
+                        let val = self.get_expr_scalar(*val_handle);
+                        self.builder.def_var(rv, val);
+                    }
+                    self.builder.ins().jump(self.return_block, &[]);
+                    self.terminated = true;
+                }
+                Statement::If { condition, accept, reject } => {
+                    // Need to use lower_block_with_return for both branches.
+                    let cond = self.get_expr_scalar(*condition);
+                    let then_block = self.builder.create_block();
+                    let else_block = self.builder.create_block();
+                    let merge_block = self.builder.create_block();
+
+                    self.builder.ins().brif(cond, then_block, &[], else_block, &[]);
+
+                    self.builder.switch_to_block(then_block);
+                    self.builder.seal_block(then_block);
+                    self.terminated = false;
+                    self.lower_block_with_return(accept, func, ret_var)?;
+                    let then_term = self.terminated;
+                    if !then_term { self.builder.ins().jump(merge_block, &[]); }
+
+                    self.builder.switch_to_block(else_block);
+                    self.builder.seal_block(else_block);
+                    self.terminated = false;
+                    self.lower_block_with_return(reject, func, ret_var)?;
+                    let else_term = self.terminated;
+                    if !else_term { self.builder.ins().jump(merge_block, &[]); }
+
+                    self.builder.switch_to_block(merge_block);
+                    self.builder.seal_block(merge_block);
+                    self.terminated = then_term && else_term;
+                }
+                Statement::Loop { body, continuing, break_if } => {
+                    let loop_body_block = self.builder.create_block();
+                    let loop_continuing_block = self.builder.create_block();
+                    let loop_exit = self.builder.create_block();
+
+                    self.builder.ins().jump(loop_body_block, &[]);
+
+                    self.builder.switch_to_block(loop_body_block);
+                    self.loop_stack.push((loop_exit, loop_continuing_block));
+                    self.terminated = false;
+                    self.lower_block_with_return(body, func, ret_var)?;
+                    if !self.terminated {
+                        self.builder.ins().jump(loop_continuing_block, &[]);
+                    }
+
+                    self.builder.switch_to_block(loop_continuing_block);
+                    self.builder.seal_block(loop_continuing_block);
+                    self.terminated = false;
+                    self.lower_block_with_return(continuing, func, ret_var)?;
+                    if let Some(break_cond) = break_if {
+                        let cond = self.get_expr_scalar(*break_cond);
+                        self.builder.ins().brif(cond, loop_exit, &[], loop_body_block, &[]);
+                    } else if !self.terminated {
+                        self.builder.ins().jump(loop_body_block, &[]);
+                    }
+
+                    // Seal loop body after back-edge is established.
+                    self.builder.seal_block(loop_body_block);
+                    self.loop_stack.pop();
+
+                    self.builder.switch_to_block(loop_exit);
+                    self.builder.seal_block(loop_exit);
+                    self.terminated = false;
+                }
+                // All other statements delegate to the normal handler.
+                _ => self.lower_statement(stmt, func)?,
+            }
         }
         Ok(())
     }
@@ -1289,5 +1528,67 @@ mod tests {
         let g_mid = (p_mid >> 8) & 0xFF;
         assert!((120..136).contains(&r_mid), "pixel (32,32) red should be ~128, got {r_mid}");
         assert!((120..136).contains(&g_mid), "pixel (32,32) green should be ~128, got {g_mid}");
+    }
+
+    #[test]
+    fn mandelbrot_wgsl_renders_on_cpu() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/basic/mandelbrot/mandelbrot.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile mandelbrot.wgsl");
+
+        let width: u32 = 128;
+        let height: u32 = 128;
+        let stride: u32 = width;
+
+        // Params: center on (-0.5, 0), range ~3.5 in x
+        let x_min: f32 = -2.25;
+        let y_min: f32 = -1.5;
+        let x_step: f32 = 3.5 / width as f32;
+        let y_step: f32 = 3.0 / height as f32;
+        let max_iter: u32 = 256;
+
+        let mut params = [0u8; 48];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&max_iter.to_le_bytes());
+        params[12..16].copy_from_slice(&stride.to_le_bytes());
+        params[16..20].copy_from_slice(&x_min.to_le_bytes());
+        params[20..24].copy_from_slice(&y_min.to_le_bytes());
+        params[24..28].copy_from_slice(&x_step.to_le_bytes());
+        params[28..32].copy_from_slice(&y_step.to_le_bytes());
+
+        let mut output = vec![0u32; (stride * height) as usize];
+
+        unsafe {
+            (compiled.fn_ptr)(
+                output.as_mut_ptr(),
+                params.as_ptr(),
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // The center of the Mandelbrot set (around -0.5, 0) should be IN the set
+        // (black = 0x00000000 or with alpha 0xFF000000).
+        // Pixel at center: col ≈ 64, row ≈ 64 → cx ≈ -0.5, cy ≈ 0
+        let p_center = output[(64 * stride + 64) as usize];
+        // In-set pixels return max_iter → iter_to_color returns 0x00000000
+        assert_eq!(p_center, 0x00000000, "center pixel should be in-set (black), got 0x{p_center:08X}");
+
+        // A point far outside (top-left corner: cx = -2.25, cy = -1.5) should escape quickly.
+        let p_corner = output[0];
+        // Should NOT be black (should have some color from the coloring function).
+        assert_ne!(p_corner, 0x00000000, "corner pixel should be outside the set (colored)");
+
+        // Count non-black pixels — most pixels escape, so majority should be colored.
+        let non_black = output.iter().filter(|&&p| p != 0x00000000).count();
+        let black = output.len() - non_black;
+        let total = output.len();
+        // The set covers maybe 10-20% of this view.
+        assert!(non_black > total / 2, "should have >50% non-black pixels, got {non_black}/{total}");
+        assert!(black > total / 20, "should have >5% in-set (black) pixels, got {black}/{total}");
     }
 }
