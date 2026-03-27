@@ -67,7 +67,7 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1, component: 0) { target: field, target_out: out field }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1, component: 0) { buf_in: field, buf_out: out field }
   }
   loop(iterations: 4) {
     run step { field_in: field, field_out: out field_next }
