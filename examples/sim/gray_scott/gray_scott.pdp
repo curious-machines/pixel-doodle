@@ -58,8 +58,8 @@ pipeline gpu {
   kernel vis = "gray_scott_vis.wgsl"
   kernel init_field = "gray_scott_init.wgsl"
 
-  buffer field: gpu(vec2f) = constant(0.0)
-  buffer field_next: gpu(vec2f) = constant(0.0)
+  buffer field: gpu(vec2<f32>) = constant(0.0)
+  buffer field_next: gpu(vec2<f32>) = constant(0.0)
   buffer pixels: gpu(u32) = constant(0.0)
 
   init {

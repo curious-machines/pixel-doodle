@@ -74,8 +74,8 @@ pipeline gpu {
   kernel project = "smoke_project.wgsl"
   kernel vis = "smoke_vis.wgsl"
 
-  buffer field: gpu(vec4f) = constant(0.0)
-  buffer field_next: gpu(vec4f) = constant(0.0)
+  buffer field: gpu(vec4<f32>) = constant(0.0)
+  buffer field_next: gpu(vec4<f32>) = constant(0.0)
   buffer div_buf: gpu(f32) = constant(0.0)
   buffer press_a: gpu(f32) = constant(0.0)
   buffer press_b: gpu(f32) = constant(0.0)

@@ -49,6 +49,9 @@ pub enum Token {
     Bang,     // ! (for boolean toggle)
     // Swap arrow
     SwapArrow, // <->
+    // Angle brackets (for parameterized types)
+    Lt,       // <
+    Gt,       // >
     // Punctuation
     LParen,
     RParen,
@@ -100,6 +103,8 @@ impl fmt::Display for Token {
             Token::Slash => write!(f, "/"),
             Token::Bang => write!(f, "!"),
             Token::SwapArrow => write!(f, "<->"),
+            Token::Lt => write!(f, "<"),
+            Token::Gt => write!(f, ">"),
             Token::LParen => write!(f, "("),
             Token::RParen => write!(f, ")"),
             Token::LBrace => write!(f, "{{"),

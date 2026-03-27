@@ -183,6 +183,8 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
             ('}', _, _) => (Token::RBrace, 1),
             (':', _, _) => (Token::Colon, 1),
             (',', _, _) => (Token::Comma, 1),
+            ('<', _, _) => (Token::Lt, 1),
+            ('>', _, _) => (Token::Gt, 1),
             _ => {
                 return Err(format!(
                     "{line}:{col}: unexpected character '{ch}'"

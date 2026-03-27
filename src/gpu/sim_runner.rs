@@ -376,12 +376,12 @@ impl GpuSimRunner {
             GpuElementType::F32 => {
                 bytes.copy_from_slice(&(value as f32).to_le_bytes());
             }
-            GpuElementType::Vec2f => {
+            GpuElementType::Vec2F32 => {
                 // Write to second component (v channel) for reaction-diffusion
                 let val_bytes = (value as f32).to_le_bytes();
                 bytes[4..8].copy_from_slice(&val_bytes);
             }
-            GpuElementType::Vec4f => {
+            GpuElementType::Vec4F32 => {
                 // Write to density (4th component) for smoke
                 let val_bytes = (value as f32).to_le_bytes();
                 bytes[12..16].copy_from_slice(&val_bytes);

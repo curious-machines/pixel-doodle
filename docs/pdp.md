@@ -145,7 +145,7 @@ pipeline {
   buffer state = constant(0.0)                     # fill with 0.0 (use init block to populate)
 
   # GPU buffers (with type annotation)
-  buffer field: gpu(vec2f) = constant(0.0)
+  buffer field: gpu(vec2<f32>) = constant(0.0)
   buffer pixels: gpu(u32) = constant(0.0)
 }
 ```
@@ -155,9 +155,9 @@ pipeline {
 | Type | Size | Description |
 |------|------|-------------|
 | `f32` | 4 bytes | Single float |
-| `vec2f` | 8 bytes | 2-component float vector |
-| `vec3f` | 16 bytes | 3-component float vector (padded) |
-| `vec4f` | 16 bytes | 4-component float vector |
+| `vec2<f32>` | 8 bytes | 2-component float vector |
+| `vec3<f32>` | 16 bytes | 3-component float vector (padded) |
+| `vec4<f32>` | 16 bytes | 4-component float vector |
 | `i32` | 4 bytes | Signed integer |
 | `u32` | 4 bytes | Unsigned integer |
 
@@ -546,8 +546,8 @@ pipeline gpu {
   kernel step = "gray_scott_step.wgsl"
   kernel vis = "gray_scott_vis.wgsl"
 
-  buffer field: gpu(vec2f) = constant(1.0)
-  buffer field_next: gpu(vec2f) = constant(1.0)
+  buffer field: gpu(vec2<f32>) = constant(1.0)
+  buffer field_next: gpu(vec2<f32>) = constant(1.0)
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {

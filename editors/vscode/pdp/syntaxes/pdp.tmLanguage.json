@@ -238,11 +238,23 @@
       }
     },
     "gpu-type": {
-      "match": "\\b(gpu)\\s*\\((f32|vec2f|vec3f|vec4f|i32|u32)\\)",
-      "captures": {
-        "1": { "name": "keyword.other.gpu.pdp" },
-        "2": { "name": "storage.type.gpu.pdp" }
-      }
+      "patterns": [
+        {
+          "match": "\\b(gpu)\\s*\\(\\s*(vec[234])\\s*<\\s*(f32)\\s*>\\s*\\)",
+          "captures": {
+            "1": { "name": "keyword.other.gpu.pdp" },
+            "2": { "name": "storage.type.gpu.pdp" },
+            "3": { "name": "storage.type.gpu.pdp" }
+          }
+        },
+        {
+          "match": "\\b(gpu)\\s*\\(\\s*(f32|i32|u32)\\s*\\)",
+          "captures": {
+            "1": { "name": "keyword.other.gpu.pdp" },
+            "2": { "name": "storage.type.gpu.pdp" }
+          }
+        }
+      ]
     },
     "string": {
       "match": "\"[^\"]*\"",

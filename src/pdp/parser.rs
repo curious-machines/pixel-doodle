@@ -293,25 +293,12 @@ impl Parser {
         self.expect(&Token::Buffer)?;
         let name = self.expect_ident()?;
 
-        // Optional GPU type annotation: `: gpu(vec2f)`
+        // Optional GPU type annotation: `: gpu(vec2<f32>)`
         let gpu_type = if self.at(&Token::Colon) {
             self.advance();
             self.expect(&Token::Gpu)?;
             self.expect(&Token::LParen)?;
-            let type_name = self.expect_ident()?;
-            let gt = match type_name.as_str() {
-                "f32" => GpuElementType::F32,
-                "vec2f" => GpuElementType::Vec2f,
-                "vec3f" => GpuElementType::Vec3f,
-                "vec4f" => GpuElementType::Vec4f,
-                "i32" => GpuElementType::I32,
-                "u32" => GpuElementType::U32,
-                other => {
-                    return Err(self.error(format!(
-                        "unknown GPU element type '{other}'. Expected: f32, vec2f, vec3f, vec4f, i32, u32"
-                    )))
-                }
-            };
+            let gt = self.parse_gpu_element_type()?;
             self.expect(&Token::RParen)?;
             Some(gt)
         } else {
@@ -331,6 +318,37 @@ impl Parser {
         };
 
         Ok(BufferDecl { name, gpu_type, init, span })
+    }
+
+    /// Parse a GPU element type: `f32`, `i32`, `u32`, `vec2<f32>`, `vec3<f32>`, `vec4<f32>`.
+    fn parse_gpu_element_type(&mut self) -> Result<GpuElementType, ParseError> {
+        let type_name = self.expect_ident()?;
+        match type_name.as_str() {
+            "f32" => Ok(GpuElementType::F32),
+            "i32" => Ok(GpuElementType::I32),
+            "u32" => Ok(GpuElementType::U32),
+            "vec2" | "vec3" | "vec4" => {
+                self.expect(&Token::Lt)?;
+                let elem = self.expect_ident()?;
+                if elem != "f32" {
+                    return Err(self.error(format!(
+                        "GPU vec element type must be f32, got '{elem}'"
+                    )));
+                }
+                self.expect(&Token::Gt)?;
+                match type_name.as_str() {
+                    "vec2" => Ok(GpuElementType::Vec2F32),
+                    "vec3" => Ok(GpuElementType::Vec3F32),
+                    "vec4" => Ok(GpuElementType::Vec4F32),
+                    _ => unreachable!(),
+                }
+            }
+            other => {
+                Err(self.error(format!(
+                    "unknown GPU element type '{other}'. Expected: f32, i32, u32, vec2<f32>, vec3<f32>, vec4<f32>"
+                )))
+            }
+        }
     }
 
     // ── Variable declarations ──

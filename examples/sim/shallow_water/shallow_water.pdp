@@ -59,8 +59,8 @@ pipeline gpu {
   kernel step = "shallow_water_step.wgsl"
   kernel vis = "shallow_water_vis.wgsl"
 
-  buffer field: gpu(vec4f) = constant(0.0)
-  buffer field_next: gpu(vec4f) = constant(0.0)
+  buffer field: gpu(vec4<f32>) = constant(0.0)
+  buffer field_next: gpu(vec4<f32>) = constant(0.0)
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {

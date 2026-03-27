@@ -68,8 +68,25 @@
       ]
     },
     "type": {
-      "match": "\\b(f64|u32|bool|vec2|vec3)\\b",
-      "name": "storage.type.pdir"
+      "patterns": [
+        {
+          "match": "\\b(vec[234]|mat[234])\\s*<\\s*(f32|f64|i8|u8|i16|u16|i32|u32|i64|u64)\\s*>",
+          "captures": {
+            "1": { "name": "storage.type.pdir" },
+            "2": { "name": "storage.type.pdir" }
+          }
+        },
+        {
+          "match": "\\b(array)\\s*<",
+          "captures": {
+            "1": { "name": "storage.type.pdir" }
+          }
+        },
+        {
+          "match": "\\b(f32|f64|i8|u8|i16|u16|i32|u32|i64|u64|bool)\\b",
+          "name": "storage.type.pdir"
+        }
+      ]
     },
     "operator": {
       "patterns": [
@@ -90,7 +107,7 @@
           "name": "support.function.comparison.pdir"
         },
         {
-          "match": "(?<==\\s*)\\b(f64_to_u32|u32_to_f64)\\b",
+          "match": "(?<==\\s*)\\b([a-z]\\d+_to_[a-z]\\d+(_norm)?)\\b",
           "name": "support.function.conversion.pdir"
         },
         {
@@ -98,8 +115,16 @@
           "name": "support.function.builtin.pdir"
         },
         {
-          "match": "(?<==\\s*)\\b(make_vec2|make_vec3|extract_x|extract_y|extract_z|vec_add|vec_sub|vec_mul|vec_div|vec_min|vec_max|vec_neg|vec_abs|vec_normalize|vec_scale|vec_dot|vec_length|vec_cross)\\b",
+          "match": "(?<==\\s*)\\b(make_vec[234]|extract_[xyzw]|vec_add|vec_sub|vec_mul|vec_div|vec_min|vec_max|vec_neg|vec_abs|vec_normalize|vec_scale|vec_dot|vec_length|vec_cross)\\b",
           "name": "support.function.vector.pdir"
+        },
+        {
+          "match": "(?<==\\s*)\\b(make_mat[234]|mat_mul_vec|mat_mul|mat_transpose|mat_col[0123])\\b",
+          "name": "support.function.matrix.pdir"
+        },
+        {
+          "match": "(?<==\\s*)\\b(struct_new|struct_get|struct_set|array_new|array_get|array_set)\\b",
+          "name": "support.function.compound.pdir"
         }
       ]
     },
@@ -110,8 +135,22 @@
     "number": {
       "patterns": [
         {
+          "match": "\\b\\d+\\.\\d+(f32|f64)\\b",
+          "captures": {
+            "1": { "name": "storage.type.pdir" }
+          },
+          "name": "constant.numeric.float.pdir"
+        },
+        {
           "match": "\\b\\d+\\.\\d+\\b",
           "name": "constant.numeric.float.pdir"
+        },
+        {
+          "match": "\\b\\d+(i8|u8|i16|u16|i32|u32|i64|u64|f32|f64)\\b",
+          "captures": {
+            "1": { "name": "storage.type.pdir" }
+          },
+          "name": "constant.numeric.integer.pdir"
         },
         {
           "match": "\\b\\d+\\b",

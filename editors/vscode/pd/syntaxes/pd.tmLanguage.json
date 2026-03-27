@@ -63,11 +63,32 @@
       ]
     },
     "type": {
-      "match": "\\b(f64|u32|bool|vec2|vec3)\\b",
-      "name": "storage.type.pd"
+      "patterns": [
+        {
+          "match": "\\b(vec[234]|mat[234])\\s*<\\s*(f32|f64|i8|u8|i16|u16|i32|u32|i64|u64)\\s*>",
+          "captures": {
+            "1": { "name": "storage.type.pd" },
+            "2": { "name": "storage.type.pd" }
+          }
+        },
+        {
+          "match": "\\b(array)\\s*<",
+          "captures": {
+            "1": { "name": "storage.type.pd" }
+          }
+        },
+        {
+          "match": "\\b(f32|f64|i8|u8|i16|u16|i32|u32|i64|u64|bool)\\b",
+          "name": "storage.type.pd"
+        },
+        {
+          "match": "\\b(struct)\\b",
+          "name": "keyword.declaration.struct.pd"
+        }
+      ]
     },
     "builtin-function": {
-      "match": "\\b(abs|sqrt|floor|ceil|sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|log10|pow|round|trunc|fract|min|max|clamp|saturate|length|distance|mix|smoothstep|step|rgb|rgb255|gray|gray255|pack_argb|f64_to_u32|u32_to_f64|norm|select|hash|vec2|vec3|dot|normalize|cross)\\s*(?=\\()",
+      "match": "\\b(abs|sqrt|floor|ceil|sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|log10|pow|round|trunc|fract|min|max|clamp|saturate|length|distance|mix|smoothstep|step|rgb|rgb255|gray|gray255|pack_argb|f64_to_u32|u32_to_f64|norm|select|hash|vec2|vec3|vec4|mat2|mat3|mat4|dot|normalize|cross|transpose|col)\\s*(?=\\()",
       "name": "support.function.builtin.pd"
     },
     "operator": {
@@ -105,11 +126,18 @@
     "number": {
       "patterns": [
         {
+          "match": "\\b\\d+\\.\\d+(f32|f64)\\b",
+          "captures": {
+            "1": { "name": "storage.type.pd" }
+          },
+          "name": "constant.numeric.float.pd"
+        },
+        {
           "match": "\\b\\d+\\.\\d+\\b",
           "name": "constant.numeric.float.pd"
         },
         {
-          "match": "\\b\\d+(u32)\\b",
+          "match": "\\b\\d+(i8|u8|i16|u16|i32|u32|i64|u64|f32|f64)\\b",
           "captures": {
             "1": { "name": "storage.type.pd" }
           },
