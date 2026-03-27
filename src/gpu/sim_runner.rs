@@ -354,8 +354,50 @@ impl GpuSimRunner {
         }
     }
 
+    /// Write a single component within each element around a position.
+    /// `component_bytes` is the raw bytes for one component (e.g. 4 bytes for f32).
+    /// `component_offset` is the byte offset of that component within the element.
+    fn inject_raw_component(
+        &self,
+        buffer_name: &str,
+        px: u32,
+        py: u32,
+        radius: u32,
+        component_bytes: &[u8],
+        component_offset: u64,
+    ) {
+        let gpu_buf = match self.buffers.get(buffer_name) {
+            Some(b) => b,
+            None => return,
+        };
+        let elem_size = gpu_buf.element_size as u64;
+        let w = self.width as i32;
+        let h = self.height as i32;
+        let r = radius as i32;
+
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let x = px as i32 + dx;
+                let y = py as i32 + dy;
+                if x >= 0 && x < w && y >= 0 && y < h {
+                    let d2 = (dx * dx + dy * dy) as f32;
+                    let r2 = (r * r) as f32;
+                    if d2 <= r2 {
+                        let elem_offset =
+                            (y as u64 * self.width as u64 + x as u64) * elem_size;
+                        self.queue.write_buffer(
+                            &gpu_buf.buffer,
+                            elem_offset + component_offset,
+                            component_bytes,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Inject a f64 value into a GPU buffer, converting to the buffer's element type.
-    /// For vec types, the value is written to the first component; others are zeroed.
+    /// For vec types, only the target component is written; other components are preserved.
     pub fn inject_value(
         &self,
         buffer_name: &str,
@@ -382,14 +424,16 @@ impl GpuSimRunner {
                 bytes.copy_from_slice(&(value as f32).to_le_bytes());
             }
             GpuElementType::Vec2F32 => {
-                // Write to second component (v channel) for reaction-diffusion
-                let val_bytes = (value as f32).to_le_bytes();
-                bytes[4..8].copy_from_slice(&val_bytes);
+                // Write only the second component (V channel) at byte offset 4
+                self.inject_raw_component(buffer_name, px, py, radius,
+                    &(value as f32).to_le_bytes(), 4);
+                return;
             }
             GpuElementType::Vec4F32 => {
-                // Write to density (4th component) for smoke
-                let val_bytes = (value as f32).to_le_bytes();
-                bytes[12..16].copy_from_slice(&val_bytes);
+                // Write only the fourth component (density) at byte offset 12
+                self.inject_raw_component(buffer_name, px, py, radius,
+                    &(value as f32).to_le_bytes(), 12);
+                return;
             }
             _ => {
                 bytes[0..4].copy_from_slice(&(value as f32).to_le_bytes());
