@@ -92,6 +92,8 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "kernel" => Token::Kernel,
                 "buffer" => Token::Buffer,
                 "constant" => Token::Constant,
+                "texture" => Token::Texture,
+                "file" => Token::File,
                 "builtin" => Token::Builtin,
                 "var" => Token::Var,
                 "const" => Token::Const,

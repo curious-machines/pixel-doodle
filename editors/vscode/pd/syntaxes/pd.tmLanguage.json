@@ -39,7 +39,7 @@
     "control": {
       "patterns": [
         {
-          "match": "\\b(while|if|else|break_if|yield|emit|return|let)\\b",
+          "match": "\\b(while|if|else|break_if|yield|emit|return|let|textures)\\b",
           "name": "keyword.control.pd"
         },
         {
@@ -84,7 +84,7 @@
       ]
     },
     "builtin-function": {
-      "match": "\\b(abs|sqrt|floor|ceil|sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|log10|pow|round|trunc|fract|min|max|clamp|saturate|length|distance|mix|smoothstep|step|rgb|rgb255|gray|gray255|pack_argb|f64_to_u32|u32_to_f64|norm|select|hash|vec2|vec3|vec4|mat2|mat3|mat4|dot|normalize|cross|transpose|col)\\s*(?=\\()",
+      "match": "\\b(abs|sqrt|floor|ceil|sin|cos|tan|asin|acos|atan|atan2|exp|exp2|log|log2|log10|pow|round|trunc|fract|min|max|clamp|saturate|length|distance|mix|smoothstep|step|rgb|rgb255|gray|gray255|pack_argb|f64_to_u32|u32_to_f64|norm|select|hash|vec2|vec3|vec4|mat2|mat3|mat4|dot|normalize|cross|transpose|col|tex_load|tex_sample|tex_width|tex_height)\\s*(?=\\()",
       "name": "support.function.builtin.pd"
     },
     "operator": {

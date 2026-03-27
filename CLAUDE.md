@@ -42,7 +42,7 @@ The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text f
 A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel declares explicit parameters and a return type, and produces a value via `emit`.
 
 Parameters fall into two categories:
-- **Built-in**: provided by the tile loop (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel kernels; `px`, `py`, `width`, `height` for sim kernels)
+- **Built-in**: provided by the tile loop (`x`, `y`, `px`, `py`, `sample_index`, `time`, `width`, `height` for pixel kernels; `px`, `py`, `width`, `height` for sim kernels)
 - **User-defined**: any other parameter (e.g., `max_iter: u32`) — supplied via the `run` statement in `.pdp` files, passed through a packed byte buffer at the ABI level
 
 ### Type System
@@ -52,6 +52,7 @@ Parameters fall into two categories:
 - **Matrices**: `mat2<T>`, `mat3<T>`, `mat4<T>` — column-major, parameterized
 - **Fixed-size arrays**: `array<T; N>` — semicolon separates type from count
 - **Structs**: `struct Name { field: type, ... }` — user-defined composite types
+- **Textures**: read-only RGBA8 image data, sampled via `tex_load` (integer coords) or `tex_sample` (normalized UV with bilinear filtering), returning `vec4<f32>`
 - No implicit type coercion — explicit `as` casts required
 
 ### Text Format (.pdir)

@@ -36,6 +36,7 @@ kernel my_kernel(x: f64, y: f64) -> u32 {
 
 - **Parameters** `x` and `y` receive normalized pixel coordinates (typically mapped to a viewport range like -2.0 to 2.0).
 - Additional built-in parameters `px: u32, py: u32, sample_index: u32` are available for pixel coordinates and progressive sampling.
+- `width: u32` and `height: u32` provide the canvas dimensions in pixels.
 - `time: f64` provides elapsed time in seconds for animation. Kernels that declare this parameter automatically render continuously.
 - **User-defined parameters** — any parameter whose name is not a built-in (e.g., `max_iter: u32`, `threshold: f64`) is a user-defined argument that must be supplied via the `run` statement in the `.pdp` file. See the [PDP reference](pdp.md#user-defined-kernel-arguments) for details.
 - Simulation kernels have built-in names `px`, `py`, `width`, `height`; all other params are user-defined.
@@ -513,6 +514,66 @@ kernel ray_march_ao(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -> u32 
     let in_shape = scene_sdf(pos) <= 0.0;
     let brightness = if in_shape { min(ao * 200.0, 255.0) } else { 20.0 };
     emit rgb255(brightness, brightness, brightness);
+}
+```
+
+## Textures
+
+Kernels can sample read-only image textures loaded from PNG/JPEG files.
+
+### Declaring textures
+
+Texture slots are declared after the buffer list (if any), using the `textures(...)` clause:
+
+```
+kernel my_kernel(x: f64, y: f64) -> u32 textures(img) {
+    ...
+}
+
+kernel multi_tex(x: f64, y: f64) -> u32 textures(albedo, normal) {
+    ...
+}
+```
+
+Texture names correspond to `texture` declarations in the `.pdp` file. The order in `textures(...)` determines the texture index used internally.
+
+### Sampling
+
+Two sampling functions are available:
+
+| Function | Description |
+|----------|-------------|
+| `tex_load(tex, x, y)` | Load at integer pixel coords. `x: i32`, `y: i32`. Returns `vec4<f32>` (RGBA in [0,1]). |
+| `tex_sample(tex, u, v)` | Sample at normalized UV coords with bilinear filtering. `u: f64`, `v: f64` in [0,1]. Returns `vec4<f32>`. |
+| `tex_width(tex)` | Get texture width in pixels. Returns `u32`. |
+| `tex_height(tex)` | Get texture height in pixels. Returns `u32`. |
+
+Both use repeat wrapping by default. The first argument is the texture name (not a string — a bare identifier matching the `textures(...)` declaration).
+
+### Example
+
+```
+kernel texture_display(px: u32, py: u32, width: u32, height: u32) -> u32 textures(img) {
+    // Map pixel coords to [0,1] UV
+    let u = u32_to_f64(px) / u32_to_f64(width);
+    let v = u32_to_f64(py) / u32_to_f64(height);
+
+    let rgba: vec4<f32> = tex_sample(img, u, v);
+    let r = f64(rgba.x) * 255.0;
+    let g = f64(rgba.y) * 255.0;
+    let b = f64(rgba.z) * 255.0;
+    emit pack_argb(f64_to_u32(r), f64_to_u32(g), f64_to_u32(b));
+}
+```
+
+The corresponding `.pdp` file must declare the texture:
+
+```
+pipeline pd {
+  pixel kernel "texture_display.pd"
+  texture img = file("photo.png")
+  run texture_display
+  display
 }
 ```
 

@@ -6,9 +6,10 @@ use winit::keyboard::KeyCode;
 use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
-use crate::jit::{self, SimTileKernelFn, TileKernelFn, UserArgSlot};
+use crate::jit::{self, SimTileKernelFn, TextureSlot, TileKernelFn, UserArgSlot};
 use crate::progressive::AccumulationBuffer;
 use crate::render;
+use crate::texture::TextureData;
 
 use super::ast::*;
 
@@ -18,6 +19,8 @@ enum CompiledKernelEntry {
         func: TileKernelFn,
         _compiled: Box<dyn jit::CompiledKernel>,
         user_arg_slots: Vec<UserArgSlot>,
+        /// Texture slot names in declaration order.
+        tex_slot_names: Vec<String>,
     },
     Sim {
         func: SimTileKernelFn,
@@ -27,6 +30,8 @@ enum CompiledKernelEntry {
         /// Write buffer slot names in order.
         write_slots: Vec<String>,
         user_arg_slots: Vec<UserArgSlot>,
+        /// Texture slot names in declaration order.
+        tex_slot_names: Vec<String>,
     },
     /// GPU pixel kernel — renders directly to display texture.
     Gpu {
@@ -44,6 +49,8 @@ pub struct Runtime {
     kernels: HashMap<String, CompiledKernelEntry>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
+    /// Loaded textures: name -> RGBA8 data.
+    textures: HashMap<String, TextureData>,
     /// User-defined variables.
     variables: HashMap<String, f64>,
     /// Variable range constraints.
@@ -121,6 +128,7 @@ impl Runtime {
             config,
             kernels: HashMap::new(),
             buffers: HashMap::new(),
+            textures: HashMap::new(),
             variables,
             var_ranges,
             pixel_buffer: vec![0u32; pixel_count],
@@ -301,12 +309,14 @@ impl Runtime {
                 KernelKind::Pixel => {
                     let compiled = compile_pixel_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
+                    let tex_slot_names: Vec<String> = ir.textures.iter().map(|t| t.name.clone()).collect();
                     self.kernels.insert(
                         decl.name.clone(),
                         CompiledKernelEntry::Pixel {
                             func,
                             _compiled: compiled,
                             user_arg_slots,
+                            tex_slot_names,
                         },
                     );
                 }
@@ -325,6 +335,7 @@ impl Runtime {
                         .collect();
                     let compiled = compile_sim_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
+                    let tex_slot_names: Vec<String> = ir.textures.iter().map(|t| t.name.clone()).collect();
                     self.kernels.insert(
                         decl.name.clone(),
                         CompiledKernelEntry::Sim {
@@ -333,6 +344,7 @@ impl Runtime {
                             read_slots,
                             write_slots,
                             user_arg_slots,
+                            tex_slot_names,
                         },
                     );
                 }
@@ -379,6 +391,43 @@ impl Runtime {
             self.buffers.insert(decl.name.clone(), data);
         }
         Ok(())
+    }
+
+    /// Load all declared textures from the selected pipeline.
+    pub fn load_textures(&mut self) -> Result<(), String> {
+        let tex_decls: Vec<super::ast::TextureDecl> = match self.selected_pipeline() {
+            Some(pipeline) => pipeline.textures.clone(),
+            None => return Ok(()),
+        };
+
+        for decl in &tex_decls {
+            match &decl.init {
+                super::ast::TextureInit::File(rel_path) => {
+                    let full_path = self.base_dir.join(rel_path);
+                    let tex = TextureData::load(&full_path)?;
+                    eprintln!(
+                        "loaded texture '{}': {}x{} from {}",
+                        decl.name, tex.width, tex.height, full_path.display()
+                    );
+                    self.textures.insert(decl.name.clone(), tex);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build a TextureSlot array from loaded textures, ordered by the given names.
+    /// Returns an empty vec if no texture names are provided.
+    fn build_tex_slots(&self, names: &[String]) -> Vec<TextureSlot> {
+        names.iter().map(|name| {
+            let tex = self.textures.get(name)
+                .unwrap_or_else(|| panic!("texture '{}' not loaded", name));
+            TextureSlot {
+                data: tex.data.as_ptr(),
+                width: tex.width,
+                height: tex.height,
+            }
+        }).collect()
     }
 
     /// Select which pipeline to use.
@@ -692,11 +741,12 @@ impl Runtime {
     ) {
         let entry = self.kernels.get(kernel_name);
         match entry {
-            Some(CompiledKernelEntry::Pixel { func, user_arg_slots, .. }) => {
+            Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) => {
                 let kfn = *func;
                 let packed = self.pack_user_args(user_arg_slots, args);
                 let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
                 let args_addr = args_ptr as usize;
+                let tex_slots = self.build_tex_slots(tex_slot_names);
                 let (cx, cy, z, t) = (self.center_x, self.center_y, self.zoom, self.time);
                 let w = self.width as usize;
                 let h = self.height as usize;
@@ -704,7 +754,7 @@ impl Runtime {
                 let buf = &mut self.pixel_buffer;
                 let sample_index = 0xFFFFFFFF; // non-progressive by default
                 with_pool(pool, || {
-                    render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8);
+                    render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
                 });
             }
             Some(CompiledKernelEntry::Sim {
@@ -712,11 +762,13 @@ impl Runtime {
                 read_slots,
                 write_slots,
                 user_arg_slots,
+                tex_slot_names,
                 ..
             }) => {
                 let sim_fn = *func;
                 let packed = self.pack_user_args(user_arg_slots, args);
                 let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
+                let tex_slots = self.build_tex_slots(tex_slot_names);
                 let w = self.width as usize;
                 let h = self.height as usize;
                 let th = self.tile_height;
@@ -747,7 +799,7 @@ impl Runtime {
                     .collect();
 
                 let pixel_buf = &mut self.pixel_buffer;
-                render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th, args_ptr);
+                render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th, args_ptr, &tex_slots);
             }
             Some(CompiledKernelEntry::Gpu { .. }) => {
                 // GPU pixel kernels render directly to the display texture.
@@ -845,13 +897,14 @@ impl Runtime {
             for step in body {
                 match step {
                     PipelineStep::Run { kernel_name, args, .. } => {
-                        if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, .. }) =
+                        if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) =
                             self.kernels.get(kernel_name)
                         {
                             let kfn = *func;
                             let packed = self.pack_user_args(user_arg_slots, args);
                             let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
                             let args_addr = args_ptr as usize;
+                            let tex_slots = self.build_tex_slots(tex_slot_names);
                             let (cx, cy, z, t) =
                                 (self.center_x, self.center_y, self.zoom, self.time);
                             let w = self.width as usize;
@@ -859,7 +912,7 @@ impl Runtime {
                             let th = self.tile_height;
                             let buf = &mut self.pixel_buffer;
                             with_pool(pool, || {
-                                render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8);
+                                render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
                             });
                         }
                     }

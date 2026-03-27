@@ -348,10 +348,15 @@ impl Parser {
         } else {
             Vec::new()
         };
+        let textures = if *self.peek() == Token::Textures {
+            self.parse_textures()?
+        } else {
+            Vec::new()
+        };
         self.expect(&Token::LBrace)?;
         let body = self.parse_body()?;
         self.expect(&Token::RBrace)?;
-        Ok(KernelDef { name, params, return_ty, buffers, body, span })
+        Ok(KernelDef { name, params, return_ty, buffers, textures, body, span })
     }
 
     fn parse_buffers(&mut self) -> Result<Vec<BufferParam>, ParseError> {
@@ -378,6 +383,26 @@ impl Parser {
         }
         self.expect(&Token::RParen)?;
         Ok(bufs)
+    }
+
+    fn parse_textures(&mut self) -> Result<Vec<TextureParam>, ParseError> {
+        self.advance(); // textures
+        self.expect(&Token::LParen)?;
+        let mut texs = Vec::new();
+        loop {
+            if *self.peek() == Token::RParen {
+                break;
+            }
+            let (name, _) = self.expect_ident()?;
+            texs.push(TextureParam { name });
+            if *self.peek() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RParen)?;
+        Ok(texs)
     }
 
     fn parse_body(&mut self) -> Result<Vec<Stmt>, ParseError> {

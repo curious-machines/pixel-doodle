@@ -2162,6 +2162,10 @@ impl Parser {
             Inst::StructNew(fields) => Inst::StructNew(fields.iter().map(&remap).collect()),
             Inst::StructGet { val, field } => Inst::StructGet { val: remap(val), field: *field },
             Inst::StructSet { val, field, new_val } => Inst::StructSet { val: remap(val), field: *field, new_val: remap(new_val) },
+            Inst::TexLoad { tex, x, y, address } => Inst::TexLoad { tex: *tex, x: remap(x), y: remap(y), address: *address },
+            Inst::TexSample { tex, u, v, filter, address } => Inst::TexSample { tex: *tex, u: remap(u), v: remap(v), filter: *filter, address: *address },
+            Inst::TexWidth { tex } => Inst::TexWidth { tex: *tex },
+            Inst::TexHeight { tex } => Inst::TexHeight { tex: *tex },
         }
     }
 
@@ -2369,7 +2373,7 @@ impl Parser {
         self.expect_tok(&Token::RBrace)?;
 
         let buffers = std::mem::take(&mut self.buf_decls);
-        Ok(Kernel { name, params, return_ty, body, emit: emit_var, buffers, struct_defs: vec![] })
+        Ok(Kernel { name, params, return_ty, body, emit: emit_var, buffers, textures: vec![], struct_defs: vec![] })
     }
 }
 

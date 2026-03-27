@@ -37,7 +37,7 @@ impl KernelKind {
     /// These are not supplied by the user — the runtime injects them.
     pub fn tile_loop_params(&self) -> &'static [&'static str] {
         match self {
-            KernelKind::Pixel => &["x", "y", "px", "py", "sample_index", "time"],
+            KernelKind::Pixel => &["x", "y", "px", "py", "sample_index", "time", "width", "height"],
             KernelKind::Standard => &["px", "py", "width", "height"],
         }
     }
@@ -91,6 +91,23 @@ pub struct BufferDecl {
     /// None for CPU buffers (f64 arrays).
     pub gpu_type: Option<GpuElementType>,
     pub init: BufferInit,
+    pub span: Span,
+}
+
+// ── Texture declarations ──
+
+/// How a texture is initialized.
+#[derive(Debug, Clone)]
+pub enum TextureInit {
+    /// `file("path/to/image.png")` — load from an image file.
+    File(String),
+}
+
+/// A named texture resource declaration.
+#[derive(Debug, Clone)]
+pub struct TextureDecl {
+    pub name: String,
+    pub init: TextureInit,
     pub span: Span,
 }
 
@@ -314,6 +331,8 @@ pub struct Pipeline {
     pub kernels: Vec<KernelDecl>,
     /// Buffers scoped to this pipeline.
     pub buffers: Vec<BufferDecl>,
+    /// Textures scoped to this pipeline.
+    pub textures: Vec<TextureDecl>,
     /// Pipeline execution steps.
     pub steps: Vec<PipelineStep>,
     pub span: Span,

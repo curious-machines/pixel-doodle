@@ -201,9 +201,9 @@ impl Parser {
                         "kernel declarations must be inside a pipeline block".into(),
                     ));
                 }
-                Token::Buffer => {
+                Token::Buffer | Token::Texture => {
                     return Err(self.error(
-                        "buffer declarations must be inside a pipeline block".into(),
+                        "buffer/texture declarations must be inside a pipeline block".into(),
                     ));
                 }
                 Token::Title => {
@@ -328,6 +328,26 @@ impl Parser {
         };
 
         Ok(BufferDecl { name, gpu_type, init, span })
+    }
+
+    /// Parse `texture name = file("path/to/image.png")`.
+    fn parse_texture_decl(&mut self) -> Result<TextureDecl, ParseError> {
+        let span = self.span();
+        self.expect(&Token::Texture)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::Eq)?;
+
+        let init = if self.at(&Token::File) {
+            self.advance();
+            self.expect(&Token::LParen)?;
+            let path = self.expect_string()?;
+            self.expect(&Token::RParen)?;
+            TextureInit::File(path)
+        } else {
+            return Err(self.error("expected 'file(\"path\")' for texture initialization".into()));
+        };
+
+        Ok(TextureDecl { name, init, span })
     }
 
     /// Parse a GPU element type: `f32`, `i32`, `u32`, `vec2<f32>`, `vec3<f32>`, `vec4<f32>`.
@@ -739,9 +759,9 @@ impl Parser {
                         "included file '{path_str}' must not contain kernel declarations"
                     )));
                 }
-                Token::Buffer => {
+                Token::Buffer | Token::Texture => {
                     return Err(self.error(format!(
-                        "included file '{path_str}' must not contain buffer declarations"
+                        "included file '{path_str}' must not contain buffer/texture declarations"
                     )));
                 }
                 Token::Title => {
@@ -814,6 +834,7 @@ impl Parser {
         let mut builtins = Vec::new();
         let mut kernels = Vec::new();
         let mut buffers = Vec::new();
+        let mut textures = Vec::new();
         let mut steps = Vec::new();
 
         while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
@@ -827,6 +848,9 @@ impl Parser {
                 Token::Buffer => {
                     buffers.push(self.parse_buffer_decl()?);
                 }
+                Token::Texture => {
+                    textures.push(self.parse_texture_decl()?);
+                }
                 _ => {
                     steps.push(self.parse_pipeline_step()?);
                 }
@@ -839,6 +863,7 @@ impl Parser {
             builtins,
             kernels,
             buffers,
+            textures,
             steps,
             span,
         })

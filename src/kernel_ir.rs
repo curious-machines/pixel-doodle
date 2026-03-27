@@ -405,6 +405,20 @@ pub enum Inst {
     BufLoad { buf: u32, x: Var, y: Var },
     /// Store f64 value to buffer `buf` at position (x, y).
     BufStore { buf: u32, x: Var, y: Var, val: Var },
+
+    // Texture operations
+    /// Load RGBA from texture `tex` at integer pixel coords (x, y).
+    /// Returns vec4<f32> with components in [0.0, 1.0].
+    /// Out-of-bounds coords are handled per the texture's address mode.
+    TexLoad { tex: u32, x: Var, y: Var, address: AddressMode },
+    /// Sample RGBA from texture `tex` at normalized UV coords (u, v) in [0.0, 1.0].
+    /// Returns vec4<f32> with components in [0.0, 1.0].
+    /// Applies filtering and address mode.
+    TexSample { tex: u32, u: Var, v: Var, filter: FilterMode, address: AddressMode },
+    /// Get the width of texture `tex` in pixels. Returns u32.
+    TexWidth { tex: u32 },
+    /// Get the height of texture `tex` in pixels. Returns u32.
+    TexHeight { tex: u32 },
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +461,26 @@ pub struct BufDecl {
     pub is_output: bool,
 }
 
+/// Texture addressing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressMode {
+    Repeat,
+    ClampToEdge,
+}
+
+/// Texture filtering mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterMode {
+    Nearest,
+    Bilinear,
+}
+
+/// Declaration of a read-only texture accessible from the kernel.
+#[derive(Debug, Clone)]
+pub struct TexDecl {
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Kernel {
     pub name: String,
@@ -456,6 +490,8 @@ pub struct Kernel {
     pub emit: Var,
     /// Buffer declarations for simulation kernels. Empty for standard pixel kernels.
     pub buffers: Vec<BufDecl>,
+    /// Texture declarations. Index corresponds to `tex` in TexLoad/TexSample.
+    pub textures: Vec<TexDecl>,
     /// Struct type definitions used by this kernel.
     pub struct_defs: Vec<StructDef>,
 }

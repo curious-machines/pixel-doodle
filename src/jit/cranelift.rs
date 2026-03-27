@@ -160,8 +160,9 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
 
-    let mut module =
-        JITModule::new(JITBuilder::with_isa(isa, cranelift_module::default_libcall_names()));
+    let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    register_tex_helpers(&mut jit_builder);
+    let mut module = JITModule::new(jit_builder);
 
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(I64)); // output: *mut u32
@@ -176,6 +177,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     sig.params.push(AbiParam::new(I32)); // sample_index: u32
     sig.params.push(AbiParam::new(F64)); // time: f64
     sig.params.push(AbiParam::new(I64)); // user_args: *const u8
+    sig.params.push(AbiParam::new(I64)); // tex_slots: *const TextureSlot
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -188,6 +190,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     // -- Tile loop variables --
     let v_output = builder.declare_var(I64);
     let v_width = builder.declare_var(I32);
+    let v_height = builder.declare_var(I32);
     let v_x_min = builder.declare_var(F64);
     let v_y_min = builder.declare_var(F64);
     let v_x_step = builder.declare_var(F64);
@@ -199,6 +202,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
     let v_user_args = builder.declare_var(I64);
+    let v_tex_slots = builder.declare_var(I64);
 
     // -- Blocks --
     let entry_block = builder.create_block();
@@ -218,6 +222,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     let params: Vec<_> = builder.block_params(entry_block).to_vec();
     builder.def_var(v_output, params[0]);
     builder.def_var(v_width, params[1]);
+    builder.def_var(v_height, params[2]);
     builder.def_var(v_x_min, params[3]);
     builder.def_var(v_y_min, params[4]);
     builder.def_var(v_x_step, params[5]);
@@ -227,6 +232,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     builder.def_var(v_sample_index, params[9]);
     builder.def_var(v_time, params[10]);
     builder.def_var(v_user_args, params[11]);
+    builder.def_var(v_tex_slots, params[12]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -322,7 +328,9 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftKernel
     let sample_idx_for_kernel = builder.use_var(v_sample_index);
     let time = builder.use_var(v_time);
     let user_args_ptr = builder.use_var(v_user_args);
-    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel, time, user_args_ptr, user_args);
+    let width_val = builder.use_var(v_width);
+    let height_val = builder.use_var(v_height);
+    let color = lower_kernel_body(&mut module, &mut builder, kernel, cx, cy, col, row, sample_idx_for_kernel, time, width_val, height_val, user_args_ptr, user_args, v_tex_slots);
 
     // Store: output[(row - row_start) * width + col] = color
     let row = builder.use_var(v_row);
@@ -396,8 +404,11 @@ fn lower_kernel_body(
     row: cranelift_codegen::ir::Value,
     sample_index: cranelift_codegen::ir::Value,
     time: cranelift_codegen::ir::Value,
+    width: cranelift_codegen::ir::Value,
+    height: cranelift_codegen::ir::Value,
     user_args_ptr: cranelift_codegen::ir::Value,
     user_args: &[UserArgSlot],
+    v_tex_slots: Variable,
 ) -> cranelift_codegen::ir::Value {
     use std::collections::HashMap;
 
@@ -410,6 +421,8 @@ fn lower_kernel_body(
             "py" => row,
             "sample_index" => sample_index,
             "time" => time,
+            "width" => width,
+            "height" => height,
             name => {
                 let slot = user_args.iter().find(|s| s.name == name)
                     .unwrap_or_else(|| panic!("unknown kernel parameter: '{name}'"));
@@ -424,7 +437,7 @@ fn lower_kernel_body(
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map, None);
+    lower_body_items(module, builder, kernel, &kernel.body, &mut val_map, None, v_tex_slots);
 
     get_scalar(&val_map, &kernel.emit)
 }
@@ -436,15 +449,16 @@ fn lower_body_items(
     body: &[BodyItem],
     val_map: &mut std::collections::HashMap<Var, VarValues>,
     buf_ctx: Option<&BufContext>,
+    v_tex_slots: Variable,
 ) {
     for item in body {
         match item {
             BodyItem::Stmt(stmt) => {
-                let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx);
+                let v = lower_inst(module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx, v_tex_slots);
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(module, builder, kernel, w, val_map, buf_ctx);
+                lower_while(module, builder, kernel, w, val_map, buf_ctx, v_tex_slots);
             }
         }
     }
@@ -457,6 +471,7 @@ fn lower_while(
     w: &While,
     val_map: &mut std::collections::HashMap<Var, VarValues>,
     buf_ctx: Option<&BufContext>,
+    v_tex_slots: Variable,
 ) {
     // Cranelift uses Variables for SSA construction (like mutable locals).
     // We declare a Variable for each carry var, def it with the initial value,
@@ -525,7 +540,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    lower_body_items(module, builder, kernel, &w.cond_body, val_map, buf_ctx);
+    lower_body_items(module, builder, kernel, &w.cond_body, val_map, buf_ctx, v_tex_slots);
 
     // Branch on cond
     let cond_val = get_scalar(val_map, &w.cond);
@@ -535,7 +550,7 @@ fn lower_while(
     builder.switch_to_block(loop_body);
     builder.seal_block(loop_body);
 
-    lower_body_items(module, builder, kernel, &w.body, val_map, buf_ctx);
+    lower_body_items(module, builder, kernel, &w.body, val_map, buf_ctx, v_tex_slots);
 
     // Update carry Variables with yield values
     for (i, yv) in w.yields.iter().enumerate() {
@@ -662,6 +677,7 @@ fn lower_inst(
     binding: &Binding,
     val_map: &std::collections::HashMap<Var, VarValues>,
     buf_ctx: Option<&BufContext>,
+    v_tex_slots: Variable,
 ) -> VarValues {
     match inst {
         Inst::Const(c) => VarValues::Scalar(match c {
@@ -1297,7 +1313,142 @@ fn lower_inst(
             result[offset..offset + field_count].copy_from_slice(&new_field);
             VarValues::Struct(result)
         }
+        Inst::TexLoad { tex, x, y, address } => {
+            let x_val = get_scalar(val_map, x);
+            let y_val = get_scalar(val_map, y);
+
+            let helper_name = match address {
+                AddressMode::Repeat => "pd_tex_load_repeat",
+                AddressMode::ClampToEdge => "pd_tex_load_clamp",
+            };
+            emit_tex_call_i32(builder, module, helper_name, *tex, x_val, y_val, v_tex_slots)
+        }
+        Inst::TexSample { tex, u, v, filter, address } => {
+            let u_val = get_scalar(val_map, u);
+            let v_val = get_scalar(val_map, v);
+
+            let helper_name = match (filter, address) {
+                (FilterMode::Nearest, AddressMode::Repeat) => "pd_tex_sample_nearest_repeat",
+                (FilterMode::Nearest, AddressMode::ClampToEdge) => "pd_tex_sample_nearest_clamp",
+                (FilterMode::Bilinear, AddressMode::Repeat) => "pd_tex_sample_bilinear_repeat",
+                (FilterMode::Bilinear, AddressMode::ClampToEdge) => "pd_tex_sample_bilinear_clamp",
+            };
+            emit_tex_call_f64(builder, module, helper_name, *tex, u_val, v_val, v_tex_slots)
+        }
+        Inst::TexWidth { tex } => {
+            // TextureSlot: {data: *const u8 (8), width: u32 (4), height: u32 (4)} = 16 bytes
+            let slots = builder.use_var(v_tex_slots);
+            let offset = builder.ins().iconst(I64, (*tex as i64) * 16 + 8);
+            let addr = builder.ins().iadd(slots, offset);
+            VarValues::Scalar(builder.ins().load(I32, MemFlags::trusted(), addr, 0))
+        }
+        Inst::TexHeight { tex } => {
+            let slots = builder.use_var(v_tex_slots);
+            let offset = builder.ins().iconst(I64, (*tex as i64) * 16 + 12);
+            let addr = builder.ins().iadd(slots, offset);
+            VarValues::Scalar(builder.ins().load(I32, MemFlags::trusted(), addr, 0))
+        }
     }
+}
+
+/// Register texture helper function symbols with the JIT module builder.
+fn register_tex_helpers(jit_builder: &mut JITBuilder) {
+    use crate::jit;
+    jit_builder.symbol("pd_tex_load_repeat", jit::pd_tex_load_repeat as *const u8);
+    jit_builder.symbol("pd_tex_load_clamp", jit::pd_tex_load_clamp as *const u8);
+    jit_builder.symbol("pd_tex_sample_nearest_repeat", jit::pd_tex_sample_nearest_repeat as *const u8);
+    jit_builder.symbol("pd_tex_sample_nearest_clamp", jit::pd_tex_sample_nearest_clamp as *const u8);
+    jit_builder.symbol("pd_tex_sample_bilinear_repeat", jit::pd_tex_sample_bilinear_repeat as *const u8);
+    jit_builder.symbol("pd_tex_sample_bilinear_clamp", jit::pd_tex_sample_bilinear_clamp as *const u8);
+}
+
+/// Emit a call to a texture helper that takes (slots, tex, i32, i32, out_ptr).
+/// Returns VarValues::Vec of 4 f32 components.
+fn emit_tex_call_i32(
+    builder: &mut FunctionBuilder,
+    module: &mut JITModule,
+    helper_name: &str,
+    tex_idx: u32,
+    coord_a: cranelift_codegen::ir::Value,
+    coord_b: cranelift_codegen::ir::Value,
+    v_tex_slots: Variable,
+) -> VarValues {
+    // Declare the helper function signature: (ptr, u32, i32, i32, ptr) -> void
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(I64));  // slots
+    sig.params.push(AbiParam::new(I32));  // tex
+    sig.params.push(AbiParam::new(I32));  // x
+    sig.params.push(AbiParam::new(I32));  // y
+    sig.params.push(AbiParam::new(I64));  // out
+
+    let func_id = module
+        .declare_function(helper_name, Linkage::Import, &sig)
+        .unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+
+    // Allocate stack slot for 4 × f32 = 16 bytes
+    let ss = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+        16,
+        3, // 8-byte aligned
+    ));
+    let out_addr = builder.ins().stack_addr(I64, ss, 0);
+
+    let slots = builder.use_var(v_tex_slots);
+    let tex_const = builder.ins().iconst(I32, tex_idx as i64);
+
+    builder.ins().call(func_ref, &[slots, tex_const, coord_a, coord_b, out_addr]);
+
+    // Load back 4 f32 values
+    let flags = MemFlags::new();
+    let r = builder.ins().load(F32, flags, out_addr, 0);
+    let g = builder.ins().load(F32, flags, out_addr, 4);
+    let b = builder.ins().load(F32, flags, out_addr, 8);
+    let a = builder.ins().load(F32, flags, out_addr, 12);
+    VarValues::Vec(vec![r, g, b, a])
+}
+
+/// Emit a call to a texture helper that takes (slots, tex, f64, f64, out_ptr).
+/// Returns VarValues::Vec of 4 f32 components.
+fn emit_tex_call_f64(
+    builder: &mut FunctionBuilder,
+    module: &mut JITModule,
+    helper_name: &str,
+    tex_idx: u32,
+    coord_a: cranelift_codegen::ir::Value,
+    coord_b: cranelift_codegen::ir::Value,
+    v_tex_slots: Variable,
+) -> VarValues {
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(I64));  // slots
+    sig.params.push(AbiParam::new(I32));  // tex
+    sig.params.push(AbiParam::new(F64));  // u
+    sig.params.push(AbiParam::new(F64));  // v
+    sig.params.push(AbiParam::new(I64));  // out
+
+    let func_id = module
+        .declare_function(helper_name, Linkage::Import, &sig)
+        .unwrap();
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+
+    let ss = builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+        16,
+        3, // 8-byte aligned
+    ));
+    let out_addr = builder.ins().stack_addr(I64, ss, 0);
+
+    let slots = builder.use_var(v_tex_slots);
+    let tex_const = builder.ins().iconst(I32, tex_idx as i64);
+
+    builder.ins().call(func_ref, &[slots, tex_const, coord_a, coord_b, out_addr]);
+
+    let flags = MemFlags::new();
+    let r = builder.ins().load(F32, flags, out_addr, 0);
+    let g = builder.ins().load(F32, flags, out_addr, 4);
+    let b = builder.ins().load(F32, flags, out_addr, 8);
+    let a = builder.ins().load(F32, flags, out_addr, 12);
+    VarValues::Vec(vec![r, g, b, a])
 }
 
 fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSimKernel {
@@ -1311,8 +1462,9 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
 
-    let mut module =
-        JITModule::new(JITBuilder::with_isa(isa, cranelift_module::default_libcall_names()));
+    let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    register_tex_helpers(&mut jit_builder);
+    let mut module = JITModule::new(jit_builder);
 
     // SimTileKernelFn(output, width, height, row_start, row_end, buf_ptrs, buf_out_ptrs, user_args)
     let mut sig = Signature::new(CallConv::SystemV);
@@ -1324,6 +1476,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
     sig.params.push(AbiParam::new(I64)); // buf_ptrs: *const *const f64
     sig.params.push(AbiParam::new(I64)); // buf_out_ptrs: *const *mut f64
     sig.params.push(AbiParam::new(I64)); // user_args: *const u8
+    sig.params.push(AbiParam::new(I64)); // tex_slots: *const TextureSlot
 
     let func_id = module
         .declare_function(&kernel.name, Linkage::Export, &sig)
@@ -1344,6 +1497,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
     let v_row = builder.declare_var(I32);
     let v_col = builder.declare_var(I32);
     let v_user_args = builder.declare_var(I64);
+    let _v_tex_slots = builder.declare_var(I64);
 
     let buf_ctx = BufContext { v_width, v_buf_ptrs, v_buf_out_ptrs };
 
@@ -1370,6 +1524,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
     builder.def_var(v_buf_ptrs, params[5]);
     builder.def_var(v_buf_out_ptrs, params[6]);
     builder.def_var(v_user_args, params[7]);
+    builder.def_var(_v_tex_slots, params[8]);
 
     let row_start_val = builder.use_var(v_row_start);
     builder.def_var(v_row, row_start_val);
@@ -1429,7 +1584,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(&mut module, &mut builder, kernel, &kernel.body, &mut val_map, Some(&buf_ctx));
+    lower_body_items(&mut module, &mut builder, kernel, &kernel.body, &mut val_map, Some(&buf_ctx), _v_tex_slots);
 
     let color = get_scalar(&val_map, &kernel.emit);
 

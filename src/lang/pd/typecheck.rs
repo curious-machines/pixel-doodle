@@ -152,6 +152,7 @@ pub struct TKernelDef {
     pub params: Vec<Param>,
     pub return_ty: ValType,
     pub buffers: Vec<BufferParam>,
+    pub textures: Vec<TextureParam>,
     pub body: Vec<TStmt>,
 }
 
@@ -169,6 +170,8 @@ struct Checker {
     fn_sigs: HashMap<String, (Vec<Param>, ValType)>,
     /// Buffer declarations (name → is_output).
     buffers: HashMap<String, bool>,
+    /// Texture declarations (name → index).
+    textures: HashMap<String, u32>,
     /// Struct type definitions (name → StructDef).
     struct_defs: HashMap<String, StructDef>,
 }
@@ -179,6 +182,7 @@ impl Checker {
             scopes: vec![HashMap::new()],
             fn_sigs: HashMap::new(),
             buffers: HashMap::new(),
+            textures: HashMap::new(),
             struct_defs: HashMap::new(),
         }
     }
@@ -986,6 +990,78 @@ impl Checker {
                     ty: ValType::F64,
                 }));
             }
+            "tex_width" => {
+                if args.len() != 1 {
+                    return Err(err(span, "tex_width expects 1 argument: tex_width(texture)".into()));
+                }
+                let tex_name = match &args[0] {
+                    Expr::Ident(name, _) => name.clone(),
+                    _ => return Err(err(span, "tex_width: argument must be a texture name".into())),
+                };
+                if !self.textures.contains_key(&tex_name) {
+                    return Err(err(span, format!("tex_width: unknown texture '{}'", tex_name)));
+                }
+                return Ok(Some(TExpr::Call {
+                    name: format!("tex_width:{}", tex_name),
+                    args: vec![],
+                    ty: ValType::U32,
+                }));
+            }
+            "tex_height" => {
+                if args.len() != 1 {
+                    return Err(err(span, "tex_height expects 1 argument: tex_height(texture)".into()));
+                }
+                let tex_name = match &args[0] {
+                    Expr::Ident(name, _) => name.clone(),
+                    _ => return Err(err(span, "tex_height: argument must be a texture name".into())),
+                };
+                if !self.textures.contains_key(&tex_name) {
+                    return Err(err(span, format!("tex_height: unknown texture '{}'", tex_name)));
+                }
+                return Ok(Some(TExpr::Call {
+                    name: format!("tex_height:{}", tex_name),
+                    args: vec![],
+                    ty: ValType::U32,
+                }));
+            }
+            "tex_load" => {
+                if args.len() != 3 {
+                    return Err(err(span, "tex_load expects 3 arguments: tex_load(texture, x, y)".into()));
+                }
+                let tex_name = match &args[0] {
+                    Expr::Ident(name, _) => name.clone(),
+                    _ => return Err(err(span, "tex_load: first argument must be a texture name".into())),
+                };
+                if !self.textures.contains_key(&tex_name) {
+                    return Err(err(span, format!("tex_load: unknown texture '{}'", tex_name)));
+                }
+                let x = self.check_expr(&args[1], Some(ValType::I32))?;
+                let y = self.check_expr(&args[2], Some(ValType::I32))?;
+                return Ok(Some(TExpr::Call {
+                    name: format!("tex_load:{}", tex_name),
+                    args: vec![x, y],
+                    ty: ValType::Vec { len: 4, elem: ScalarType::F32 },
+                }));
+            }
+            "tex_sample" => {
+                if args.len() != 3 {
+                    return Err(err(span, "tex_sample expects 3 arguments: tex_sample(texture, u, v)".into()));
+                }
+                let tex_name = match &args[0] {
+                    Expr::Ident(name, _) => name.clone(),
+                    _ => return Err(err(span, "tex_sample: first argument must be a texture name".into())),
+                };
+                if !self.textures.contains_key(&tex_name) {
+                    return Err(err(span, format!("tex_sample: unknown texture '{}'", tex_name)));
+                }
+                let u = self.check_expr(&args[1], Some(ValType::F64))?;
+                let v = self.check_expr(&args[2], Some(ValType::F64))?;
+                return Ok(Some(TExpr::Call {
+                    name: format!("tex_sample:{}", tex_name),
+                    args: vec![u, v],
+                    ty: ValType::Vec { len: 4, elem: ScalarType::F32 },
+                }));
+            }
             "select" => {
                 if args.len() != 3 {
                     return Err(err(span, "select expects 3 arguments".into()));
@@ -1166,6 +1242,11 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     for b in &program.kernel.buffers {
         checker.buffers.insert(b.name.clone(), b.is_output);
     }
+    // Register textures
+    checker.textures.clear();
+    for (i, t) in program.kernel.textures.iter().enumerate() {
+        checker.textures.insert(t.name.clone(), i as u32);
+    }
     let tbody = checker.check_stmts(&program.kernel.body)?;
 
     Ok(TProgram {
@@ -1176,6 +1257,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
             params: program.kernel.params.clone(),
             return_ty: program.kernel.return_ty.clone(),
             buffers: program.kernel.buffers.clone(),
+            textures: program.kernel.textures.clone(),
             body: tbody,
         },
     })

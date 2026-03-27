@@ -9,6 +9,9 @@ pub enum Token {
     // Buffer
     Buffer,
     Constant,
+    // Texture
+    Texture,
+    File,
     // Declaration keywords
     Builtin,
     Var,
@@ -80,6 +83,8 @@ impl fmt::Display for Token {
             Token::Kernel => write!(f, "kernel"),
             Token::Buffer => write!(f, "buffer"),
             Token::Constant => write!(f, "constant"),
+            Token::Texture => write!(f, "texture"),
+            Token::File => write!(f, "file"),
             Token::Builtin => write!(f, "builtin"),
             Token::Var => write!(f, "var"),
             Token::Const => write!(f, "const"),

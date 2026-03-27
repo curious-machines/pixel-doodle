@@ -161,6 +161,40 @@ pipeline {
 | `i32` | 4 bytes | Signed integer |
 | `u32` | 4 bytes | Unsigned integer |
 
+## Texture Declarations
+
+Texture declarations must be inside a `pipeline` block. They load read-only image files (PNG, JPEG) for use by kernels:
+
+```
+pipeline {
+  texture noise = file("noise.png")
+  texture photo = file("../../images/photo.jpg")
+}
+```
+
+### Syntax
+
+```
+texture name = file("path/to/image.png")
+```
+
+- Paths are relative to the config file's directory
+- Supported formats: PNG, JPEG (via the `image` crate)
+- Textures are loaded as RGBA8 data
+- Texture names must match the kernel's `textures(...)` declaration (for PD kernels) or WGSL binding names (for GPU kernels)
+
+### Example
+
+```
+pipeline pd {
+  pixel kernel "textured.pd"
+  texture albedo = file("albedo.png")
+  texture normal = file("normal.png")
+  run textured
+  display
+}
+```
+
 ## Variables
 
 Mutable values that can be modified by key bindings and referenced by pipeline constructs:
@@ -320,7 +354,7 @@ run advect with(vx_in: vx0, den_in: density0, vx_out: out vx) # sim kernel with 
 
 #### User-defined kernel arguments
 
-Kernels can declare parameters beyond the built-in names (`x`, `y`, `px`, `py`, `sample_index`, `time` for pixel kernels; `px`, `py`, `width`, `height` for simulation kernels). Any parameter whose name is not a built-in is a **user-defined argument** that must be supplied in the `run` statement.
+Kernels can declare parameters beyond the built-in names (`x`, `y`, `px`, `py`, `sample_index`, `time`, `width`, `height` for pixel kernels; `px`, `py`, `width`, `height` for simulation kernels). Any parameter whose name is not a built-in is a **user-defined argument** that must be supplied in the `run` statement.
 
 For example, a kernel that declares `max_iter: u32`:
 

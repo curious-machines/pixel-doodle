@@ -300,6 +300,40 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *new_val, kernel);
         }
+        Inst::TexLoad { tex, x, y, address } => {
+            let tex_name = &kernel.textures[*tex as usize].name;
+            let addr = match address {
+                AddressMode::Repeat => "repeat",
+                AddressMode::ClampToEdge => "clamp",
+            };
+            out.push_str(&format!("tex_load {} {} ", tex_name, addr));
+            print_operand(out, *x, kernel);
+            out.push(' ');
+            print_operand(out, *y, kernel);
+        }
+        Inst::TexSample { tex, u, v, filter, address } => {
+            let tex_name = &kernel.textures[*tex as usize].name;
+            let filt = match filter {
+                FilterMode::Nearest => "nearest",
+                FilterMode::Bilinear => "bilinear",
+            };
+            let addr = match address {
+                AddressMode::Repeat => "repeat",
+                AddressMode::ClampToEdge => "clamp",
+            };
+            out.push_str(&format!("tex_sample {} {} {} ", tex_name, filt, addr));
+            print_operand(out, *u, kernel);
+            out.push(' ');
+            print_operand(out, *v, kernel);
+        }
+        Inst::TexWidth { tex } => {
+            let tex_name = &kernel.textures[*tex as usize].name;
+            out.push_str(&format!("tex_width {}", tex_name));
+        }
+        Inst::TexHeight { tex } => {
+            let tex_name = &kernel.textures[*tex as usize].name;
+            out.push_str(&format!("tex_height {}", tex_name));
+        }
     }
 }
 

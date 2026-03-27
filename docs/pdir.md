@@ -473,6 +473,37 @@ pt2: MyStruct = struct_set pt 0 new_x
 
 Produces a new struct with the field at the given index replaced. The original struct is unchanged (SSA).
 
+## Texture operations
+
+Kernels can sample read-only image textures. Texture slots are declared on the kernel (not yet supported in PDIR text format — use PD for texture kernels). The IR instructions are:
+
+### `tex_load` — Integer pixel coordinates
+
+```
+rgba: vec4<f32> = tex_load texture_name repeat x y
+rgba: vec4<f32> = tex_load texture_name clamp x y
+```
+
+Loads RGBA at integer pixel coordinates `x` and `y` (both `i32`). Returns `vec4<f32>` with components in [0.0, 1.0]. Address mode is `repeat` (wrapping) or `clamp` (clamp-to-edge).
+
+### `tex_sample` — Normalized UV coordinates
+
+```
+rgba: vec4<f32> = tex_sample texture_name bilinear repeat u v
+rgba: vec4<f32> = tex_sample texture_name nearest clamp u v
+```
+
+Samples RGBA at normalized UV coordinates `u` and `v` (both `f64`, in [0.0, 1.0]). Filter mode is `bilinear` or `nearest`. Address mode is `repeat` or `clamp`. Returns `vec4<f32>`.
+
+### `tex_width` / `tex_height` — Texture dimensions
+
+```
+w: u32 = tex_width texture_name
+h: u32 = tex_height texture_name
+```
+
+Returns the width or height of the named texture in pixels as `u32`.
+
 ## Control flow
 
 ### While loops

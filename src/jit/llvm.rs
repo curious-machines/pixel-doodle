@@ -202,6 +202,7 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmKernel {
             i32_type.into(), // sample_index
             f64_type.into(), // time
             ptr_type.into(), // user_args: *const u8
+            ptr_type.into(), // tex_slots: *const TextureSlot
         ],
         false,
     );
@@ -218,9 +219,11 @@ fn compile_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmKernel {
         .create_jit_execution_engine(OptimizationLevel::Aggressive)
         .unwrap();
 
+    register_llvm_tex_helpers(&engine, &module);
+
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32, f64, *const u8)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, f64, f64, f64, f64, u32, u32, u32, f64, *const u8, *const u8)>(
                 &kernel.name,
             )
             .unwrap()
@@ -259,6 +262,7 @@ fn build_tile_loop(
     builder.position_at_end(entry);
     let p_output = function.get_nth_param(0).unwrap().into_pointer_value();
     let p_width = function.get_nth_param(1).unwrap().into_int_value();
+    let p_height = function.get_nth_param(2).unwrap().into_int_value();
     let p_x_min = function.get_nth_param(3).unwrap().into_float_value();
     let p_y_min = function.get_nth_param(4).unwrap().into_float_value();
     let p_x_step = function.get_nth_param(5).unwrap().into_float_value();
@@ -268,6 +272,7 @@ fn build_tile_loop(
     let p_sample_index = function.get_nth_param(9).unwrap().into_int_value();
     let p_time = function.get_nth_param(10).unwrap().into_float_value();
     let p_user_args = function.get_nth_param(11).unwrap().into_pointer_value();
+    let _p_tex_slots = function.get_nth_param(12).unwrap().into_pointer_value();
 
     let row_ptr = builder.build_alloca(i32_type, "row_ptr").unwrap();
     let col_ptr = builder.build_alloca(i32_type, "col_ptr").unwrap();
@@ -347,7 +352,7 @@ fn build_tile_loop(
 
     let col = builder.build_load(i32_type, col_ptr, "col_k").unwrap().into_int_value();
     let row = builder.build_load(i32_type, row_ptr, "row_k").unwrap().into_int_value();
-    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index, p_time, p_user_args, user_args);
+    let color = lower_kernel_body(context, module, &builder, function, kernel, cx, cy, col, row, p_sample_index, p_time, p_width, p_height, p_user_args, user_args, _p_tex_slots);
 
     // Store pixel
     let row = builder.build_load(i32_type, row_ptr, "row").unwrap().into_int_value();
@@ -394,8 +399,11 @@ fn lower_kernel_body(
     row: inkwell::values::IntValue<'static>,
     sample_index: inkwell::values::IntValue<'static>,
     time: inkwell::values::FloatValue<'static>,
+    width: inkwell::values::IntValue<'static>,
+    height: inkwell::values::IntValue<'static>,
     user_args_ptr: inkwell::values::PointerValue<'static>,
     user_args: &[UserArgSlot],
+    tex_slots_ptr: inkwell::values::PointerValue<'static>,
 ) -> inkwell::values::IntValue<'static> {
     use std::collections::HashMap;
 
@@ -410,6 +418,8 @@ fn lower_kernel_body(
             "py" => row.into(),
             "sample_index" => sample_index.into(),
             "time" => time.into(),
+            "width" => width.into(),
+            "height" => height.into(),
             name => {
                 let slot = user_args.iter().find(|s| s.name == name)
                     .unwrap_or_else(|| panic!("unknown kernel parameter: '{name}'"));
@@ -433,7 +443,7 @@ fn lower_kernel_body(
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map, None);
+    lower_body_items(context, module, builder, function, kernel, &kernel.body, &mut val_map, None, tex_slots_ptr);
 
     get_scalar(&val_map, &kernel.emit).into_int_value()
 }
@@ -447,15 +457,16 @@ fn lower_body_items(
     body: &[BodyItem],
     val_map: &mut std::collections::HashMap<Var, VarValues<'static>>,
     buf_ctx: Option<&LlvmBufContext<'static>>,
+    tex_slots_ptr: inkwell::values::PointerValue<'static>,
 ) {
     for item in body {
         match item {
             BodyItem::Stmt(stmt) => {
-                let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx);
+                let v = lower_inst(context, module, builder, kernel, &stmt.inst, &stmt.binding, val_map, buf_ctx, tex_slots_ptr);
                 val_map.insert(stmt.binding.var, v);
             }
             BodyItem::While(w) => {
-                lower_while(context, module, builder, function, kernel, w, val_map, buf_ctx);
+                lower_while(context, module, builder, function, kernel, w, val_map, buf_ctx, tex_slots_ptr);
             }
         }
     }
@@ -470,6 +481,7 @@ fn lower_while(
     w: &While,
     val_map: &mut std::collections::HashMap<Var, VarValues<'static>>,
     buf_ctx: Option<&LlvmBufContext<'static>>,
+    tex_slots_ptr: inkwell::values::PointerValue<'static>,
 ) {
     // Create blocks
     let pre_block = builder.get_insert_block().unwrap();
@@ -512,7 +524,7 @@ fn lower_while(
     }
 
     // Lower cond_body
-    lower_body_items(context, module, builder, function, kernel, &w.cond_body, val_map, buf_ctx);
+    lower_body_items(context, module, builder, function, kernel, &w.cond_body, val_map, buf_ctx, tex_slots_ptr);
 
     // Branch on cond
     let cond_val = get_scalar(val_map, &w.cond).into_int_value();
@@ -521,7 +533,7 @@ fn lower_while(
     // -- Loop body: compute next values, branch back to header --
     builder.position_at_end(loop_body);
 
-    lower_body_items(context, module, builder, function, kernel, &w.body, val_map, buf_ctx);
+    lower_body_items(context, module, builder, function, kernel, &w.body, val_map, buf_ctx, tex_slots_ptr);
 
     // Add incoming edges to phi nodes from loop body (yield values)
     let body_block = builder.get_insert_block().unwrap();
@@ -549,6 +561,7 @@ fn lower_inst(
     binding: &Binding,
     val_map: &std::collections::HashMap<Var, VarValues<'static>>,
     buf_ctx: Option<&LlvmBufContext<'static>>,
+    tex_slots_ptr: inkwell::values::PointerValue<'static>,
 ) -> VarValues<'static> {
     let i32_type = context.i32_type();
     let f64_type = context.f64_type();
@@ -1253,6 +1266,45 @@ fn lower_inst(
             s[offset..offset + field_count].copy_from_slice(&new_vals);
             VarValues::Struct(s)
         }
+        Inst::TexLoad { tex, x, y, address } => {
+            let x_val = get_scalar(val_map, x).into_int_value();
+            let y_val = get_scalar(val_map, y).into_int_value();
+            let helper_name = match address {
+                AddressMode::Repeat => "pd_tex_load_repeat",
+                AddressMode::ClampToEdge => "pd_tex_load_clamp",
+            };
+            emit_llvm_tex_call_i32(context, module, builder, helper_name, *tex, x_val, y_val, tex_slots_ptr)
+        }
+        Inst::TexSample { tex, u, v, filter, address } => {
+            let u_val = get_scalar(val_map, u).into_float_value();
+            let v_val = get_scalar(val_map, v).into_float_value();
+            let helper_name = match (filter, address) {
+                (FilterMode::Nearest, AddressMode::Repeat) => "pd_tex_sample_nearest_repeat",
+                (FilterMode::Nearest, AddressMode::ClampToEdge) => "pd_tex_sample_nearest_clamp",
+                (FilterMode::Bilinear, AddressMode::Repeat) => "pd_tex_sample_bilinear_repeat",
+                (FilterMode::Bilinear, AddressMode::ClampToEdge) => "pd_tex_sample_bilinear_clamp",
+            };
+            emit_llvm_tex_call_f64(context, module, builder, helper_name, *tex, u_val, v_val, tex_slots_ptr)
+        }
+        Inst::TexWidth { tex } => {
+            // TextureSlot: {data: *const u8 (8), width: u32 (4), height: u32 (4)} = 16 bytes
+            let i32_type = context.i32_type();
+            let i64_type = context.i64_type();
+            let offset = i64_type.const_int((*tex as u64) * 16 + 8, false);
+            let addr = unsafe {
+                builder.build_gep(context.i8_type(), tex_slots_ptr, &[offset], "tw_ptr").unwrap()
+            };
+            VarValues::Scalar(builder.build_load(i32_type, addr, "tw").unwrap())
+        }
+        Inst::TexHeight { tex } => {
+            let i32_type = context.i32_type();
+            let i64_type = context.i64_type();
+            let offset = i64_type.const_int((*tex as u64) * 16 + 12, false);
+            let addr = unsafe {
+                builder.build_gep(context.i8_type(), tex_slots_ptr, &[offset], "th_ptr").unwrap()
+            };
+            VarValues::Scalar(builder.build_load(i32_type, addr, "th").unwrap())
+        }
     }
 }
 
@@ -1412,6 +1464,114 @@ fn create_llvm_module_and_machine(context: &'static Context, name: &str) -> (Mod
     (module, machine)
 }
 
+/// Register texture helper function addresses with the LLVM execution engine.
+fn register_llvm_tex_helpers(
+    engine: &inkwell::execution_engine::ExecutionEngine<'static>,
+    module: &Module<'static>,
+) {
+    use crate::jit;
+    let helpers: &[(&str, usize)] = &[
+        ("pd_tex_load_repeat", jit::pd_tex_load_repeat as *const () as usize),
+        ("pd_tex_load_clamp", jit::pd_tex_load_clamp as *const () as usize),
+        ("pd_tex_sample_nearest_repeat", jit::pd_tex_sample_nearest_repeat as *const () as usize),
+        ("pd_tex_sample_nearest_clamp", jit::pd_tex_sample_nearest_clamp as *const () as usize),
+        ("pd_tex_sample_bilinear_repeat", jit::pd_tex_sample_bilinear_repeat as *const () as usize),
+        ("pd_tex_sample_bilinear_clamp", jit::pd_tex_sample_bilinear_clamp as *const () as usize),
+    ];
+    for (name, addr) in helpers {
+        if let Some(func) = module.get_function(name) {
+            engine.add_global_mapping(&func, *addr);
+        }
+    }
+}
+
+/// Emit an LLVM call to a texture helper that takes (slots, tex, i32, i32, out_ptr).
+/// Returns VarValues::Vec of 4 f32 components.
+fn emit_llvm_tex_call_i32<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    helper_name: &str,
+    tex_idx: u32,
+    coord_a: inkwell::values::IntValue<'ctx>,
+    coord_b: inkwell::values::IntValue<'ctx>,
+    tex_slots_ptr: inkwell::values::PointerValue<'ctx>,
+) -> VarValues<'ctx> {
+    let i32_type = context.i32_type();
+    let f32_type = context.f32_type();
+    let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+    let void_type = context.void_type();
+
+    // Declare or get the helper function: void(ptr, u32, i32, i32, ptr)
+    let fn_type = void_type.fn_type(
+        &[ptr_type.into(), i32_type.into(), i32_type.into(), i32_type.into(), ptr_type.into()],
+        false,
+    );
+    let func = module.get_function(helper_name).unwrap_or_else(|| {
+        module.add_function(helper_name, fn_type, Some(inkwell::module::Linkage::External))
+    });
+
+    // Allocate stack space for 4 × f32 = 16 bytes
+    let out_alloca = builder.build_alloca(context.custom_width_int_type(128), "tex_out").unwrap();
+    let tex_const = i32_type.const_int(tex_idx as u64, false);
+
+    builder.build_call(func, &[tex_slots_ptr.into(), tex_const.into(), coord_a.into(), coord_b.into(), out_alloca.into()], "").unwrap();
+
+    // Load back 4 f32 values
+    let mut components = Vec::with_capacity(4);
+    for i in 0..4u64 {
+        let offset = context.i64_type().const_int(i * 4, false);
+        let addr = unsafe {
+            builder.build_gep(context.i8_type(), out_alloca, &[offset], &format!("tex_c{i}_ptr")).unwrap()
+        };
+        let val = builder.build_load(f32_type, addr, &format!("tex_c{i}")).unwrap();
+        components.push(val);
+    }
+    VarValues::Vec(components)
+}
+
+/// Emit an LLVM call to a texture helper that takes (slots, tex, f64, f64, out_ptr).
+fn emit_llvm_tex_call_f64<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    helper_name: &str,
+    tex_idx: u32,
+    coord_a: inkwell::values::FloatValue<'ctx>,
+    coord_b: inkwell::values::FloatValue<'ctx>,
+    tex_slots_ptr: inkwell::values::PointerValue<'ctx>,
+) -> VarValues<'ctx> {
+    let i32_type = context.i32_type();
+    let f32_type = context.f32_type();
+    let f64_type = context.f64_type();
+    let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+    let void_type = context.void_type();
+
+    let fn_type = void_type.fn_type(
+        &[ptr_type.into(), i32_type.into(), f64_type.into(), f64_type.into(), ptr_type.into()],
+        false,
+    );
+    let func = module.get_function(helper_name).unwrap_or_else(|| {
+        module.add_function(helper_name, fn_type, Some(inkwell::module::Linkage::External))
+    });
+
+    let out_alloca = builder.build_alloca(context.custom_width_int_type(128), "tex_out").unwrap();
+    let tex_const = i32_type.const_int(tex_idx as u64, false);
+
+    builder.build_call(func, &[tex_slots_ptr.into(), tex_const.into(), coord_a.into(), coord_b.into(), out_alloca.into()], "").unwrap();
+
+    let mut components = Vec::with_capacity(4);
+    for i in 0..4u64 {
+        let offset = context.i64_type().const_int(i * 4, false);
+        let addr = unsafe {
+            builder.build_gep(context.i8_type(), out_alloca, &[offset], &format!("tex_c{i}_ptr")).unwrap()
+        };
+        let val = builder.build_load(f32_type, addr, &format!("tex_c{i}")).unwrap();
+        components.push(val);
+    }
+    VarValues::Vec(components)
+}
+
 fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmSimKernel {
     let context: &'static Context = Box::leak(Box::new(Context::create()));
     let (module, machine) = create_llvm_module_and_machine(context, &kernel.name);
@@ -1431,6 +1591,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmSimKern
             ptr_type.into(),  // buf_ptrs: *const *const f64
             ptr_type.into(),  // buf_out_ptrs: *const *mut f64
             ptr_type.into(),  // user_args: *const u8
+            ptr_type.into(),  // tex_slots: *const TextureSlot
         ],
         false,
     );
@@ -1447,9 +1608,11 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> LlvmSimKern
         .create_jit_execution_engine(OptimizationLevel::Aggressive)
         .unwrap();
 
+    register_llvm_tex_helpers(&engine, &module);
+
     let fn_ptr = unsafe {
         engine
-            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, u32, u32, *const *const f64, *const *mut f64, *const u8)>(
+            .get_function::<unsafe extern "C" fn(*mut u32, u32, u32, u32, u32, *const *const f64, *const *mut f64, *const u8, *const u8)>(
                 &kernel.name,
             )
             .unwrap()
@@ -1493,6 +1656,7 @@ fn build_sim_tile_loop(
     let p_buf_ptrs = function.get_nth_param(5).unwrap().into_pointer_value();
     let p_buf_out_ptrs = function.get_nth_param(6).unwrap().into_pointer_value();
     let p_user_args = function.get_nth_param(7).unwrap().into_pointer_value();
+    let _p_tex_slots = function.get_nth_param(8).unwrap().into_pointer_value();
 
     let buf_ctx = LlvmBufContext { p_width, p_buf_ptrs, p_buf_out_ptrs };
 
@@ -1556,7 +1720,7 @@ fn build_sim_tile_loop(
         val_map.insert(param.var, VarValues::Scalar(val));
     }
 
-    lower_body_items(context, module, &builder, function, kernel, &kernel.body, &mut val_map, Some(&buf_ctx));
+    lower_body_items(context, module, &builder, function, kernel, &kernel.body, &mut val_map, Some(&buf_ctx), _p_tex_slots);
 
     let color = get_scalar(&val_map, &kernel.emit).into_int_value();
 

@@ -10,6 +10,7 @@ mod lang;
 mod pdp;
 mod progressive;
 mod render;
+pub mod texture;
 
 use display::Display;
 use std::path::Path;
@@ -298,6 +299,11 @@ fn run_pdp(source: &ConfigSource, args: &CliArgs) {
 
     runtime.init_buffers().unwrap_or_else(|e| {
         eprintln!("Buffer init error: {}", e);
+        std::process::exit(1);
+    });
+
+    runtime.load_textures().unwrap_or_else(|e| {
+        eprintln!("Texture load error: {}", e);
         std::process::exit(1);
     });
 

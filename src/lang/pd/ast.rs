@@ -170,6 +170,11 @@ pub struct BufferParam {
 }
 
 #[derive(Debug, Clone)]
+pub struct TextureParam {
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct AstStructDef {
     pub name: String,
     pub fields: Vec<(String, ValType)>,
@@ -191,6 +196,7 @@ pub struct KernelDef {
     pub params: Vec<Param>,
     pub return_ty: ValType,
     pub buffers: Vec<BufferParam>,
+    pub textures: Vec<TextureParam>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

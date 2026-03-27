@@ -41,6 +41,7 @@
         { "include": "#builtin-declaration" },
         { "include": "#kernel-declaration" },
         { "include": "#buffer-declaration" },
+        { "include": "#texture-declaration" },
         { "include": "#swap-statement" },
         { "include": "#accumulate-block" },
         { "include": "#on-mouse-block" },
@@ -95,6 +96,15 @@
       "captures": {
         "1": { "name": "keyword.declaration.buffer.pdp" },
         "2": { "name": "variable.other.buffer.pdp" }
+      }
+    },
+    "texture-declaration": {
+      "match": "\\b(texture)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(file)\\s*\\(\\s*(\"[^\"]*\")",
+      "captures": {
+        "1": { "name": "keyword.declaration.texture.pdp" },
+        "2": { "name": "variable.other.texture.pdp" },
+        "3": { "name": "support.function.file.pdp" },
+        "4": { "name": "string.quoted.double.pdp" }
       }
     },
     "swap-statement": {
@@ -328,7 +338,7 @@
       ]
     },
     "identifier": {
-      "match": "\\b(constant|iterations|samples|radius|value|falloff|wrap|out|target|with)\\b",
+      "match": "\\b(constant|iterations|samples|radius|value|falloff|wrap|out|target|with|file|texture)\\b",
       "name": "variable.parameter.pdp"
     }
   }

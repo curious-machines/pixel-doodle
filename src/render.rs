@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use crate::jit::{SimTileKernelFn, TileKernelFn};
+use crate::jit::{SimTileKernelFn, TextureSlot, TileKernelFn};
 
 pub const DEFAULT_TILE_HEIGHT: usize = 1;
 
@@ -16,6 +16,7 @@ pub fn render(
     time: f64,
     tile_height: usize,
     user_args: *const u8,
+    tex_slots: &[TextureSlot],
 ) {
     let aspect = width as f64 / height as f64;
     let view_w = 3.5 / zoom;
@@ -31,6 +32,7 @@ pub fn render(
     // Safety: user_args points to a Vec<u8> on the caller's stack that
     // outlives this parallel region. Wrap as usize for Send.
     let args_addr = user_args as usize;
+    let tex_addr = tex_slots.as_ptr() as usize;
 
     // Use par_chunks_mut on the buffer, chunked by rows_per_tile * width
     buffer
@@ -55,6 +57,7 @@ pub fn render(
                     sample_index,
                     time,
                     args_addr as *const u8,
+                    tex_addr as *const TextureSlot,
                 );
             }
         });
@@ -79,6 +82,7 @@ pub fn render_sim(
     bufs_out: &[*mut f64],
     tile_height: usize,
     user_args: *const u8,
+    tex_slots: &[TextureSlot],
 ) {
     let rows_per_tile = tile_height;
 
@@ -86,6 +90,7 @@ pub fn render_sim(
     let in_base = bufs_in.as_ptr() as usize;
     let out_base = bufs_out.as_ptr() as usize;
     let args_addr = user_args as usize;
+    let tex_addr = tex_slots.as_ptr() as usize;
 
     pixel_output
         .par_chunks_mut(rows_per_tile * width)
@@ -104,6 +109,7 @@ pub fn render_sim(
                     in_base as *const *const f64,
                     out_base as *const *mut f64,
                     args_addr as *const u8,
+                    tex_addr as *const TextureSlot,
                 );
             }
         });

@@ -125,6 +125,14 @@
         {
           "match": "(?<==\\s*)\\b(struct_new|struct_get|struct_set|array_new|array_get|array_set)\\b",
           "name": "support.function.compound.pdir"
+        },
+        {
+          "match": "(?<==\\s*)\\b(tex_load|tex_sample|tex_width|tex_height|buf_load|buf_store)\\b",
+          "name": "support.function.texture.pdir"
+        },
+        {
+          "match": "\\b(repeat|clamp|nearest|bilinear)\\b",
+          "name": "variable.parameter.pdir"
         }
       ]
     },

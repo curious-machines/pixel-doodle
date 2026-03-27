@@ -15,6 +15,8 @@ struct Lowerer {
     call_count: u32,
     /// Maps buffer names to indices.
     buf_names: HashMap<String, u32>,
+    /// Maps texture names to indices.
+    tex_names: HashMap<String, u32>,
     /// Struct type definitions.
     struct_defs: Vec<StructDef>,
 }
@@ -28,6 +30,7 @@ impl Lowerer {
             fn_defs: HashMap::new(),
             call_count: 0,
             buf_names: HashMap::new(),
+            tex_names: HashMap::new(),
             struct_defs: Vec::new(),
         }
     }
@@ -682,6 +685,52 @@ impl Lowerer {
             return Some(var);
         }
 
+        // tex_width:tex_name() — encoded as "tex_width:name" by typechecker
+        if let Some(tex_name) = name.strip_prefix("tex_width:") {
+            let tex = self.tex_names[tex_name];
+            let var = self.auto_var("twi", ValType::U32);
+            let vname = self.binding_name(var);
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
+                Inst::TexWidth { tex })));
+            return Some(var);
+        }
+
+        // tex_height:tex_name() — encoded as "tex_height:name" by typechecker
+        if let Some(tex_name) = name.strip_prefix("tex_height:") {
+            let tex = self.tex_names[tex_name];
+            let var = self.auto_var("thi", ValType::U32);
+            let vname = self.binding_name(var);
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::U32,
+                Inst::TexHeight { tex })));
+            return Some(var);
+        }
+
+        // tex_load:tex_name(x, y) — encoded as "tex_load:name" by typechecker
+        if let Some(tex_name) = name.strip_prefix("tex_load:") {
+            let tex = self.tex_names[tex_name];
+            let x = self.lower_expr(&args[0], out);
+            let y = self.lower_expr(&args[1], out);
+            let ty = ValType::Vec { len: 4, elem: ScalarType::F32 };
+            let var = self.auto_var("tld", ty.clone());
+            let vname = self.binding_name(var);
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                Inst::TexLoad { tex, x, y, address: AddressMode::Repeat })));
+            return Some(var);
+        }
+
+        // tex_sample:tex_name(u, v) — encoded as "tex_sample:name" by typechecker
+        if let Some(tex_name) = name.strip_prefix("tex_sample:") {
+            let tex = self.tex_names[tex_name];
+            let u = self.lower_expr(&args[0], out);
+            let v = self.lower_expr(&args[1], out);
+            let ty = ValType::Vec { len: 4, elem: ScalarType::F32 };
+            let var = self.auto_var("tsm", ty.clone());
+            let vname = self.binding_name(var);
+            out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                Inst::TexSample { tex, u, v, filter: FilterMode::Bilinear, address: AddressMode::Repeat })));
+            return Some(var);
+        }
+
         // pack_argb(r, g, b)
         if name == "pack_argb" {
             let r = self.lower_expr(&args[0], out);
@@ -1145,6 +1194,14 @@ pub fn lower(program: &TProgram) -> Kernel {
         buf_decls.push(BufDecl { name: b.name.clone(), is_output: b.is_output });
     }
 
+    // Register texture names → indices
+    let mut tex_decls = Vec::new();
+    for t in &program.kernel.textures {
+        let idx = tex_decls.len() as u32;
+        lowerer.tex_names.insert(t.name.clone(), idx);
+        tex_decls.push(TexDecl { name: t.name.clone() });
+    }
+
     // Lower kernel body
     let mut body = Vec::new();
     let emit_var = lowerer.lower_stmts(&program.kernel.body, &mut body);
@@ -1158,6 +1215,7 @@ pub fn lower(program: &TProgram) -> Kernel {
         body,
         emit,
         buffers: buf_decls,
+        textures: tex_decls,
         struct_defs: program.struct_defs.clone(),
     }
 }
