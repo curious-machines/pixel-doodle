@@ -399,9 +399,7 @@ fn lower_kernel_body(
 ) -> inkwell::values::IntValue<'static> {
     use std::collections::HashMap;
 
-    let i32_type = context.i32_type();
     let i64_type = context.i64_type();
-    let f64_type = context.f64_type();
 
     let mut val_map: HashMap<Var, VarValues<'static>> = HashMap::new();
     for param in &kernel.params {
@@ -1473,7 +1471,6 @@ fn build_sim_tile_loop(
     let builder = context.create_builder();
     let i32_type = context.i32_type();
     let i64_type = context.i64_type();
-    let f64_type = context.f64_type();
 
     let entry = context.append_basic_block(function, "entry");
     let outer_check = context.append_basic_block(function, "outer_check");
