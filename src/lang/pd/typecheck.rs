@@ -269,6 +269,7 @@ impl Checker {
                     }
                     ValType::Scalar(ScalarType::Bool) => Err(err(span, "cannot use integer literal as bool".into())),
                     ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
+                    ValType::Mat { .. } => Err(err(span, "cannot use integer literal as mat type".into())),
                 }
             }
 
@@ -290,6 +291,7 @@ impl Checker {
                         let negatable = match ty {
                             ValType::Scalar(s) => s.is_float() || s.is_integer(),
                             ValType::Vec { .. } => true,
+                            ValType::Mat { .. } => false,
                         };
                         if !negatable {
                             return Err(err(span, format!("cannot negate {}", ty)));
@@ -421,6 +423,22 @@ impl Checker {
                 let l = self.check_expr(lhs, expected_for_arith(rhs, &|e| self.check_expr(e, None)))?;
                 let r = self.check_expr(rhs, Some(l.ty()))?;
 
+                // Handle matrix multiply: mat * vec -> vec, mat * mat -> mat
+                if op == Mul {
+                    if let ValType::Mat { size, elem } = l.ty() {
+                        let col_ty = ValType::Vec { len: size, elem };
+                        if r.ty() == col_ty {
+                            // mat * vec -> vec
+                            return Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: col_ty });
+                        }
+                        let mat_ty = ValType::Mat { size, elem };
+                        if r.ty() == mat_ty {
+                            // mat * mat -> mat
+                            return Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty: mat_ty });
+                        }
+                    }
+                }
+
                 // Handle scalar-vec multiply: f64 * vec or vec * f64
                 if op == Mul {
                     if l.ty() == ValType::F64 && r.ty().is_vec() {
@@ -442,6 +460,20 @@ impl Checker {
                     // Re-check with rhs context
                     let r2 = self.check_expr(rhs, None)?;
                     let l2 = self.check_expr(lhs, Some(r2.ty()))?;
+
+                    // Check mixed mat*vec / mat*mat again with re-resolved types
+                    if op == Mul {
+                        if let ValType::Mat { size, elem } = l2.ty() {
+                            let col_ty = ValType::Vec { len: size, elem };
+                            if r2.ty() == col_ty {
+                                return Ok(TExpr::BinOp { op, lhs: Box::new(l2), rhs: Box::new(r2), ty: col_ty });
+                            }
+                            let mat_ty = ValType::Mat { size, elem };
+                            if r2.ty() == mat_ty {
+                                return Ok(TExpr::BinOp { op, lhs: Box::new(l2), rhs: Box::new(r2), ty: mat_ty });
+                            }
+                        }
+                    }
 
                     // Check mixed scalar-vec again with re-resolved types
                     if op == Mul {
@@ -468,6 +500,9 @@ impl Checker {
                 let ty = l.ty();
                 if ty == ValType::BOOL {
                     return Err(err(span, "cannot do arithmetic on bool".into()));
+                }
+                if ty.is_mat() && op != Mul {
+                    return Err(err(span, format!("only '*' is supported for mat types, got '{:?}'", op)));
                 }
                 if ty.is_vec() && op == Rem {
                     return Err(err(span, "remainder not supported for vec types".into()));
@@ -614,6 +649,78 @@ impl Checker {
                     args: checked,
                     ty: ValType::Vec { len: expected_len as u8, elem },
                 }));
+            }
+            "mat2" | "mat3" | "mat4" => {
+                let expected_cols: usize = match name {
+                    "mat2" => 2, "mat3" => 3, "mat4" => 4, _ => unreachable!(),
+                };
+                if args.len() != expected_cols {
+                    return Err(err(span, format!("{} expects {} column arguments", name, expected_cols)));
+                }
+                // Check first arg to infer element type
+                let first = self.check_expr(&args[0], None)?;
+                let elem = match first.ty() {
+                    ValType::Vec { len, elem } if len == expected_cols as u8 => elem,
+                    other => return Err(err(span, format!(
+                        "{} arguments must be vec{}<T>, got {}", name, expected_cols, other
+                    ))),
+                };
+                let col_ty = ValType::Vec { len: expected_cols as u8, elem };
+                let mut checked = vec![first];
+                for arg in &args[1..] {
+                    let c = self.check_expr(arg, Some(col_ty))?;
+                    if c.ty() != col_ty {
+                        return Err(err(span, format!(
+                            "{} arguments must all be {}, got {}", name, col_ty, c.ty()
+                        )));
+                    }
+                    checked.push(c);
+                }
+                return Ok(Some(TExpr::Call {
+                    name: name.to_string(),
+                    args: checked,
+                    ty: ValType::Mat { size: expected_cols as u8, elem },
+                }));
+            }
+            "transpose" => {
+                if args.len() != 1 {
+                    return Err(err(span, "transpose expects 1 argument".into()));
+                }
+                let arg = self.check_expr(&args[0], None)?;
+                if !arg.ty().is_mat() {
+                    return Err(err(span, format!("transpose requires mat argument, got {}", arg.ty())));
+                }
+                let ty = arg.ty();
+                return Ok(Some(TExpr::Call { name: "transpose".into(), args: vec![arg], ty }));
+            }
+            "col" => {
+                if args.len() != 2 {
+                    return Err(err(span, "col expects 2 arguments: col(mat, index)".into()));
+                }
+                let mat = self.check_expr(&args[0], None)?;
+                let mat_ty = mat.ty();
+                if !mat_ty.is_mat() {
+                    return Err(err(span, format!("col: first argument must be a matrix, got {}", mat_ty)));
+                }
+                let idx = self.check_expr(&args[1], Some(ValType::U32))?;
+                // Validate index is a literal
+                match &idx {
+                    TExpr::U32Lit(i) => {
+                        let size = match mat_ty { ValType::Mat { size, .. } => size, _ => unreachable!() };
+                        if *i >= size as u32 {
+                            return Err(err(span, format!("col index {} out of range for mat{}", i, size)));
+                        }
+                    }
+                    TExpr::IntLit(i, _) => {
+                        let size = match mat_ty { ValType::Mat { size, .. } => size, _ => unreachable!() };
+                        if *i >= size as u64 {
+                            return Err(err(span, format!("col index {} out of range for mat{}", i, size)));
+                        }
+                    }
+                    _ => return Err(err(span, "col: index must be an integer literal".into())),
+                }
+                let col_ty = mat_ty.mat_col_type();
+                return Ok(Some(TExpr::Call { name: "col".into(), args: vec![mat, idx], ty: col_ty }));
             }
             "dot" => {
                 if args.len() != 2 {

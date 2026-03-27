@@ -21,6 +21,7 @@ struct BufContext {
 enum VarValues {
     Scalar(cranelift_codegen::ir::Value),
     Vec(Vec<cranelift_codegen::ir::Value>),  // 2, 3, or 4 components
+    Mat(Vec<cranelift_codegen::ir::Value>),  // N*N scalars, column-major
 }
 
 fn get_scalar(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> cranelift_codegen::ir::Value {
@@ -34,6 +35,13 @@ fn get_vec<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var
     match &val_map[var] {
         VarValues::Vec(v) => v,
         _ => panic!("expected vec value for {:?}", var),
+    }
+}
+
+fn get_mat<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var) -> &'a [cranelift_codegen::ir::Value] {
+    match &val_map[var] {
+        VarValues::Mat(v) => v,
+        _ => panic!("expected mat value for {:?}", var),
     }
 }
 
@@ -408,14 +416,11 @@ fn lower_while(
 
     // Declare Variables for carry vars and initialize them.
     // Vec types expand to multiple Variables (one per component).
+    // Mat types expand to N*N Variables.
     let carry_vars: Vec<Vec<Variable>> = w.carry.iter().map(|cv| {
         match cv.binding.ty {
             ValType::Vec { len, elem } => {
-                let cl_ty = match elem {
-                    ScalarType::F64 => F64,
-                    ScalarType::F32 => F32,
-                    _ => panic!("unsupported vec element type in carry var"),
-                };
+                let cl_ty = scalar_to_cl(elem);
                 let init_components = get_vec(val_map, &cv.init);
                 assert_eq!(init_components.len(), len as usize);
                 init_components.iter().map(|iv| {
@@ -424,11 +429,19 @@ fn lower_while(
                     v
                 }).collect()
             }
-            _ => {
-                let cl_ty = match cv.binding.ty {
-                    ValType::Scalar(s) => scalar_to_cl(s),
-                    _ => unreachable!(),
-                };
+            ValType::Mat { size, elem } => {
+                let cl_ty = scalar_to_cl(elem);
+                let init_components = get_mat(val_map, &cv.init);
+                let n = size as usize;
+                assert_eq!(init_components.len(), n * n);
+                init_components.iter().map(|iv| {
+                    let v = builder.declare_var(cl_ty);
+                    builder.def_var(v, *iv);
+                    v
+                }).collect()
+            }
+            ValType::Scalar(s) => {
+                let cl_ty = scalar_to_cl(s);
                 let cl_var = builder.declare_var(cl_ty);
                 let init_val = get_scalar(val_map, &cv.init);
                 builder.def_var(cl_var, init_val);
@@ -444,13 +457,13 @@ fn lower_while(
 
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
-        if carry_vars[i].len() > 1 {
-            let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-            val_map.insert(cv.binding.var, VarValues::Vec(components));
-        } else {
-            let val = builder.use_var(carry_vars[i][0]);
-            val_map.insert(cv.binding.var, VarValues::Scalar(val));
-        }
+        let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
+        let vv = match cv.binding.ty {
+            ValType::Mat { .. } => VarValues::Mat(components),
+            ValType::Vec { .. } => VarValues::Vec(components),
+            ValType::Scalar(_) => VarValues::Scalar(components[0]),
+        };
+        val_map.insert(cv.binding.var, vv);
     }
 
     // Lower cond_body
@@ -472,7 +485,7 @@ fn lower_while(
             VarValues::Scalar(v) => {
                 builder.def_var(carry_vars[i][0], *v);
             }
-            VarValues::Vec(components) => {
+            VarValues::Vec(components) | VarValues::Mat(components) => {
                 for (j, c) in components.iter().enumerate() {
                     builder.def_var(carry_vars[i][j], *c);
                 }
@@ -491,13 +504,13 @@ fn lower_while(
 
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
-        if carry_vars[i].len() > 1 {
-            let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-            val_map.insert(cv.binding.var, VarValues::Vec(components));
-        } else {
-            let val = builder.use_var(carry_vars[i][0]);
-            val_map.insert(cv.binding.var, VarValues::Scalar(val));
-        }
+        let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
+        let vv = match cv.binding.ty {
+            ValType::Mat { .. } => VarValues::Mat(components),
+            ValType::Vec { .. } => VarValues::Vec(components),
+            ValType::Scalar(_) => VarValues::Scalar(components[0]),
+        };
+        val_map.insert(cv.binding.var, vv);
     }
 }
 
@@ -563,6 +576,34 @@ fn call_libm_f32_binary(
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     let call = builder.ins().call(func_ref, &[lhs, rhs]);
     builder.inst_results(call)[0]
+}
+
+/// Emit a multiply instruction for the given scalar element type.
+fn emit_mul(
+    builder: &mut FunctionBuilder,
+    elem: ScalarType,
+    a: cranelift_codegen::ir::Value,
+    b: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    if elem.is_float() {
+        builder.ins().fmul(a, b)
+    } else {
+        builder.ins().imul(a, b)
+    }
+}
+
+/// Emit an add instruction for the given scalar element type.
+fn emit_add(
+    builder: &mut FunctionBuilder,
+    elem: ScalarType,
+    a: cranelift_codegen::ir::Value,
+    b: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    if elem.is_float() {
+        builder.ins().fadd(a, b)
+    } else {
+        builder.ins().iadd(a, b)
+    }
 }
 
 fn lower_inst(
@@ -832,6 +873,13 @@ fn lower_inst(
                         .collect();
                     VarValues::Vec(components)
                 }
+                (VarValues::Mat(tv), VarValues::Mat(ev)) => {
+                    assert_eq!(tv.len(), ev.len(), "select branches must have matching mat sizes");
+                    let components: Vec<_> = tv.iter().zip(ev.iter())
+                        .map(|(t, e)| builder.ins().select(c, *t, *e))
+                        .collect();
+                    VarValues::Mat(components)
+                }
                 _ => panic!("select branches must have matching types"),
             }
         }
@@ -947,6 +995,77 @@ fn lower_inst(
             let b = builder.ins().fmul(ly, rx);
             let cz = builder.ins().fsub(a, b);
             VarValues::Vec(vec![cx, cy, cz])
+        }
+        Inst::MakeMat(cols) => {
+            let mut components = Vec::new();
+            for col_var in cols {
+                let col = get_vec(val_map, col_var);
+                components.extend_from_slice(col);
+            }
+            VarValues::Mat(components)
+        }
+        Inst::MatCol { mat, index } => {
+            let m = get_mat(val_map, mat);
+            let size = match binding.ty {
+                ValType::Vec { len, .. } => len as usize,
+                _ => panic!("MatCol result must be a vec type"),
+            };
+            let start = (*index as usize) * size;
+            VarValues::Vec(m[start..start + size].to_vec())
+        }
+        Inst::MatTranspose { arg } => {
+            let m = get_mat(val_map, arg).to_vec();
+            let size = match binding.ty {
+                ValType::Mat { size, .. } => size as usize,
+                _ => panic!("MatTranspose result must be a mat type"),
+            };
+            let mut result = Vec::with_capacity(size * size);
+            for col in 0..size {
+                for row in 0..size {
+                    result.push(m[row * size + col]);
+                }
+            }
+            VarValues::Mat(result)
+        }
+        Inst::MatMulVec { mat, vec } => {
+            let m = get_mat(val_map, mat).to_vec();
+            let v = get_vec(val_map, vec).to_vec();
+            let size = v.len();
+            let elem = binding.ty.element_scalar();
+            let mut result: Vec<_> = (0..size).map(|i| {
+                emit_mul(builder, elem, m[i], v[0])
+            }).collect();
+            for col in 1..size {
+                for row in 0..size {
+                    let product = emit_mul(builder, elem, m[col * size + row], v[col]);
+                    result[row] = emit_add(builder, elem, result[row], product);
+                }
+            }
+            VarValues::Vec(result)
+        }
+        Inst::MatMul { lhs, rhs } => {
+            let lhs_m = get_mat(val_map, lhs).to_vec();
+            let rhs_m = get_mat(val_map, rhs).to_vec();
+            let size = match binding.ty {
+                ValType::Mat { size, .. } => size as usize,
+                _ => panic!("MatMul result must be a mat type"),
+            };
+            let elem = binding.ty.element_scalar();
+            let mut result = Vec::with_capacity(size * size);
+            for col in 0..size {
+                let rhs_col: Vec<_> = (0..size).map(|row| rhs_m[col * size + row]).collect();
+                let mut res_col: Vec<_> = (0..size).map(|i| {
+                    emit_mul(builder, elem, lhs_m[i], rhs_col[0])
+                }).collect();
+                for k in 1..size {
+                    for row in 0..size {
+                        let product = emit_mul(builder, elem, lhs_m[k * size + row], rhs_col[k]);
+                        res_col[row] = emit_add(builder, elem, res_col[row], product);
+                    }
+                }
+                result.extend(res_col);
+            }
+            VarValues::Mat(result)
         }
         Inst::BufLoad { buf, x, y } => {
             // Load f64 from buffer: buf_ptrs[buf][(y * width + x)]

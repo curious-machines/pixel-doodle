@@ -76,7 +76,8 @@ impl std::fmt::Display for ScalarType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValType {
     Scalar(ScalarType),
-    Vec { len: u8, elem: ScalarType }, // len in {2, 3, 4}
+    Vec { len: u8, elem: ScalarType },  // len in {2, 3, 4}
+    Mat { size: u8, elem: ScalarType }, // square matrix, size in {2, 3, 4}; column-major
 }
 
 impl ValType {
@@ -98,19 +99,33 @@ impl ValType {
         matches!(self, ValType::Vec { .. })
     }
 
-    /// Number of scalar components (1 for scalars, 2..4 for vectors).
+    /// Returns true if this is a matrix type.
+    pub fn is_mat(self) -> bool {
+        matches!(self, ValType::Mat { .. })
+    }
+
+    /// Number of scalar components (1 for scalars, 2..4 for vectors, N*N for matrices).
     pub fn component_count(self) -> usize {
         match self {
             ValType::Vec { len, .. } => len as usize,
+            ValType::Mat { size, .. } => (size as usize) * (size as usize),
             ValType::Scalar(_) => 1,
         }
     }
 
-    /// The element type of a vector, or the scalar type itself.
+    /// The element type of a vector/matrix, or the scalar type itself.
     pub fn element_scalar(self) -> ScalarType {
         match self {
-            ValType::Vec { elem, .. } => elem,
+            ValType::Vec { elem, .. } | ValType::Mat { elem, .. } => elem,
             ValType::Scalar(s) => s,
+        }
+    }
+
+    /// For a matrix, the column vector type. Panics if not a matrix.
+    pub fn mat_col_type(self) -> ValType {
+        match self {
+            ValType::Mat { size, elem } => ValType::Vec { len: size, elem },
+            _ => panic!("mat_col_type called on non-matrix type"),
         }
     }
 
@@ -130,6 +145,7 @@ impl std::fmt::Display for ValType {
         match self {
             ValType::Scalar(s) => write!(f, "{}", s),
             ValType::Vec { len, elem } => write!(f, "vec{}<{}>", len, elem),
+            ValType::Mat { size, elem } => write!(f, "mat{}<{}>", size, elem),
         }
     }
 }
@@ -287,6 +303,21 @@ pub enum Inst {
 
     // Cross product (vec3 x vec3 -> vec3)
     VecCross { lhs: Var, rhs: Var },
+
+    // Matrix construction from column vectors (N columns of vecN)
+    MakeMat(Vec<Var>),
+
+    // Matrix-vector multiply (matN * vecN -> vecN)
+    MatMulVec { mat: Var, vec: Var },
+
+    // Matrix-matrix multiply (matN * matN -> matN)
+    MatMul { lhs: Var, rhs: Var },
+
+    // Matrix transpose (matN -> matN)
+    MatTranspose { arg: Var },
+
+    // Column extraction (matN -> vecN, by column index)
+    MatCol { mat: Var, index: u8 },
 
     // Buffer operations (for simulation kernels)
     /// Load f64 from buffer `buf` at position (x, y). Width/height for wrapping

@@ -12,6 +12,7 @@ use crate::kernel_ir::*;
 enum VarValues<'ctx> {
     Scalar(BasicValueEnum<'ctx>),
     Vec(Vec<BasicValueEnum<'ctx>>),  // 2, 3, or 4 components
+    Mat(Vec<BasicValueEnum<'ctx>>),  // N*N scalars, column-major
 }
 
 fn get_scalar<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> BasicValueEnum<'ctx> {
@@ -25,6 +26,13 @@ fn get_vec<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>
     match &val_map[var] {
         VarValues::Vec(v) => v,
         _ => panic!("expected vec value for {:?}", var),
+    }
+}
+
+fn get_mat<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> &'a [BasicValueEnum<'ctx>] {
+    match &val_map[var] {
+        VarValues::Mat(v) => v,
+        _ => panic!("expected mat value for {:?}", var),
     }
 }
 
@@ -345,6 +353,9 @@ fn lower_kernel_body(
             name => {
                 let slot = user_args.iter().find(|s| s.name == name)
                     .unwrap_or_else(|| panic!("unknown kernel parameter: '{name}'"));
+                if slot.ty.is_mat() {
+                    panic!("LLVM backend does not support Mat user args (param '{name}')");
+                }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), user_args_ptr, &[offset], &format!("arg_{name}_ptr")).unwrap()
@@ -426,19 +437,20 @@ fn lower_while(
             let init_vals = &val_map[&cv.init];
             let init_val = match init_vals {
                 VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
-                VarValues::Vec(components) => components[comp],
+                VarValues::Vec(components) | VarValues::Mat(components) => components[comp],
             };
             phi.add_incoming(&[(&init_val, pre_block)]);
             phis.push(phi);
         }
 
         // Map carry var to phi values
-        if component_count > 1 {
-            let components: Vec<_> = phis.iter().map(|p| p.as_basic_value()).collect();
-            val_map.insert(cv.binding.var, VarValues::Vec(components));
-        } else {
-            val_map.insert(cv.binding.var, VarValues::Scalar(phis[0].as_basic_value()));
-        }
+        let components: Vec<_> = phis.iter().map(|p| p.as_basic_value()).collect();
+        let vv = match cv.binding.ty {
+            ValType::Mat { .. } => VarValues::Mat(components),
+            ValType::Vec { .. } => VarValues::Vec(components),
+            ValType::Scalar(_) => VarValues::Scalar(components[0]),
+        };
+        val_map.insert(cv.binding.var, vv);
         carry_phis.push(phis);
     }
 
@@ -462,7 +474,7 @@ fn lower_while(
         for (comp, phi) in phis.iter().enumerate() {
             let yield_val = match yield_vals {
                 VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
-                VarValues::Vec(components) => components[comp],
+                VarValues::Vec(components) | VarValues::Mat(components) => components[comp],
             };
             phi.add_incoming(&[(&yield_val, body_block)]);
         }
@@ -725,6 +737,19 @@ fn lower_inst(
         Inst::Select { cond, then_val, else_val } => {
             let c = get_scalar(val_map, cond).into_int_value();
             match binding.ty {
+                ValType::Mat { .. } => {
+                    let t_comps = get_mat(val_map, then_val);
+                    let e_comps = get_mat(val_map, else_val);
+                    let results: Vec<_> = t_comps.iter().zip(e_comps.iter()).enumerate().map(|(i, (t, e))| {
+                        let name = format!("sel_{}", i);
+                        if binding.ty.element_scalar().is_float() {
+                            builder.build_select(c, t.into_float_value(), e.into_float_value(), &name).unwrap()
+                        } else {
+                            builder.build_select(c, t.into_int_value(), e.into_int_value(), &name).unwrap()
+                        }
+                    }).collect();
+                    VarValues::Mat(results)
+                }
                 ValType::Vec { .. } => {
                     let t_comps = get_vec(val_map, then_val);
                     let e_comps = get_vec(val_map, else_val);
@@ -892,6 +917,89 @@ fn lower_inst(
             let cz: BasicValueEnum = builder.build_float_sub(a, b, "cross_z").unwrap().into();
             VarValues::Vec(vec![cx, cy, cz])
         }
+
+        // -- Matrix construction --
+        Inst::MakeMat(cols) => {
+            let mut components = Vec::new();
+            for col_var in cols {
+                let col = get_vec(val_map, col_var);
+                components.extend_from_slice(col);
+            }
+            VarValues::Mat(components)
+        }
+
+        // -- Column extraction --
+        Inst::MatCol { mat, index } => {
+            let m = get_mat(val_map, mat);
+            let size = match binding.ty {
+                ValType::Vec { len, .. } => len as usize,
+                _ => panic!("MatCol result must be a vec type"),
+            };
+            let start = (*index as usize) * size;
+            VarValues::Vec(m[start..start + size].to_vec())
+        }
+
+        // -- Matrix transpose --
+        Inst::MatTranspose { arg } => {
+            let m = get_mat(val_map, arg).to_vec();
+            let size = match binding.ty {
+                ValType::Mat { size, .. } => size as usize,
+                _ => panic!("MatTranspose result must be a mat type"),
+            };
+            let mut result = Vec::with_capacity(size * size);
+            for col in 0..size {
+                for row in 0..size {
+                    result.push(m[row * size + col]);
+                }
+            }
+            VarValues::Mat(result)
+        }
+
+        // -- Matrix-vector multiply --
+        Inst::MatMulVec { mat, vec } => {
+            let m = get_mat(val_map, mat).to_vec();
+            let v = get_vec(val_map, vec).to_vec();
+            let size = v.len();
+            let elem = binding.ty.element_scalar();
+            // result[row] = sum over col of m[col*size+row] * v[col]
+            let mut result: Vec<BasicValueEnum> = (0..size).map(|i| {
+                llvm_emit_mul(builder, elem, m[i], v[0])
+            }).collect();
+            for col in 1..size {
+                for row in 0..size {
+                    let product = llvm_emit_mul(builder, elem, m[col * size + row], v[col]);
+                    result[row] = llvm_emit_add(builder, elem, result[row], product);
+                }
+            }
+            VarValues::Vec(result)
+        }
+
+        // -- Matrix-matrix multiply --
+        Inst::MatMul { lhs, rhs } => {
+            let lhs_m = get_mat(val_map, lhs).to_vec();
+            let rhs_m = get_mat(val_map, rhs).to_vec();
+            let size = match binding.ty {
+                ValType::Mat { size, .. } => size as usize,
+                _ => panic!("MatMul result must be a mat type"),
+            };
+            let elem = binding.ty.element_scalar();
+            let mut result = Vec::with_capacity(size * size);
+            for col in 0..size {
+                let rhs_col: Vec<_> = (0..size).map(|row| rhs_m[col * size + row]).collect();
+                let mut res_col: Vec<BasicValueEnum> = (0..size).map(|i| {
+                    llvm_emit_mul(builder, elem, lhs_m[i], rhs_col[0])
+                }).collect();
+                for k in 1..size {
+                    for row in 0..size {
+                        let product = llvm_emit_mul(builder, elem, lhs_m[k * size + row], rhs_col[k]);
+                        res_col[row] = llvm_emit_add(builder, elem, res_col[row], product);
+                    }
+                }
+                result.extend(res_col);
+            }
+            VarValues::Mat(result)
+        }
+
         Inst::BufLoad { buf, x, y } => {
             let ctx = buf_ctx.expect("BufLoad requires simulation context");
             let i64_type = context.i64_type();
@@ -1020,6 +1128,34 @@ fn call_int_binary_intrinsic(
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
+}
+
+/// Emit a multiply for the given scalar element type.
+fn llvm_emit_mul(
+    builder: &inkwell::builder::Builder<'static>,
+    elem: ScalarType,
+    a: BasicValueEnum<'static>,
+    b: BasicValueEnum<'static>,
+) -> BasicValueEnum<'static> {
+    if elem.is_float() {
+        builder.build_float_mul(a.into_float_value(), b.into_float_value(), "mmul").unwrap().into()
+    } else {
+        builder.build_int_mul(a.into_int_value(), b.into_int_value(), "mmul").unwrap().into()
+    }
+}
+
+/// Emit an add for the given scalar element type.
+fn llvm_emit_add(
+    builder: &inkwell::builder::Builder<'static>,
+    elem: ScalarType,
+    a: BasicValueEnum<'static>,
+    b: BasicValueEnum<'static>,
+) -> BasicValueEnum<'static> {
+    if elem.is_float() {
+        builder.build_float_add(a.into_float_value(), b.into_float_value(), "madd").unwrap().into()
+    } else {
+        builder.build_int_add(a.into_int_value(), b.into_int_value(), "madd").unwrap().into()
+    }
 }
 
 /// Map a ScalarType to the corresponding LLVM basic type.
@@ -1206,6 +1342,9 @@ fn build_sim_tile_loop(
             name => {
                 let slot = user_args.iter().find(|s| s.name == name)
                     .unwrap_or_else(|| panic!("unknown sim kernel parameter: '{name}'"));
+                if slot.ty.is_mat() {
+                    panic!("LLVM backend does not support Mat user args (param '{name}')");
+                }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), p_user_args, &[offset], &format!("arg_{name}_ptr")).unwrap()

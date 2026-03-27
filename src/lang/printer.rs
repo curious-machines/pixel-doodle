@@ -217,6 +217,35 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *rhs, kernel);
         }
+        Inst::MakeMat(cols) => {
+            out.push_str(&format!("make_mat{} ", cols.len()));
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                print_operand(out, *c, kernel);
+            }
+        }
+        Inst::MatMulVec { mat, vec } => {
+            out.push_str("mat_mul_vec ");
+            print_operand(out, *mat, kernel);
+            out.push(' ');
+            print_operand(out, *vec, kernel);
+        }
+        Inst::MatMul { lhs, rhs } => {
+            out.push_str("mat_mul ");
+            print_operand(out, *lhs, kernel);
+            out.push(' ');
+            print_operand(out, *rhs, kernel);
+        }
+        Inst::MatTranspose { arg } => {
+            out.push_str("mat_transpose ");
+            print_operand(out, *arg, kernel);
+        }
+        Inst::MatCol { mat, index } => {
+            out.push_str(&format!("mat_col{} ", index));
+            print_operand(out, *mat, kernel);
+        }
         Inst::BufLoad { buf, x, y } => {
             let buf_name = &kernel.buffers[*buf as usize].name;
             out.push_str(&format!("buf_load {} ", buf_name));

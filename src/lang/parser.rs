@@ -32,6 +32,9 @@ enum Token {
     TyVec2,
     TyVec3,
     TyVec4,
+    TyMat2,
+    TyMat3,
+    TyMat4,
     // Angle brackets (for parameterized types like vec2<f64>)
     LAngle,
     RAngle,
@@ -60,6 +63,17 @@ enum Token {
     VecDot,
     VecLength,
     VecCross,
+    // Mat construction & ops
+    MakeMat2,
+    MakeMat3,
+    MakeMat4,
+    MatMulVec,
+    MatMul,
+    MatTranspose,
+    MatCol0,
+    MatCol1,
+    MatCol2,
+    MatCol3,
     // Binary ops
     Add,
     Sub,
@@ -200,6 +214,9 @@ fn keyword_lookup(word: &str) -> Token {
         "vec2" => Token::TyVec2,
         "vec3" => Token::TyVec3,
         "vec4" => Token::TyVec4,
+        "mat2" => Token::TyMat2,
+        "mat3" => Token::TyMat3,
+        "mat4" => Token::TyMat4,
         "make_vec2" => Token::MakeVec2,
         "make_vec3" => Token::MakeVec3,
         "make_vec4" => Token::MakeVec4,
@@ -220,6 +237,16 @@ fn keyword_lookup(word: &str) -> Token {
         "vec_dot" => Token::VecDot,
         "vec_length" => Token::VecLength,
         "vec_cross" => Token::VecCross,
+        "make_mat2" => Token::MakeMat2,
+        "make_mat3" => Token::MakeMat3,
+        "make_mat4" => Token::MakeMat4,
+        "mat_mul_vec" => Token::MatMulVec,
+        "mat_mul" => Token::MatMul,
+        "mat_transpose" => Token::MatTranspose,
+        "mat_col0" => Token::MatCol0,
+        "mat_col1" => Token::MatCol1,
+        "mat_col2" => Token::MatCol2,
+        "mat_col3" => Token::MatCol3,
         "add" => Token::Add,
         "sub" => Token::Sub,
         "mul" => Token::Mul,
@@ -700,6 +727,19 @@ impl Parser {
                 let elem = self.parse_scalar_type()?;
                 self.expect_tok(&Token::RAngle)?;
                 Ok(ValType::Vec { len, elem })
+            }
+            Token::TyMat2 | Token::TyMat3 | Token::TyMat4 => {
+                let size: u8 = match sp.token {
+                    Token::TyMat2 => 2,
+                    Token::TyMat3 => 3,
+                    Token::TyMat4 => 4,
+                    _ => unreachable!(),
+                };
+                self.advance();
+                self.expect_tok(&Token::LAngle)?;
+                let elem = self.parse_scalar_type()?;
+                self.expect_tok(&Token::RAngle)?;
+                Ok(ValType::Mat { size, elem })
             }
             _ => Err(ParseError {
                 line: sp.line,
@@ -1269,6 +1309,96 @@ impl Parser {
                     return Err(ParseError { line, col, message: format!("vec_cross result must be vec3, got {declared_ty}") });
                 }
                 Ok(Inst::VecCross { lhs, rhs })
+            }
+            Token::MakeMat2 | Token::MakeMat3 | Token::MakeMat4 => {
+                let (count, label) = match sp.token {
+                    Token::MakeMat2 => (2u8, "make_mat2"),
+                    Token::MakeMat3 => (3u8, "make_mat3"),
+                    Token::MakeMat4 => (4u8, "make_mat4"),
+                    _ => unreachable!(),
+                };
+                self.advance();
+                let elem = match declared_ty {
+                    ValType::Mat { size, elem } if size == count => elem,
+                    _ => return Err(ParseError { line, col, message: format!("{label} result must be mat{count}<_>, got {declared_ty}") }),
+                };
+                let col_ty = ValType::Vec { len: count, elem };
+                let mut cols = Vec::new();
+                for _ in 0..count {
+                    let v = self.resolve_var_ident()?;
+                    self.check_types_match(col_ty, self.var_ty(v), "column", line, col)?;
+                    cols.push(v);
+                }
+                Ok(Inst::MakeMat(cols))
+            }
+            Token::MatMulVec => {
+                self.advance();
+                let mat = self.resolve_var_ident()?;
+                let vec = self.resolve_var_ident()?;
+                let mat_ty = self.var_ty(mat);
+                let vec_ty = self.var_ty(vec);
+                let (size, elem) = match mat_ty {
+                    ValType::Mat { size, elem } => (size, elem),
+                    _ => return Err(ParseError { line, col, message: format!("mat_mul_vec requires mat operand, got {mat_ty}") }),
+                };
+                let expected_vec = ValType::Vec { len: size, elem };
+                if vec_ty != expected_vec {
+                    return Err(ParseError { line, col, message: format!("mat_mul_vec vec operand must be {expected_vec}, got {vec_ty}") });
+                }
+                if declared_ty != expected_vec {
+                    return Err(ParseError { line, col, message: format!("mat_mul_vec result must be {expected_vec}, got {declared_ty}") });
+                }
+                Ok(Inst::MatMulVec { mat, vec })
+            }
+            Token::MatMul => {
+                self.advance();
+                let lhs = self.resolve_var_ident()?;
+                let rhs = self.resolve_var_ident()?;
+                let lhs_ty = self.var_ty(lhs);
+                let rhs_ty = self.var_ty(rhs);
+                if !lhs_ty.is_mat() || lhs_ty != rhs_ty {
+                    return Err(ParseError { line, col, message: format!("mat_mul requires matching mat types, got {lhs_ty} and {rhs_ty}") });
+                }
+                if declared_ty != lhs_ty {
+                    return Err(ParseError { line, col, message: format!("mat_mul result type must match operands: expected {lhs_ty}, got {declared_ty}") });
+                }
+                Ok(Inst::MatMul { lhs, rhs })
+            }
+            Token::MatTranspose => {
+                self.advance();
+                let arg = self.resolve_var_ident()?;
+                let arg_ty = self.var_ty(arg);
+                if !arg_ty.is_mat() {
+                    return Err(ParseError { line, col, message: format!("mat_transpose requires mat type, got {arg_ty}") });
+                }
+                if declared_ty != arg_ty {
+                    return Err(ParseError { line, col, message: format!("mat_transpose result type must match operand: expected {arg_ty}, got {declared_ty}") });
+                }
+                Ok(Inst::MatTranspose { arg })
+            }
+            Token::MatCol0 | Token::MatCol1 | Token::MatCol2 | Token::MatCol3 => {
+                let index: u8 = match sp.token {
+                    Token::MatCol0 => 0,
+                    Token::MatCol1 => 1,
+                    Token::MatCol2 => 2,
+                    Token::MatCol3 => 3,
+                    _ => unreachable!(),
+                };
+                self.advance();
+                let mat = self.resolve_var_ident()?;
+                let mat_ty = self.var_ty(mat);
+                let (size, elem) = match mat_ty {
+                    ValType::Mat { size, elem } => (size, elem),
+                    _ => return Err(ParseError { line, col, message: format!("mat_col{index} requires mat type, got {mat_ty}") }),
+                };
+                if index >= size {
+                    return Err(ParseError { line, col, message: format!("mat_col{index} index out of bounds for mat{size}") });
+                }
+                let expected = ValType::Vec { len: size, elem };
+                if declared_ty != expected {
+                    return Err(ParseError { line, col, message: format!("mat_col{index} result must be {expected}, got {declared_ty}") });
+                }
+                Ok(Inst::MatCol { mat, index })
             }
             Token::BufLoad => {
                 self.advance();
@@ -1894,6 +2024,21 @@ impl Parser {
                     });
                     Ok(Inst::VecBinary { op: VecBinOp::Add, lhs: remapped, rhs: zero_vec })
                 }
+                ValType::Mat { .. } => {
+                    // Identity for matrix: multiply by identity matrix or just return.
+                    // For now, use MatMul with self (a * I = a), but we don't have identity
+                    // matrix construction yet. Use a transpose-of-transpose as identity.
+                    let transposed_name = format!("__identity_tmp_{}", self.next_var);
+                    let transposed = Var(self.next_var);
+                    self.next_var += 1;
+                    self.vars.insert(transposed_name.clone(), transposed);
+                    self.var_types.insert(transposed, def.return_ty);
+                    self.implicit_stmts.push(Statement {
+                        binding: Binding { var: transposed, name: transposed_name, ty: def.return_ty },
+                        inst: Inst::MatTranspose { arg: remapped },
+                    });
+                    Ok(Inst::MatTranspose { arg: transposed })
+                }
             }
         }
     }
@@ -1920,6 +2065,11 @@ impl Parser {
             Inst::VecDot { lhs, rhs } => Inst::VecDot { lhs: remap(lhs), rhs: remap(rhs) },
             Inst::VecLength { arg } => Inst::VecLength { arg: remap(arg) },
             Inst::VecCross { lhs, rhs } => Inst::VecCross { lhs: remap(lhs), rhs: remap(rhs) },
+            Inst::MakeMat(cols) => Inst::MakeMat(cols.iter().map(&remap).collect()),
+            Inst::MatMulVec { mat, vec } => Inst::MatMulVec { mat: remap(mat), vec: remap(vec) },
+            Inst::MatMul { lhs, rhs } => Inst::MatMul { lhs: remap(lhs), rhs: remap(rhs) },
+            Inst::MatTranspose { arg } => Inst::MatTranspose { arg: remap(arg) },
+            Inst::MatCol { mat, index } => Inst::MatCol { mat: remap(mat), index: *index },
             Inst::BufLoad { buf, x, y } => Inst::BufLoad { buf: *buf, x: remap(x), y: remap(y) },
             Inst::BufStore { buf, x, y, val } => Inst::BufStore { buf: *buf, x: remap(x), y: remap(y), val: remap(val) },
         }

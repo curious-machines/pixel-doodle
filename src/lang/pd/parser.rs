@@ -227,6 +227,19 @@ impl Parser {
                 self.expect(&Token::Gt)?;
                 Ok(ValType::Vec { len, elem })
             }
+            Token::TyMat2 | Token::TyMat3 | Token::TyMat4 => {
+                let size: u8 = match self.peek() {
+                    Token::TyMat2 => 2,
+                    Token::TyMat3 => 3,
+                    Token::TyMat4 => 4,
+                    _ => unreachable!(),
+                };
+                self.advance();
+                self.expect(&Token::Lt)?;
+                let elem = self.parse_scalar_type()?;
+                self.expect(&Token::Gt)?;
+                Ok(ValType::Mat { size, elem })
+            }
             _ => Err(self.error(format!("expected type, got '{}'", self.peek()))),
         }
     }
@@ -622,12 +635,16 @@ impl Parser {
                 self.advance();
                 Ok(Expr::BoolLit(false, span))
             }
-            // vec2(...), vec3(...), vec4(...) constructors — type keywords used as function calls
-            Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
+            // vec2(...), vec3(...), vec4(...), mat2(...), mat3(...), mat4(...) constructors
+            Token::TyVec2 | Token::TyVec3 | Token::TyVec4 |
+            Token::TyMat2 | Token::TyMat3 | Token::TyMat4 => {
                 let name = match self.peek() {
                     Token::TyVec2 => "vec2".to_string(),
                     Token::TyVec3 => "vec3".to_string(),
                     Token::TyVec4 => "vec4".to_string(),
+                    Token::TyMat2 => "mat2".to_string(),
+                    Token::TyMat3 => "mat3".to_string(),
+                    Token::TyMat4 => "mat4".to_string(),
                     _ => unreachable!(),
                 };
                 let span = self.span();

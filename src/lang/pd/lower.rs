@@ -87,7 +87,7 @@ impl Lowerer {
                     ValType::Scalar(ScalarType::I32) => Const::I32(*v as i32),
                     ValType::Scalar(ScalarType::I64) => Const::I64(*v as i64),
                     ValType::Scalar(ScalarType::U64) => Const::U64(*v),
-                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } => unreachable!(),
+                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } | ValType::Mat { .. } => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
                 var
@@ -170,6 +170,20 @@ impl Lowerer {
                 let r = self.lower_expr(rhs, out);
                 let var = self.auto_var("tmp", *ty);
                 let name = self.binding_name(var);
+
+                // Handle matrix operations
+                if *op == BinOpKind::Mul && lhs.ty().is_mat() && rhs.ty().is_vec() {
+                    // mat * vec -> vec (MatMulVec)
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                        Inst::MatMulVec { mat: l, vec: r })));
+                    return var;
+                }
+                if *op == BinOpKind::Mul && lhs.ty().is_mat() && rhs.ty().is_mat() {
+                    // mat * mat -> mat (MatMul)
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                        Inst::MatMul { lhs: l, rhs: r })));
+                    return var;
+                }
 
                 // Handle vec operations
                 if ty.is_vec() {
@@ -374,6 +388,35 @@ impl Lowerer {
     fn lower_builtin_call(&mut self, name: &str, args: &[TExpr], ret_ty: ValType, out: &mut Vec<BodyItem>) -> Option<Var> {
         // Vec-specific builtins (must come before scalar fallbacks)
         match name {
+            "mat2" | "mat3" | "mat4" => {
+                let columns: Vec<Var> = args.iter().map(|a| self.lower_expr(a, out)).collect();
+                let var = self.auto_var("tmp", ret_ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
+                    Inst::MakeMat(columns))));
+                return Some(var);
+            }
+            "transpose" => {
+                let a = self.lower_expr(&args[0], out);
+                let var = self.auto_var("tmp", ret_ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
+                    Inst::MatTranspose { arg: a })));
+                return Some(var);
+            }
+            "col" => {
+                let mat = self.lower_expr(&args[0], out);
+                let index = match &args[1] {
+                    TExpr::U32Lit(i) => *i as u8,
+                    TExpr::IntLit(i, _) => *i as u8,
+                    _ => unreachable!("col index must be integer literal"),
+                };
+                let var = self.auto_var("tmp", ret_ty);
+                let vname = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
+                    Inst::MatCol { mat, index })));
+                return Some(var);
+            }
             "vec2" | "vec3" | "vec4" => {
                 let components: Vec<Var> = args.iter().map(|a| self.lower_expr(a, out)).collect();
                 let var = self.auto_var("tmp", ret_ty);
