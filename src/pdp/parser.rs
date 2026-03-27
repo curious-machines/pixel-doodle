@@ -435,8 +435,11 @@ impl Parser {
         if self.at(&Token::Colon) {
             self.advance();
             if self.at(&Token::Range) {
-                // `: range(min..max[, wrap: true|false])`
+                // `: range<type>(min..max[, wrap: true|false])`
                 self.advance();
+                self.expect(&Token::Lt)?;
+                let range_ty = self.parse_builtin_type()?;
+                self.expect(&Token::Gt)?;
                 self.expect(&Token::LParen)?;
                 let min = self.parse_number_literal()?;
                 self.expect(&Token::DotDot)?;
@@ -466,7 +469,8 @@ impl Parser {
                     };
                 }
                 self.expect(&Token::RParen)?;
-                range = Some(RangeSpec { min, max, wrap });
+                ty = Some(range_ty);
+                range = Some(RangeSpec { ty: range_ty, min, max, wrap });
             } else {
                 // `: type` (plain type annotation)
                 ty = Some(self.parse_builtin_type()?);
@@ -849,7 +853,7 @@ impl Parser {
         }
     }
 
-    /// Parse `run kernel(args...) { bindings }`
+    /// Parse `run kernel(args...) with(bindings)`
     fn parse_run_step(&mut self) -> Result<PipelineStep, ParseError> {
         let span = self.span();
         self.advance(); // consume 'run'
@@ -860,7 +864,8 @@ impl Parser {
         } else {
             Vec::new()
         };
-        let input_bindings = if self.at(&Token::LBrace) {
+        let input_bindings = if self.at(&Token::With) {
+            self.advance(); // consume 'with'
             self.parse_buffer_bindings()?
         } else {
             Vec::new()
@@ -904,9 +909,9 @@ impl Parser {
     }
 
     fn parse_buffer_bindings(&mut self) -> Result<Vec<BufferBinding>, ParseError> {
-        self.expect(&Token::LBrace)?;
+        self.expect(&Token::LParen)?;
         let mut bindings = Vec::new();
-        while !self.at(&Token::RBrace) {
+        while !self.at(&Token::RParen) {
             let span = self.span();
             let param_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
@@ -922,32 +927,21 @@ impl Parser {
                 is_output,
                 span,
             });
-            if !self.at(&Token::RBrace) {
+            if !self.at(&Token::RParen) {
                 self.expect(&Token::Comma)?;
             }
         }
-        self.expect(&Token::RBrace)?;
+        self.expect(&Token::RParen)?;
         Ok(bindings)
     }
 
     fn parse_swap_step(&mut self) -> Result<PipelineStep, ParseError> {
         let span = self.span();
         self.expect(&Token::Swap)?;
-
-        let mut pairs = Vec::new();
-        loop {
-            let a = self.expect_ident()?;
-            self.expect(&Token::SwapArrow)?;
-            let b = self.expect_ident()?;
-            pairs.push((a, b));
-            if self.at(&Token::Comma) {
-                self.advance();
-            } else {
-                break;
-            }
-        }
-
-        Ok(PipelineStep::Swap { pairs, span })
+        let a = self.expect_ident()?;
+        self.expect(&Token::Comma)?;
+        let b = self.expect_ident()?;
+        Ok(PipelineStep::Swap { a, b, span })
     }
 
     fn parse_loop_step(&mut self) -> Result<PipelineStep, ParseError> {
@@ -1205,17 +1199,17 @@ mod tests {
               buffer v_next = constant(0.0)
 
               init {
-                run init_u { out: out u }
-                run init_v { out: out v }
+                run init_u with(out: out u)
+                run init_v with(out: out v)
               }
               on click(continuous: true) {
-                run inject(value: 0.5, radius: 5) { target: out v }
+                run inject(value: 0.5, radius: 5) with(target: out v)
               }
               loop(iterations: 8) {
-                run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+                run gray_scott with(u_in: u, v_in: v, u_out: out u_next, v_out: out v_next)
                 display
-                swap u <-> u_next
-                swap v <-> v_next
+                swap u, u_next
+                swap v, v_next
               }
             }
             "#,
@@ -1261,16 +1255,19 @@ mod tests {
               buffer pressure_tmp = constant(0.0)
               buffer divergence = constant(0.0)
 
-              swap vx <-> vx0, vy <-> vy0, density <-> density0
-              run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
-              run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
+              swap vx, vx0
+              swap vy, vy0
+              swap density, density0
+              run advect with(vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density)
+              run divergence with(vx_in: vx, vy_in: vy, div_out: out divergence)
               loop(iterations: 40) {
-                run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
-                swap pressure <-> pressure_tmp
+                run jacobi with(div_in: divergence, p_in: pressure, p_out: out pressure_tmp)
+                swap pressure, pressure_tmp
               }
-              run project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              run project with(p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0)
               display
-              swap vx <-> vx0, vy <-> vy0
+              swap vx, vx0
+              swap vy, vy0
             }
             "#,
         )
@@ -1279,14 +1276,14 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels.len(), 4);
         assert_eq!(config.pipelines[0].buffers.len(), 9);
         let pipeline = config.pipelines.into_iter().next().unwrap();
-        assert_eq!(pipeline.steps.len(), 7); // swap, run, run, loop, run, display, swap
+        assert_eq!(pipeline.steps.len(), 10); // swap*3, run, run, loop, run, display, swap*2
     }
 
     #[test]
     fn parse_game_of_life() {
         let config = parse_str(
             r#"
-            var iterations: range(1..10) = 1
+            var iterations: range<u32>(1..10) = 1
 
             on key(space) paused = !paused
             on key(period) frame += 1
@@ -1303,17 +1300,17 @@ mod tests {
               buffer age_next = constant(0.0)
 
               init {
-                run init_state { out: out state }
+                run init_state with(out: out state)
               }
               on click(continuous: true) {
-                run inject(value: 1.0, radius: 3) { target: out state }
-                run inject(value: 0.0, radius: 3) { target: out age }
+                run inject(value: 1.0, radius: 3) with(target: out state)
+                run inject(value: 0.0, radius: 3) with(target: out age)
               }
               loop(iterations: iterations) {
-                run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
                 display
-                swap state <-> state_next
-                swap age <-> age_next
+                swap state, state_next
+                swap age, age_next
               }
             }
             "#,
@@ -1360,7 +1357,7 @@ mod tests {
     fn parse_var_with_wrap() {
         let config = parse_str(
             r#"
-            var mode: range(0..3, wrap: true) = 0
+            var mode: range<u32>(0..3, wrap: true) = 0
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -1417,7 +1414,7 @@ mod tests {
               buffer v = constant(0.0)
 
               loop(iterations: 8) {
-                run gray_scott { u_in: u, v_in: v, u_out: out u, v_out: out v }
+                run gray_scott with(u_in: u, v_in: v, u_out: out u, v_out: out v)
                 display
               }
             }
@@ -1430,10 +1427,10 @@ mod tests {
               buffer pixels = constant(0.0)
 
               loop(iterations: 8) {
-                run step { field_in: field, field_out: out field_next }
-                swap field <-> field_next
+                run step with(field_in: field, field_out: out field_next)
+                swap field, field_next
               }
-              run vis { field_in: field, pixels: out pixels }
+              run vis with(field_in: field, pixels: out pixels)
               display pixels
             }
             "#,

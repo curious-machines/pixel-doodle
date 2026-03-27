@@ -102,10 +102,6 @@
       "match": "\\b(swap)\\b",
       "name": "keyword.control.swap.pdp"
     },
-    "swap-arrow": {
-      "match": "<->",
-      "name": "keyword.operator.swap.pdp"
-    },
     "init-block": {
       "begin": "\\b(init)\\s*\\{",
       "beginCaptures": {
@@ -244,11 +240,12 @@
     "variable-declaration": {
       "patterns": [
         {
-          "match": "\\b(var|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(range)\\s*\\(",
+          "match": "\\b(var|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(range)\\s*<\\s*(u32|u64|f32|f64|i32|i64|bool)\\s*>\\s*\\(",
           "captures": {
             "1": { "name": "storage.modifier.pdp" },
             "2": { "name": "variable.other.pdp" },
-            "3": { "name": "support.function.range.pdp" }
+            "3": { "name": "support.function.range.pdp" },
+            "4": { "name": "storage.type.pdp" }
           }
         },
         {
@@ -310,10 +307,6 @@
     "operator": {
       "patterns": [
         {
-          "match": "<->",
-          "name": "keyword.operator.swap.pdp"
-        },
-        {
           "match": "\\.\\.(?!\\.)",
           "name": "keyword.operator.range.pdp"
         },
@@ -336,7 +329,7 @@
       ]
     },
     "identifier": {
-      "match": "\\b(constant|iterations|samples|continuous|radius|value|falloff|wrap|out|target)\\b",
+      "match": "\\b(constant|iterations|samples|continuous|radius|value|falloff|wrap|out|target|with)\\b",
       "name": "variable.parameter.pdp"
     }
   }

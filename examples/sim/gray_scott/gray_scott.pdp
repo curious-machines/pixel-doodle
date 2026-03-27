@@ -20,17 +20,17 @@ pipeline pd {
   buffer v_next = constant(0.0)
 
   init {
-    run init_u { out: out u }
-    run init_v { out: out v }
+    run init_u with(out: out u)
+    run init_v with(out: out v)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) { target: v, target_out: out v }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) with(target: v, target_out: out v)
   }
   loop(iterations: 8) {
-    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott with(u_in: u, v_in: v, u_out: out u_next, v_out: out v_next)
     display
-    swap u <-> u_next
-    swap v <-> v_next
+    swap u, u_next
+    swap v, v_next
   }
 }
 
@@ -46,17 +46,17 @@ pipeline pdir {
   buffer v_next = constant(0.0)
 
   init {
-    run init_u { out: out u }
-    run init_v { out: out v }
+    run init_u with(out: out u)
+    run init_v with(out: out v)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) { target: v, target_out: out v }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0) with(target: v, target_out: out v)
   }
   loop(iterations: 8) {
-    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott with(u_in: u, v_in: v, u_out: out u_next, v_out: out v_next)
     display
-    swap u <-> u_next
-    swap v <-> v_next
+    swap u, u_next
+    swap v, v_next
   }
 }
 
@@ -71,16 +71,16 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   init {
-    run init_field { field_out: out field }
+    run init_field with(field_out: out field)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) { buf_in: field, buf_out: out field_next }
-    swap field <-> field_next
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) with(buf_in: field, buf_out: out field_next)
+    swap field, field_next
   }
   loop(iterations: 8) {
-    run step { field_in: field, field_out: out field_next }
-    swap field <-> field_next
+    run step with(field_in: field, field_out: out field_next)
+    swap field, field_next
   }
-  run vis { field_in: field, pixels: out pixels }
+  run vis with(field_in: field, pixels: out pixels)
   display pixels
 }

@@ -59,6 +59,6 @@ kernel cornell_2d(x: f64, y: f64, px: u32, py: u32, sample_index: u32) -> u32 {
     // Reinhard tone map
     let mapped = radiance / (1.0 + radiance) * 255.0;
     let final_val = if in_box { 0.0 } else { max(mapped, 0.0) };
-    let v = final_val as u32;
+    let v = u32(final_val);
     emit pack_argb(v, v, v);
 }

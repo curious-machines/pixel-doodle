@@ -5,7 +5,7 @@ builtin var frame: u64
 builtin const mouse_x: f64
 builtin const mouse_y: f64
 
-var iterations: range(1..10) = 1
+var iterations: range<u32>(1..10) = 1
 
 on key(space) paused = !paused
 on key(period) frame += 1
@@ -23,17 +23,17 @@ pipeline pd {
   buffer age_next = constant(0.0)
 
   init {
-    run init_state { out: out state }
+    run init_state with(out: out state)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0, falloff_quadratic: 0) { target: state, target_out: out state }
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0, falloff_quadratic: 0) { target: age, target_out: out age }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
   }
   loop(iterations: iterations) {
-    run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+    run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
     display
-    swap state <-> state_next
-    swap age <-> age_next
+    swap state, state_next
+    swap age, age_next
   }
 }
 
@@ -48,16 +48,16 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   init {
-    run init_grid { grid: out grid }
+    run init_grid with(grid: out grid)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { buf_in: grid, buf_out: out grid_next }
-    swap grid <-> grid_next
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) with(buf_in: grid, buf_out: out grid_next)
+    swap grid, grid_next
   }
   loop(iterations: iterations) {
-    run step { grid_in: grid, grid_out: out grid_next }
-    swap grid <-> grid_next
+    run step with(grid_in: grid, grid_out: out grid_next)
+    swap grid, grid_next
   }
-  run vis { grid_in: grid, pixels: out pixels }
+  run vis with(grid_in: grid, pixels: out pixels)
   display pixels
 }

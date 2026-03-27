@@ -332,22 +332,20 @@ fn validate_steps(
             PipelineStep::Init { body, .. } => {
                 validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
-            PipelineStep::Swap { pairs, span } => {
-                for (a, b) in pairs {
-                    if !buffers.contains(a) {
-                        errors.push(ValidationError {
-                            line: span.line,
-                            col: span.col,
-                            message: format!("swap references undeclared buffer '{a}'"),
-                        });
-                    }
-                    if !buffers.contains(b) {
-                        errors.push(ValidationError {
-                            line: span.line,
-                            col: span.col,
-                            message: format!("swap references undeclared buffer '{b}'"),
-                        });
-                    }
+            PipelineStep::Swap { a, b, span } => {
+                if !buffers.contains(a.as_str()) {
+                    errors.push(ValidationError {
+                        line: span.line,
+                        col: span.col,
+                        message: format!("swap references undeclared buffer '{a}'"),
+                    });
+                }
+                if !buffers.contains(b.as_str()) {
+                    errors.push(ValidationError {
+                        line: span.line,
+                        col: span.col,
+                        message: format!("swap references undeclared buffer '{b}'"),
+                    });
                 }
             }
             PipelineStep::Loop {
@@ -468,7 +466,7 @@ mod tests {
               buffer a = constant(0.0)
               run test
               display
-              swap a <-> b
+              swap a, b
             }
             "#,
         );
@@ -732,7 +730,7 @@ mod tests {
               kernel "test.pd"
               buffer state = constant(0.0)
               on click(continuous: true) {
-                run inject(value: 1.0, radius: 3) { target: out state }
+                run inject(value: 1.0, radius: 3) with(target: out state)
               }
               run test
               display

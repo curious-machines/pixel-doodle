@@ -67,7 +67,7 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
 
-            var iterations: range(1..10) = 1
+            var iterations: range<u32>(1..10) = 1
 
             on key(space) paused = !paused
             on key(period) frame += 1
@@ -85,17 +85,17 @@ mod tests {
               buffer age_next = constant(0.0)
 
               init {
-                run init_state { out: out state }
+                run init_state with(out: out state)
               }
               on click(continuous: true) {
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) { target: state, target_out: out state }
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) { target: age, target_out: out age }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
               }
               loop(iterations: iterations) {
-                run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+                run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
                 display
-                swap state <-> state_next
-                swap age <-> age_next
+                swap state, state_next
+                swap age, age_next
               }
             }
             "#,
@@ -139,19 +139,22 @@ mod tests {
               buffer divergence = constant(0.0)
 
               on click(continuous: true) {
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
+                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
               }
-              swap vx <-> vx0, vy <-> vy0, density <-> density0
-              run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
-              run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
+              swap vx, vx0
+              swap vy, vy0
+              swap density, density0
+              run advect with(vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density)
+              run divergence with(vx_in: vx, vy_in: vy, div_out: out divergence)
               loop(iterations: 40) {
-                run jacobi { div_in: divergence, p_in: pressure, p_out: out pressure_tmp }
-                swap pressure <-> pressure_tmp
+                run jacobi with(div_in: divergence, p_in: pressure, p_out: out pressure_tmp)
+                swap pressure, pressure_tmp
               }
-              run project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+              run project with(p_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0)
               display
-              swap vx <-> vx0, vy <-> vy0
+              swap vx, vx0
+              swap vy, vy0
             }
             "#,
         )

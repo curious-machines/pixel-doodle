@@ -86,5 +86,5 @@ kernel gray_scott(px: u32, py: u32, width: u32, height: u32) -> u32
     let g_f = select(is_q2, g_12, g_34);
     let b_f = select(is_q2, b_12, b_34);
 
-    emit pack_argb(r_f as u32, g_f as u32, b_f as u32);
+    emit pack_argb(u32(r_f), u32(g_f), u32(b_f));
 }

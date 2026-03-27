@@ -21,17 +21,17 @@ pipeline pd {
   buffer vy_next = constant(0.0)
 
   init {
-    run init_h { out: out h }
+    run init_h with(out: out h)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) { target: h, target_out: out h }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) with(target: h, target_out: out h)
   }
   loop(iterations: 4) {
-    run shallow_water { h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next }
+    run shallow_water with(h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next)
     display
-    swap h <-> h_next
-    swap vx <-> vx_next
-    swap vy <-> vy_next
+    swap h, h_next
+    swap vx, vx_next
+    swap vy, vy_next
   }
 }
 
@@ -48,17 +48,17 @@ pipeline pdir {
   buffer vy_next = constant(0.0)
 
   init {
-    run init_h { out: out h }
+    run init_h with(out: out h)
   }
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) { target: h, target_out: out h }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) with(target: h, target_out: out h)
   }
   loop(iterations: 4) {
-    run shallow_water { h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next }
+    run shallow_water with(h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next)
     display
-    swap h <-> h_next
-    swap vx <-> vx_next
-    swap vy <-> vy_next
+    swap h, h_next
+    swap vx, vx_next
+    swap vy, vy_next
   }
 }
 
@@ -72,13 +72,13 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1, component: 0) { buf_in: field, buf_out: out field_next }
-    swap field <-> field_next
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1, component: 0) with(buf_in: field, buf_out: out field_next)
+    swap field, field_next
   }
   loop(iterations: 4) {
-    run step { field_in: field, field_out: out field_next }
-    swap field <-> field_next
+    run step with(field_in: field, field_out: out field_next)
+    swap field, field_next
   }
-  run vis { field_in: field, pixels: out pixels }
+  run vis with(field_in: field, pixels: out pixels)
   display pixels
 }

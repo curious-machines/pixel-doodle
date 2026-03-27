@@ -26,19 +26,22 @@ pipeline pd {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
   }
-  swap vx <-> vx0, vy <-> vy0, density <-> density0
-  run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
-  run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
+  swap vx, vx0
+  swap vy, vy0
+  swap density, density0
+  run advect with(vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density)
+  run divergence with(vx_in: vx, vy_in: vy, div_out: out divergence)
   loop(iterations: 40) {
-    run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
-    swap pressure <-> pressure_tmp
+    run jacobi with(div_in: divergence, press_in: pressure, press_out: out pressure_tmp)
+    swap pressure, pressure_tmp
   }
-  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project with(press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0)
   display
-  swap vx <-> vx0, vy <-> vy0
+  swap vx, vx0
+  swap vy, vy0
 }
 
 pipeline pdir {
@@ -59,19 +62,22 @@ pipeline pdir {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) { target: vy, target_out: out vy }
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) { target: density, target_out: out density }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
   }
-  swap vx <-> vx0, vy <-> vy0, density <-> density0
-  run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
-  run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
+  swap vx, vx0
+  swap vy, vy0
+  swap density, density0
+  run advect with(vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density)
+  run divergence with(vx_in: vx, vy_in: vy, div_out: out divergence)
   loop(iterations: 40) {
-    run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
-    swap pressure <-> pressure_tmp
+    run jacobi with(div_in: divergence, press_in: pressure, press_out: out pressure_tmp)
+    swap pressure, pressure_tmp
   }
-  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project with(press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0)
   display
-  swap vx <-> vx0, vy <-> vy0
+  swap vx, vx0
+  swap vy, vy0
 }
 
 pipeline gpu {
@@ -90,18 +96,18 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 0, component: 3) { buf_in: field, buf_out: out field_next }
-    swap field <-> field_next
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 0, component: 3) with(buf_in: field, buf_out: out field_next)
+    swap field, field_next
   }
-  run advect { field_in: field, field_out: out field_next }
-  swap field <-> field_next
-  run divergence { field_in: field, div_out: out div_buf }
+  run advect with(field_in: field, field_out: out field_next)
+  swap field, field_next
+  run divergence with(field_in: field, div_out: out div_buf)
   loop(iterations: 40) {
-    run jacobi { div_in: div_buf, press_in: press_a, press_out: out press_b }
-    swap press_a <-> press_b
+    run jacobi with(div_in: div_buf, press_in: press_a, press_out: out press_b)
+    swap press_a, press_b
   }
-  run project { pressure: press_a, field_in: field, field_out: out field_next }
-  swap field <-> field_next
-  run vis { field_in: field, pixels: out pixels }
+  run project with(pressure: press_a, field_in: field, field_out: out field_next)
+  swap field, field_next
+  run vis with(field_in: field, pixels: out pixels)
   display pixels
 }

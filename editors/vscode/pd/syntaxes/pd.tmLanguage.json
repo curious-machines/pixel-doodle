@@ -43,10 +43,6 @@
           "name": "keyword.control.pd"
         },
         {
-          "match": "\\b(as)\\b",
-          "name": "keyword.operator.cast.pd"
-        },
-        {
           "match": "->",
           "name": "keyword.operator.arrow.pd"
         }

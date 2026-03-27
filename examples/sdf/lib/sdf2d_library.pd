@@ -433,7 +433,7 @@ fn sd_rounded_cross(p: vec2<f64>, h: f64) -> f64 {
 // --- Star -------------------------------------------------------------------
 
 fn sd_star(p: vec2<f64>, r: f64, n: u32, m: f64) -> f64 {
-    let an = 3.141593 / (n as f64);
+    let an = 3.141593 / f64(n);
     let en = 3.141593 / m;
     let acs = vec2(cos(an), sin(an));
     let ecs = vec2(cos(en), sin(en));

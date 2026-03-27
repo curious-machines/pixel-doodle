@@ -24,6 +24,8 @@ pub enum Token {
     On,
     Key,
     Click,
+    // Buffer bindings keyword
+    With,
     // Include
     Include,
     // Settings
@@ -51,8 +53,6 @@ pub enum Token {
     Star,
     Slash,
     Bang,     // ! (for boolean toggle)
-    // Swap arrow
-    SwapArrow, // <->
     // Angle brackets (for parameterized types)
     Lt,       // <
     Gt,       // >
@@ -88,6 +88,7 @@ impl fmt::Display for Token {
             Token::On => write!(f, "on"),
             Token::Key => write!(f, "key"),
             Token::Click => write!(f, "click"),
+            Token::With => write!(f, "with"),
             Token::Include => write!(f, "include"),
             Token::Settings => write!(f, "settings"),
             Token::Title => write!(f, "title"),
@@ -109,7 +110,6 @@ impl fmt::Display for Token {
             Token::Star => write!(f, "*"),
             Token::Slash => write!(f, "/"),
             Token::Bang => write!(f, "!"),
-            Token::SwapArrow => write!(f, "<->"),
             Token::Lt => write!(f, "<"),
             Token::Gt => write!(f, ">"),
             Token::LParen => write!(f, "("),

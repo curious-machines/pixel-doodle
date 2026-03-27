@@ -75,7 +75,7 @@ pipeline pdir {
 
 pipeline gpu {
   pixel kernel "mandelbrot.wgsl"
-  run mandelbrot { pixels: out pixels }
+  run mandelbrot with(pixels: out pixels)
   display pixels
 }
 ```
@@ -167,16 +167,16 @@ Mutable values that can be modified by key bindings and referenced by pipeline c
 
 ```
 gravity = 9.8                              # simple variable, no bounds
-iterations: range(1..10) = 8              # clamped to [1, 10]
-color_mode: range(0..3, wrap: true) = 0   # wraps around at boundaries
+iterations: range<u32>(1..10) = 8              # clamped to [1, 10]
+color_mode: range<u32>(0..3, wrap: true) = 0   # wraps around at boundaries
 paused = false                             # boolean (stored as 0.0/1.0)
 ```
 
 ### Range syntax
 
 ```
-name: range(min..max) = default
-name: range(min..max, wrap: true) = default
+name: range<type>(min..max) = default
+name: range<type>(min..max, wrap: true) = default
 ```
 
 - Without `wrap`: values are clamped to `[min, max]`
@@ -265,7 +265,7 @@ on key(0) {
 | `var = var / literal` | Expanded divide form |
 | `quit` | Exit the application |
 
-Variables with `range()` are automatically clamped or wrapped after modification.
+Variables with `range<type>()` are automatically clamped or wrapped after modification.
 
 ### Key names
 
@@ -310,13 +310,13 @@ Included content is merged into the including file as if written inline.
 run kernel_name                                              # no I/O (pixel kernel)
 run mandelbrot(max_iter: 256)                                # user-defined argument
 run mandelbrot(max_iter: max_iters)                          # argument from a variable
-run inject(value: 1.0, radius: 5) { target: out state }     # built-in inject
-run advect { vx_in: vx0, den_in: density0, vx_out: out vx } # sim kernel with bindings
+run inject(value: 1.0, radius: 5) with(target: out state)     # built-in inject
+run advect with(vx_in: vx0, den_in: density0, vx_out: out vx) # sim kernel with bindings
 ```
 
 - **Arguments**: `(name: value, ...)` passed to user-defined kernel parameters (see below)
-- **Buffer bindings**: `{ param: buffer, ... }` maps kernel buffer slots to pipeline buffers
-- **Output bindings**: use the `out` qualifier to mark write buffers: `{ slot: out buffer }`
+- **Buffer bindings**: `with(param: buffer, ...)` maps kernel buffer slots to pipeline buffers
+- **Output bindings**: use the `out` qualifier to mark write buffers: `with(slot: out buffer)`
 
 #### User-defined kernel arguments
 
@@ -340,7 +340,7 @@ Argument values can be:
 - **Variable references**: bare identifiers that resolve to a declared variable or intrinsic
 
 ```
-max_iters: range(10..500) = 256
+max_iters: range<u32>(10..500) = 256
 on key(up) max_iters += 10
 on key(down) max_iters -= 10
 
@@ -371,7 +371,7 @@ Every pipeline must have at least one `display` step.
 **GPU pipelines**: Compute shaders run entirely on the GPU and the runtime cannot inject a hidden buffer. Use `display buffer_name` to identify which `gpu(u32)` buffer contains the pixel output:
 
 ```
-run vis { grid_in: grid, pixels: out pixels }
+run vis with(grid_in: grid, pixels: out pixels)
 display pixels
 ```
 
@@ -381,8 +381,8 @@ The `init { }` block contains steps that execute exactly once before the first f
 
 ```
 init {
-  run init_state { out: out state }
-  run init_age { age: out age }
+  run init_state with(out: out state)
+  run init_age with(age: out age)
 }
 ```
 
@@ -391,11 +391,12 @@ Steps inside `init` follow the same syntax as regular pipeline steps (`run`, `sw
 ### `swap` — Swap buffers
 
 ```
-swap u <-> u_next
-swap vx <-> vx0, vy <-> vy0, density <-> density0
+swap u, u_next
+swap vx, vx0
+swap vy, vy0
 ```
 
-Swaps buffer contents by pointer (O(1), no copying). Multiple pairs can be comma-separated.
+Swaps buffer contents by pointer (O(1), no copying). One pair per statement.
 
 ### `loop` — Repeat within a frame
 
@@ -424,8 +425,8 @@ Each frame renders one sample. Results are accumulated and averaged for display.
 
 ```
 on click(continuous: true) {
-  run inject(value: 1.0, radius: 3) { target: out state }
-  run inject(value: 0.0, radius: 3) { target: out age }
+  run inject(value: 1.0, radius: 3) with(target: out state)
+  run inject(value: 0.0, radius: 3) with(target: out age)
 }
 ```
 
@@ -438,8 +439,8 @@ on click(continuous: true) {
 Writes a value into a buffer around the current mouse position:
 
 ```
-run inject(value: 0.5, radius: 5) { target: out buf }
-run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out buf }
+run inject(value: 0.5, radius: 5) with(target: out buf)
+run inject(value: -3.0, radius: 15, falloff: "quadratic") with(target: out buf)
 ```
 
 | Parameter | Description |
@@ -504,7 +505,7 @@ pipeline pdir {
 pipeline gpu {
   pixel kernel "mandelbrot.wgsl"
   buffer pixels: gpu(u32) = constant(0)
-  run mandelbrot { pixels: out pixels }
+  run mandelbrot with(pixels: out pixels)
   display pixels
 }
 ```
@@ -528,17 +529,17 @@ pipeline pd {
   buffer v_next = constant(0.0)
 
   init {
-    run init_u { out: out u }
-    run init_v { out: out v }
+    run init_u with(out: out u)
+    run init_v with(out: out v)
   }
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 5) { target: out v }
+    run inject(value: 0.5, radius: 5) with(target: out v)
   }
   loop(iterations: 8) {
-    run gray_scott { u_in: u, v_in: v, u_out: out u_next, v_out: out v_next }
+    run gray_scott with(u_in: u, v_in: v, u_out: out u_next, v_out: out v_next)
     display
-    swap u <-> u_next
-    swap v <-> v_next
+    swap u, u_next
+    swap v, v_next
   }
 }
 
@@ -551,13 +552,13 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 5) { target: out field }
+    run inject(value: 0.5, radius: 5) with(target: out field)
   }
   loop(iterations: 8) {
-    run step { field_in: field, field_out: out field_next }
-    swap field <-> field_next
+    run step with(field_in: field, field_out: out field_next)
+    swap field, field_next
   }
-  run vis { field_in: field, pixels: out pixels }
+  run vis with(field_in: field, pixels: out pixels)
   display pixels
 }
 ```
@@ -587,19 +588,22 @@ pipeline pd {
   buffer divergence = constant(0.0)
 
   on click(continuous: true) {
-    run inject(value: -3.0, radius: 15, falloff: "quadratic") { target: out vy }
-    run inject(value: 0.5, radius: 15, falloff: "quadratic") { target: out density }
+    run inject(value: -3.0, radius: 15, falloff: "quadratic") with(target: out vy)
+    run inject(value: 0.5, radius: 15, falloff: "quadratic") with(target: out density)
   }
-  swap vx <-> vx0, vy <-> vy0, density <-> density0
-  run advect { vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density }
-  run divergence { vx_in: vx, vy_in: vy, div_out: out divergence }
+  swap vx, vx0
+  swap vy, vy0
+  swap density, density0
+  run advect with(vx_in: vx0, vy_in: vy0, den_in: density0, vx_out: out vx, vy_out: out vy, den_out: out density)
+  run divergence with(vx_in: vx, vy_in: vy, div_out: out divergence)
   loop(iterations: 40) {
-    run jacobi { div_in: divergence, press_in: pressure, press_out: out pressure_tmp }
-    swap pressure <-> pressure_tmp
+    run jacobi with(div_in: divergence, press_in: pressure, press_out: out pressure_tmp)
+    swap pressure, pressure_tmp
   }
-  run project { press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0 }
+  run project with(press_in: pressure, vx_in: vx, vy_in: vy, den_in: density, vx_out: out vx0, vy_out: out vy0)
   display
-  swap vx <-> vx0, vy <-> vy0
+  swap vx, vx0
+  swap vy, vy0
 }
 ```
 
@@ -608,7 +612,7 @@ pipeline pd {
 ```
 title = "Game of Life"
 
-iterations: range(1..10) = 1
+iterations: range<u32>(1..10) = 1
 
 on key(space) paused = !paused
 on key(period) frame += 1
@@ -625,17 +629,17 @@ pipeline pd {
   buffer age_next = constant(0.0)
 
   init {
-    run init_state { out: out state }
+    run init_state with(out: out state)
   }
   on click(continuous: true) {
-    run inject(value: 1.0, radius: 3) { target: out state }
-    run inject(value: 0.0, radius: 3) { target: out age }
+    run inject(value: 1.0, radius: 3) with(target: out state)
+    run inject(value: 0.0, radius: 3) with(target: out age)
   }
   loop(iterations: iterations) {
-    run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+    run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
     display
-    swap state <-> state_next
-    swap age <-> age_next
+    swap state, state_next
+    swap age, age_next
   }
 }
 ```

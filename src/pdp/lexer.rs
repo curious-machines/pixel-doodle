@@ -104,6 +104,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "on" => Token::On,
                 "key" => Token::Key,
                 "click" => Token::Click,
+                "with" => Token::With,
                 "include" => Token::Include,
                 "settings" => Token::Settings,
                 "title" => Token::Title,
@@ -164,8 +165,6 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
         };
 
         let (token, len) = match (ch, next, next2) {
-            // <-> swap arrow (must check before < alone)
-            ('<', Some('-'), Some('>')) => (Token::SwapArrow, 3),
             // Compound assignment
             ('+', Some('='), _) => (Token::PlusEq, 2),
             ('-', Some('='), _) => (Token::MinusEq, 2),
@@ -237,11 +236,11 @@ mod tests {
     }
 
     #[test]
-    fn lex_swap_arrow() {
-        let tokens = lex("swap u <-> v").unwrap();
+    fn lex_swap_comma() {
+        let tokens = lex("swap u, v").unwrap();
         assert!(matches!(tokens[0].token, Token::Swap));
         assert!(matches!(tokens[1].token, Token::Ident(_)));
-        assert!(matches!(tokens[2].token, Token::SwapArrow));
+        assert!(matches!(tokens[2].token, Token::Comma));
         assert!(matches!(tokens[3].token, Token::Ident(_)));
     }
 
@@ -255,17 +254,20 @@ mod tests {
 
     #[test]
     fn lex_range() {
-        let tokens = lex("iterations: range(1..10) = 8").unwrap();
+        let tokens = lex("iterations: range<u32>(1..10) = 8").unwrap();
         assert!(matches!(tokens[0].token, Token::Ident(_)));
         assert!(matches!(tokens[1].token, Token::Colon));
         assert!(matches!(tokens[2].token, Token::Range));
-        assert!(matches!(tokens[3].token, Token::LParen));
-        assert!(matches!(tokens[4].token, Token::IntLit(1)));
-        assert!(matches!(tokens[5].token, Token::DotDot));
-        assert!(matches!(tokens[6].token, Token::IntLit(10)));
-        assert!(matches!(tokens[7].token, Token::RParen));
-        assert!(matches!(tokens[8].token, Token::Eq));
-        assert!(matches!(tokens[9].token, Token::IntLit(8)));
+        assert!(matches!(tokens[3].token, Token::Lt));
+        assert!(matches!(tokens[4].token, Token::Ident(ref s) if s == "u32"));
+        assert!(matches!(tokens[5].token, Token::Gt));
+        assert!(matches!(tokens[6].token, Token::LParen));
+        assert!(matches!(tokens[7].token, Token::IntLit(1)));
+        assert!(matches!(tokens[8].token, Token::DotDot));
+        assert!(matches!(tokens[9].token, Token::IntLit(10)));
+        assert!(matches!(tokens[10].token, Token::RParen));
+        assert!(matches!(tokens[11].token, Token::Eq));
+        assert!(matches!(tokens[12].token, Token::IntLit(8)));
     }
 
     #[test]
@@ -276,13 +278,16 @@ mod tests {
 
     #[test]
     fn lex_range_float() {
-        let tokens = lex("range(1.0..20.0)").unwrap();
+        let tokens = lex("range<f64>(1.0..20.0)").unwrap();
         assert!(matches!(tokens[0].token, Token::Range));
-        assert!(matches!(tokens[1].token, Token::LParen));
-        assert!(matches!(tokens[2].token, Token::FloatLit(v) if (v - 1.0).abs() < 1e-10));
-        assert!(matches!(tokens[3].token, Token::DotDot));
-        assert!(matches!(tokens[4].token, Token::FloatLit(v) if (v - 20.0).abs() < 1e-10));
-        assert!(matches!(tokens[5].token, Token::RParen));
+        assert!(matches!(tokens[1].token, Token::Lt));
+        assert!(matches!(tokens[2].token, Token::Ident(ref s) if s == "f64"));
+        assert!(matches!(tokens[3].token, Token::Gt));
+        assert!(matches!(tokens[4].token, Token::LParen));
+        assert!(matches!(tokens[5].token, Token::FloatLit(v) if (v - 1.0).abs() < 1e-10));
+        assert!(matches!(tokens[6].token, Token::DotDot));
+        assert!(matches!(tokens[7].token, Token::FloatLit(v) if (v - 20.0).abs() < 1e-10));
+        assert!(matches!(tokens[8].token, Token::RParen));
     }
 
     #[test]
@@ -312,7 +317,7 @@ mod tests {
         assert!(matches!(tokens[0].token, Token::Builtin));
         assert!(matches!(tokens[1].token, Token::Var));
 
-        let tokens = lex("var iterations: range(1..10) = 1").unwrap();
+        let tokens = lex("var iterations: range<u32>(1..10) = 1").unwrap();
         assert!(matches!(tokens[0].token, Token::Var));
         assert!(matches!(tokens[1].token, Token::Ident(ref s) if s == "iterations"));
 

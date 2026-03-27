@@ -11,7 +11,7 @@ kernel mandelbrot(x: f64, y: f64) -> u32 {
     }
 
     let is_inside = iter == 256;
-    let t = iter as f64 / 256.0;
+    let t = f64(iter) / 256.0;
     let omt = 1.0 - t;
 
     // Polynomial color mapping

@@ -16,8 +16,8 @@ kernel inject(px: u32, py: u32, width: u32, height: u32,
               value: f64, falloff_quadratic: u32) -> u32
   buffers(target: read, target_out: write)
 {
-    let x = px as f64;
-    let y = py as f64;
+    let x = f64(px);
+    let y = f64(py);
     let dx = x - inject_x;
     let dy = y - inject_y;
     let d2 = dx * dx + dy * dy;

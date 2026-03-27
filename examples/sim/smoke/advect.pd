@@ -14,22 +14,22 @@ kernel smoke_advect(px: u32, py: u32, width: u32, height: u32) -> u32
 
     let wm1 = width - 1;
     let hm1 = height - 1;
-    let max_x = (wm1 as f64) - 0.001;
-    let max_y = (hm1 as f64) - 0.001;
+    let max_x = f64(wm1) - 0.001;
+    let max_y = f64(hm1) - 0.001;
 
     // Read velocity at current cell
     let cur_vx = buf_load(vx_in, px, py);
     let cur_vy = buf_load(vy_in, px, py);
 
     // Trace backward and clamp
-    let src_x = clamp((px as f64) - dt * cur_vx, 0.0, max_x);
-    let src_y = clamp((py as f64) - dt * cur_vy, 0.0, max_y);
+    let src_x = clamp(f64(px) - dt * cur_vx, 0.0, max_x);
+    let src_y = clamp(f64(py) - dt * cur_vy, 0.0, max_y);
 
     // Bilinear interpolation coordinates
     let fx = floor(src_x);
     let fy = floor(src_y);
-    let x0 = fx as u32;
-    let y0 = fy as u32;
+    let x0 = u32(fx);
+    let y0 = u32(fy);
     let x1 = min(x0 + 1, wm1);
     let y1 = min(y0 + 1, hm1);
     let s = src_x - fx;

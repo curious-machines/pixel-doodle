@@ -550,18 +550,16 @@ impl Runtime {
                     // Skip during normal frame execution
                     let _ = body;
                 }
-                PipelineStep::Swap { pairs, .. } => {
-                    for (a, b) in pairs {
-                        // Try CPU buffers first, then GPU
-                        if self.buffers.contains_key(a) {
-                            let mut buf_a = self.buffers.remove(a).unwrap();
-                            let mut buf_b = self.buffers.remove(b).unwrap();
-                            std::mem::swap(&mut buf_a, &mut buf_b);
-                            self.buffers.insert(a.clone(), buf_a);
-                            self.buffers.insert(b.clone(), buf_b);
-                        } else if let Some(runner) = &mut self.gpu_sim_runner {
-                            runner.swap_buffers(a, b);
-                        }
+                PipelineStep::Swap { a, b, .. } => {
+                    // Try CPU buffers first, then GPU
+                    if self.buffers.contains_key(a.as_str()) {
+                        let mut buf_a = self.buffers.remove(a).unwrap();
+                        let mut buf_b = self.buffers.remove(b).unwrap();
+                        std::mem::swap(&mut buf_a, &mut buf_b);
+                        self.buffers.insert(a.clone(), buf_a);
+                        self.buffers.insert(b.clone(), buf_b);
+                    } else if let Some(runner) = &mut self.gpu_sim_runner {
+                        runner.swap_buffers(a, b);
                     }
                 }
                 PipelineStep::Loop { iterations, body, .. } => {

@@ -90,7 +90,7 @@ For example, `vec2<f64>` is a 2-component vector of f64, `vec3<f32>` is a 3-comp
 
 User-defined value types (see the Structs section below).
 
-There are no implicit conversions between scalar types. Use `as` casts or conversion functions to move between types. Vec and matrix types support arithmetic operators with automatic dispatch (see Vector types below).
+There are no implicit conversions between scalar types. Use type casts (e.g., `u32(expr)`) or conversion functions to move between types. Vec and matrix types support arithmetic operators with automatic dispatch (see Vector types below).
 
 ## Variables
 
@@ -185,33 +185,32 @@ Operands must be the same type (any numeric scalar). The result is always `bool`
 
 | Precedence | Operators                  |
 |------------|----------------------------|
-| 1 (highest)| `as` (type cast)           |
-| 2          | `*` `/` `%`                |
-| 3          | `+` `-`                    |
-| 4          | `<<` `>>`                  |
-| 5          | `&`                        |
-| 6          | `^`                        |
-| 7          | `\|`                       |
-| 8          | `<` `<=` `>` `>=`          |
-| 9          | `==` `!=`                  |
-| 10         | `&&`                       |
-| 11 (lowest)| `\|\|`                     |
+| 1 (highest)| `*` `/` `%`                |
+| 2          | `+` `-`                    |
+| 3          | `<<` `>>`                  |
+| 4          | `&`                        |
+| 5          | `^`                        |
+| 6          | `\|`                       |
+| 7          | `<` `<=` `>` `>=`          |
+| 8          | `==` `!=`                  |
+| 9          | `&&`                       |
+| 10 (lowest)| `\|\|`                     |
 
 Parentheses `()` can override precedence.
 
 ## Type casts
 
-Use `as` to convert between numeric types:
+Use the target type as a function call to convert between numeric types:
 
 ```
-let channel = intensity as u32;
-let coord = pixel_count as f64;
-let small = big_value as u8;
-let wide = narrow as f64;
-let signed = x as i32;
+let channel = u32(intensity);
+let coord = f64(pixel_count);
+let small = u8(big_value);
+let wide = f64(narrow);
+let signed = i32(x);
 ```
 
-Any scalar-to-scalar cast is valid, except casts involving `bool`. For example: `f64 as i32`, `u8 as f64`, `i16 as u32`, `f32 as f64` are all permitted.
+Any scalar-to-scalar cast is valid, except casts involving `bool`. For example: `i32(some_f64)`, `f64(some_u8)`, `u32(some_i16)`, `f64(some_f32)` are all permitted. Casts are primary expressions (same precedence as literals and function calls).
 
 ## If-else expressions
 

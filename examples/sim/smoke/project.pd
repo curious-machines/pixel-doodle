@@ -37,6 +37,6 @@ kernel smoke_project(px: u32, py: u32, width: u32, height: u32) -> u32
 
     // Visualization: density -> grayscale
     let den = clamp(buf_load(den_in, px, py), 0.0, 1.0);
-    let v = (den * 255.0) as u32;
+    let v = u32(den * 255.0);
     emit pack_argb(v, v, v);
 }

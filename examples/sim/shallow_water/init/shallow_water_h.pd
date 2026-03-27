@@ -3,8 +3,8 @@
 kernel init_shallow_water_h(px: u32, py: u32, width: u32, height: u32) -> u32
   buffers(out: write)
 {
-    let fx = px as f64 / width as f64;
-    let fy = py as f64 / height as f64;
+    let fx = f64(px) / f64(width);
+    let fy = f64(py) / f64(height);
 
     // Central bump
     let dx1 = fx - 0.5;

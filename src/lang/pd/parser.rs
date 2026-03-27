@@ -533,20 +533,6 @@ impl Parser {
                 Token::Star => (BinOpKind::Mul, (20, 21)),
                 Token::Slash => (BinOpKind::Div, (20, 21)),
                 Token::Percent => (BinOpKind::Rem, (20, 21)),
-                Token::As => {
-                    if min_bp > 22 {
-                        break;
-                    }
-                    let span = self.span();
-                    self.advance(); // as
-                    let ty = self.parse_type()?;
-                    lhs = Expr::Cast {
-                        expr: Box::new(lhs),
-                        ty,
-                        span,
-                    };
-                    continue;
-                }
                 _ => break,
             };
 
@@ -677,6 +663,20 @@ impl Parser {
                 let span = self.span();
                 self.advance();
                 Ok(Expr::BoolLit(false, span))
+            }
+            // Scalar type casts: u32(expr), f64(expr), etc.
+            Token::TyF32 | Token::TyF64 |
+            Token::TyI8  | Token::TyU8  |
+            Token::TyI16 | Token::TyU16 |
+            Token::TyI32 | Token::TyU32 |
+            Token::TyI64 | Token::TyU64 |
+            Token::TyBool => {
+                let span = self.span();
+                let ty = self.parse_type()?;
+                self.expect(&Token::LParen)?;
+                let expr = self.parse_expr()?;
+                self.expect(&Token::RParen)?;
+                Ok(Expr::Cast { expr: Box::new(expr), ty, span })
             }
             // vec2(...), vec3(...), vec4(...), mat2(...), mat3(...), mat4(...) constructors
             Token::TyVec2 | Token::TyVec3 | Token::TyVec4 |
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn cast_expr() {
-        let expr = parse_expr_str("x as u32");
+        let expr = parse_expr_str("u32(x)");
         assert!(matches!(expr, Expr::Cast { ty: ValType::U32, .. }));
     }
 
@@ -845,7 +845,7 @@ mod tests {
         let src = r#"
             kernel test(x: f64, y: f64) -> u32 {
                 let r = x * 255.0;
-                emit r as u32;
+                emit u32(r);
             }
         "#;
         let tokens = lex(src).unwrap();

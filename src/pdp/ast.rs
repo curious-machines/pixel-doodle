@@ -137,6 +137,7 @@ pub enum Mutability {
 
 #[derive(Debug, Clone)]
 pub struct RangeSpec {
+    pub ty: BuiltinType,
     pub min: f64,
     pub max: f64,
     pub wrap: bool,
@@ -262,9 +263,10 @@ pub enum PipelineStep {
         body: Vec<PipelineStep>,
         span: Span,
     },
-    /// `swap a <-> b, c <-> d`
+    /// `swap a, b`
     Swap {
-        pairs: Vec<(String, String)>,
+        a: String,
+        b: String,
         span: Span,
     },
     /// `loop(iterations: N) { steps }`
