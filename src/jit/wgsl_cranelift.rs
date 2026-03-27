@@ -30,6 +30,7 @@ use naga::{
 /// The function iterates all rows/cols internally.
 pub type WgslKernelFn = unsafe extern "C" fn(
     output: *mut u32,
+    accum: *mut f32,  // accumulation buffer (may be null)
     params: *const u8,
     width: u32,
     height: u32,
@@ -72,9 +73,10 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     let jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     let mut jit_module = JITModule::new(jit_builder);
 
-    // Build the function signature: (output, params, width, height, stride) -> void
+    // Build the function signature: (output, accum, params, width, height, stride) -> void
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(I64)); // output: *mut u32
+    sig.params.push(AbiParam::new(I64)); // accum: *mut f32
     sig.params.push(AbiParam::new(I64)); // params: *const u8
     sig.params.push(AbiParam::new(I32)); // width: u32
     sig.params.push(AbiParam::new(I32)); // height: u32
@@ -100,10 +102,11 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
 
         // Extract function parameters.
         let p_output = builder.block_params(entry_block)[0];
-        let p_params = builder.block_params(entry_block)[1];
-        let p_width = builder.block_params(entry_block)[2];
-        let p_height = builder.block_params(entry_block)[3];
-        let p_stride = builder.block_params(entry_block)[4];
+        let p_accum = builder.block_params(entry_block)[1];
+        let p_params = builder.block_params(entry_block)[2];
+        let p_width = builder.block_params(entry_block)[3];
+        let p_height = builder.block_params(entry_block)[4];
+        let p_stride = builder.block_params(entry_block)[5];
 
         // Build row/col loop: for row in 0..height { for col in 0..width { ... } }
         let loop_header_row = builder.create_block();
@@ -152,6 +155,7 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
             &mut builder,
             &mut jit_module,
             p_output,
+            p_accum,
             p_params,
             p_width,
             p_height,
@@ -198,9 +202,11 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     }
 
     let mut ctx = cranelift_codegen::Context::for_function(func);
-    jit_module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| format!("define_function: {e}"))?;
+    if let Err(e) = jit_module.define_function(func_id, &mut ctx) {
+        // Print the Cranelift IR for debugging.
+        eprintln!("Cranelift IR:\n{}", ctx.func.display());
+        return Err(format!("define_function: {e:#}"));
+    }
     jit_module.finalize_definitions().unwrap();
 
     let code_ptr = jit_module.get_finalized_function(func_id);
@@ -220,11 +226,14 @@ struct BindingInfo {
     /// Byte offset of each Params struct member.
     params_offsets: Vec<u32>,
     output_global: Handle<naga::GlobalVariable>,
+    /// Accumulation buffer (binding 2), if present.
+    accum_global: Option<Handle<naga::GlobalVariable>>,
 }
 
 fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     let mut params_global = None;
     let mut output_global = None;
+    let mut accum_global = None;
 
     for (handle, gv) in module.global_variables.iter() {
         let binding = match &gv.binding {
@@ -235,6 +244,7 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
         match binding.binding {
             0 => params_global = Some(handle),
             1 => output_global = Some(handle),
+            2 => accum_global = Some(handle),
             _ => {}
         }
     }
@@ -255,6 +265,7 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
         params_global: params_handle,
         params_offsets: offsets,
         output_global: output_handle,
+        accum_global,
     })
 }
 
@@ -273,6 +284,7 @@ struct ShaderCompiler<'a, 'b> {
     call_results: HashMap<Handle<Expression>, Vec<cranelift_codegen::ir::Value>>,
     // Function parameters.
     p_output: cranelift_codegen::ir::Value,
+    p_accum: cranelift_codegen::ir::Value,
     p_params: cranelift_codegen::ir::Value,
     #[allow(dead_code)]
     p_width: cranelift_codegen::ir::Value,
@@ -323,6 +335,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         builder: &'b mut FunctionBuilder<'a>,
         jit_module: &'b mut JITModule,
         p_output: cranelift_codegen::ir::Value,
+        p_accum: cranelift_codegen::ir::Value,
         p_params: cranelift_codegen::ir::Value,
         p_width: cranelift_codegen::ir::Value,
         p_height: cranelift_codegen::ir::Value,
@@ -339,6 +352,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             local_vars: HashMap::new(),
             call_results: HashMap::new(),
             p_output,
+            p_accum,
             p_params,
             p_width,
             p_height,
@@ -505,8 +519,19 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 &self.naga_module.types[func.local_variables[*lv].ty].inner
             }
             Expression::FunctionArgument(idx) => {
-                if *idx == 0 { return &TY_VEC3_U32; }
-                &TY_U32
+                if let Some(arg) = func.arguments.get(*idx as usize) {
+                    return &self.naga_module.types[arg.ty].inner;
+                }
+                // Entry point with no declared arguments — arg 0 is gid
+                &TY_VEC3_U32
+            }
+            Expression::Access { base, .. } => {
+                let base_ty = self.resolve_expr_type(*base, func);
+                match base_ty {
+                    TypeInner::Array { base: elem_ty, .. } => &self.naga_module.types[*elem_ty].inner,
+                    TypeInner::Vector { scalar, .. } => scalar_static_type(scalar.kind, scalar.width),
+                    _ => base_ty,
+                }
             }
             Expression::As { expr, kind, convert } => {
                 let width = match self.resolve_expr_type(*expr, func) {
@@ -613,6 +638,8 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     vec![self.p_params]
                 } else if *gv == self.analysis.output_global {
                     vec![self.p_output]
+                } else if self.analysis.accum_global == Some(*gv) {
+                    vec![self.p_accum]
                 } else {
                     return Err(format!("unsupported global variable: {gv:?}"));
                 }
@@ -655,6 +682,11 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         let base_vals = self.get_expr(*base);
                         vec![base_vals[*index as usize]]
                     }
+                    TypeInner::Scalar(_) => {
+                        // Scalar accessed with index 0 — just return the value.
+                        let base_vals = self.get_expr(*base);
+                        vec![base_vals[0]]
+                    }
                     _ => return Err(format!("AccessIndex on unsupported type: {base_ty:?}")),
                 }
             }
@@ -673,8 +705,20 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         let byte_offset = self.builder.ins().imul_imm(idx_i64, elem_size as i64);
                         let addr = self.builder.ins().iadd(base_val, byte_offset);
                         let cl_ty = self.naga_type_to_cl(elem_inner);
-                        let val = self.builder.ins().load(cl_ty, MemFlags::trusted(), addr, 0);
-                        vec![val]
+                        let n_components = self.type_component_count(elem_inner);
+                        if n_components == 1 {
+                            let val = self.builder.ins().load(cl_ty, MemFlags::trusted(), addr, 0);
+                            vec![val]
+                        } else {
+                            // Load N components (e.g. vec4<f32> = 4 × f32).
+                            let component_size = match elem_inner {
+                                TypeInner::Vector { scalar, .. } => scalar.width as i32,
+                                _ => 4,
+                            };
+                            (0..n_components as i32)
+                                .map(|i| self.builder.ins().load(cl_ty, MemFlags::trusted(), addr, i * component_size))
+                                .collect()
+                        }
                     }
                     TypeInner::Vector { .. } => {
                         let base_vals = self.get_expr(*base).to_vec();
@@ -1035,6 +1079,11 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         dst_kind: ScalarKind,
         convert: Option<u8>,
     ) -> Result<cranelift_codegen::ir::Value, String> {
+        // Same type → noop.
+        let dst_width = convert.unwrap_or(src.width);
+        if src.kind == dst_kind && src.width == dst_width {
+            return Ok(val);
+        }
         Ok(match convert {
             Some(width) => match (src.kind, src.width, dst_kind, width) {
                 (ScalarKind::Uint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_uint(F32, val),
@@ -1093,7 +1142,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             }
 
             Statement::If { condition, accept, reject } => {
-                // condition should already be evaluated by an Emit before this If
+                self.eval_expr(*condition, func)?;
                 let cond = self.get_expr_scalar(*condition);
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
@@ -1130,12 +1179,13 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             }
 
             Statement::Store { pointer, value } => {
-                let val = self.get_expr_scalar(*value);
+                self.eval_expr(*value, func)?;
+                self.eval_expr(*pointer, func)?;
+                let src_vals = self.get_expr(*value).to_vec();
                 let ptr_expr = &func.expressions[*pointer];
                 match ptr_expr {
                     Expression::LocalVariable(lv) => {
                         let vars = self.local_vars[lv].clone();
-                        let src_vals = self.get_expr(*value).to_vec();
                         for (i, v) in vars.iter().enumerate() {
                             if i < src_vals.len() {
                                 self.builder.def_var(*v, src_vals[i]);
@@ -1145,12 +1195,21 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     Expression::Access { base, index } => {
                         let base_expr = &func.expressions[*base];
                         if let Expression::GlobalVariable(gv) = base_expr {
+                            let idx = self.get_expr_scalar(*index);
+                            let idx_i64 = self.builder.ins().uextend(I64, idx);
+
                             if *gv == self.analysis.output_global {
-                                let idx = self.get_expr_scalar(*index);
-                                let idx_i64 = self.builder.ins().uextend(I64, idx);
+                                // output[idx] = u32 (4 bytes per element)
                                 let byte_offset = self.builder.ins().imul_imm(idx_i64, 4);
                                 let addr = self.builder.ins().iadd(self.p_output, byte_offset);
-                                self.builder.ins().store(MemFlags::trusted(), val, addr, 0);
+                                self.builder.ins().store(MemFlags::trusted(), src_vals[0], addr, 0);
+                            } else if self.analysis.accum_global == Some(*gv) {
+                                // accum[idx] = vec4<f32> (16 bytes per element)
+                                let byte_offset = self.builder.ins().imul_imm(idx_i64, 16);
+                                let addr = self.builder.ins().iadd(self.p_accum, byte_offset);
+                                for (i, v) in src_vals.iter().enumerate() {
+                                    self.builder.ins().store(MemFlags::trusted(), *v, addr, (i * 4) as i32);
+                                }
                             }
                         }
                     }
@@ -1179,6 +1238,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 self.terminated = false;
                 self.lower_block(continuing, func)?;
                 if let Some(break_cond) = break_if {
+                    self.eval_expr(*break_cond, func)?;
                     let cond = self.get_expr_scalar(*break_cond);
                     self.builder.ins().brif(cond, loop_exit, &[], loop_body_block, &[]);
                 } else if !self.terminated {
@@ -1497,6 +1557,7 @@ mod tests {
         unsafe {
             (compiled.fn_ptr)(
                 output.as_mut_ptr(),
+                std::ptr::null_mut(),
                 params.as_ptr(),
                 width,
                 height,
@@ -1564,6 +1625,7 @@ mod tests {
         unsafe {
             (compiled.fn_ptr)(
                 output.as_mut_ptr(),
+                std::ptr::null_mut(),
                 params.as_ptr(),
                 width,
                 height,
@@ -1590,5 +1652,70 @@ mod tests {
         // The set covers maybe 10-20% of this view.
         assert!(non_black > total / 2, "should have >50% non-black pixels, got {non_black}/{total}");
         assert!(black > total / 20, "should have >5% in-set (black) pixels, got {black}/{total}");
+    }
+
+    #[test]
+    fn sdf_rings_wgsl_renders_on_cpu() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/sdf/sdf_rings/sdf_rings.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile sdf_rings.wgsl");
+
+        let width: u32 = 64;
+        let height: u32 = 64;
+        let stride: u32 = width;
+
+        // Params layout (12 fields × 4 bytes = 48 bytes):
+        // width, height, max_iter, stride, x_min, y_min, x_step, y_step,
+        // sample_index, sample_count, _pad0, _pad1
+        let mut params = [0u8; 48];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&256u32.to_le_bytes()); // max_iter
+        params[12..16].copy_from_slice(&stride.to_le_bytes());
+        params[16..20].copy_from_slice(&(-1.0f32).to_le_bytes()); // x_min
+        params[20..24].copy_from_slice(&(-1.0f32).to_le_bytes()); // y_min
+        params[24..28].copy_from_slice(&(2.0f32 / width as f32).to_le_bytes()); // x_step
+        params[28..32].copy_from_slice(&(2.0f32 / height as f32).to_le_bytes()); // y_step
+        // sample_index = 0 (first sample), sample_count = 1
+        params[32..36].copy_from_slice(&0u32.to_le_bytes());
+        params[36..40].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut output = vec![0u32; (stride * height) as usize];
+        let mut accum = vec![0.0f32; (stride * height * 4) as usize]; // vec4<f32> per pixel
+
+        unsafe {
+            (compiled.fn_ptr)(
+                output.as_mut_ptr(),
+                accum.as_mut_ptr(),
+                params.as_ptr(),
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // Center pixel (32, 32) maps to (0, 0) — origin of the rings.
+        // At r=0 the ring SDF should be inside (distance = 0 - thickness).
+        let p_center = output[(32 * stride + 32) as usize];
+        let a = (p_center >> 24) & 0xFF;
+        assert_eq!(a, 0xFF, "alpha should be 0xFF, got 0x{a:02X}");
+
+        // There should be a mix of ring (bright) and background (dark) pixels.
+        let bright = output.iter().filter(|&&p| {
+            let r = (p >> 16) & 0xFF;
+            r > 200
+        }).count();
+        let dark = output.iter().filter(|&&p| {
+            let r = (p >> 16) & 0xFF;
+            r < 50
+        }).count();
+        assert!(bright > 0, "should have some bright ring pixels");
+        assert!(dark > 0, "should have some dark background pixels");
+
+        // Accum buffer should have been written to (non-zero values).
+        let accum_nonzero = accum.iter().filter(|&&v| v != 0.0).count();
+        assert!(accum_nonzero > 0, "accum buffer should have non-zero values");
     }
 }
