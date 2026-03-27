@@ -38,7 +38,8 @@
       "Bash(do cargo:*)",
       "Bash(done)",
       "Bash(./run_pd cranelift:*)",
-      "Bash(echo \"Exit code: $?\")"
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(wc -l /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle/src/**/*.rs)"
     ]
   }
 }
