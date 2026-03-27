@@ -257,6 +257,9 @@ pub trait CompiledSimKernel: Send + Sync {
 #[cfg(feature = "cranelift-backend")]
 pub mod cranelift;
 
+#[cfg(feature = "cranelift-backend")]
+pub mod wgsl_cranelift;
+
 #[cfg(feature = "llvm-backend")]
 pub mod llvm;
 

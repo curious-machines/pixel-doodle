@@ -1,0 +1,1293 @@
+//! WGSL → Cranelift JIT backend.
+//!
+//! Parses WGSL compute shaders via naga and compiles them to native machine
+//! code using Cranelift. The generated function iterates over all pixels,
+//! executing the shader's entry point for each one.
+
+use std::collections::HashMap;
+
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
+use cranelift_codegen::ir::types::*;
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, UserFuncName};
+use cranelift_codegen::isa::CallConv;
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_codegen::packed_option::ReservedValue;
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{Linkage, Module};
+
+use naga::{
+    BinaryOperator, Expression, Handle, MathFunction, ScalarKind, Statement, TypeInner,
+    UnaryOperator,
+};
+
+// ── Public API ──────────────────────────────────────────────────────────
+
+/// JIT'd WGSL compute kernel.
+///
+/// Signature: `fn(output: *mut u32, params: *const u8, width: u32, height: u32, stride: u32)`
+///
+/// The function iterates all rows/cols internally.
+pub type WgslKernelFn = unsafe extern "C" fn(
+    output: *mut u32,
+    params: *const u8,
+    width: u32,
+    height: u32,
+    stride: u32,
+);
+
+/// Compiled WGSL kernel — holds the JIT module (to keep code alive) and the
+/// function pointer.
+pub struct CompiledWgslKernel {
+    _module: JITModule,
+    pub fn_ptr: WgslKernelFn,
+}
+
+unsafe impl Send for CompiledWgslKernel {}
+unsafe impl Sync for CompiledWgslKernel {}
+
+/// Parse and compile a WGSL compute shader to a native function.
+pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
+    let module = naga::front::wgsl::parse_str(source)
+        .map_err(|e| format!("WGSL parse error: {e}"))?;
+
+    let entry = module
+        .entry_points
+        .first()
+        .ok_or_else(|| "no entry point in WGSL shader".to_string())?;
+
+    let analysis = analyse_module(&module)?;
+
+    // Set up Cranelift JIT.
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    let isa_builder = cranelift_codegen::isa::lookup_by_name(
+        &target_lexicon::Triple::host().to_string(),
+    )
+    .map_err(|e| format!("ISA lookup: {e}"))?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|e| format!("ISA finish: {e}"))?;
+
+    let jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let mut jit_module = JITModule::new(jit_builder);
+
+    // Build the function signature: (output, params, width, height, stride) -> void
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(I64)); // output: *mut u32
+    sig.params.push(AbiParam::new(I64)); // params: *const u8
+    sig.params.push(AbiParam::new(I32)); // width: u32
+    sig.params.push(AbiParam::new(I32)); // height: u32
+    sig.params.push(AbiParam::new(I32)); // stride: u32
+
+    let func_id = jit_module
+        .declare_function("wgsl_main", Linkage::Local, &sig)
+        .map_err(|e| format!("declare_function: {e}"))?;
+
+    let mut func = cranelift_codegen::ir::Function::with_name_signature(
+        UserFuncName::user(0, 0),
+        sig.clone(),
+    );
+
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut func, &mut func_ctx);
+
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        // Extract function parameters.
+        let p_output = builder.block_params(entry_block)[0];
+        let p_params = builder.block_params(entry_block)[1];
+        let p_width = builder.block_params(entry_block)[2];
+        let p_height = builder.block_params(entry_block)[3];
+        let p_stride = builder.block_params(entry_block)[4];
+
+        // Build row/col loop: for row in 0..height { for col in 0..width { ... } }
+        let loop_header_row = builder.create_block();
+        let loop_body_row = builder.create_block();
+        let loop_header_col = builder.create_block();
+        let loop_body_col = builder.create_block();
+        let loop_inc_col = builder.create_block();
+        let loop_inc_row = builder.create_block();
+        let exit_block = builder.create_block();
+
+        // Variables for row and col counters.
+        let v_row = builder.declare_var(I32);
+        let v_col = builder.declare_var(I32);
+
+        let zero = builder.ins().iconst(I32, 0);
+        builder.def_var(v_row, zero);
+        builder.ins().jump(loop_header_row, &[]);
+
+        // Row loop header: if row >= height, exit.
+        // NOTE: Don't seal loop headers yet — they have back-edges from increments.
+        builder.switch_to_block(loop_header_row);
+        let row_val = builder.use_var(v_row);
+        let row_cmp = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, row_val, p_height);
+        builder.ins().brif(row_cmp, exit_block, &[], loop_body_row, &[]);
+
+        // Row loop body: reset col = 0, enter col loop.
+        builder.switch_to_block(loop_body_row);
+        builder.seal_block(loop_body_row);
+        let zero2 = builder.ins().iconst(I32, 0);
+        builder.def_var(v_col, zero2);
+        builder.ins().jump(loop_header_col, &[]);
+
+        // Col loop header: if col >= width, go to row increment.
+        builder.switch_to_block(loop_header_col);
+        let col_val = builder.use_var(v_col);
+        let col_cmp = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, col_val, p_width);
+        builder.ins().brif(col_cmp, loop_inc_row, &[], loop_body_col, &[]);
+
+        // Col loop body: execute the shader body.
+        builder.switch_to_block(loop_body_col);
+        builder.seal_block(loop_body_col);
+
+        let mut compiler = ShaderCompiler::new(
+            &module,
+            &analysis,
+            &mut builder,
+            &mut jit_module,
+            p_output,
+            p_params,
+            p_width,
+            p_height,
+            p_stride,
+            v_row,
+            v_col,
+        );
+        compiler.compile_entry_point(&entry.function)?;
+
+        // After the shader body, jump to col increment (the shader may have
+        // already returned via early-exit, but if we reach here we continue).
+        if !compiler.terminated {
+            compiler.builder.ins().jump(loop_inc_col, &[]);
+        }
+
+        // Col increment: col += 1, jump to col header.
+        builder.switch_to_block(loop_inc_col);
+        builder.seal_block(loop_inc_col);
+        let col_val2 = builder.use_var(v_col);
+        let one = builder.ins().iconst(I32, 1);
+        let col_next = builder.ins().iadd(col_val2, one);
+        builder.def_var(v_col, col_next);
+        builder.ins().jump(loop_header_col, &[]);
+        // Now all predecessors of loop_header_col are known — seal it.
+        builder.seal_block(loop_header_col);
+
+        // Row increment: row += 1, jump to row header.
+        builder.switch_to_block(loop_inc_row);
+        builder.seal_block(loop_inc_row);
+        let row_val2 = builder.use_var(v_row);
+        let one2 = builder.ins().iconst(I32, 1);
+        let row_next = builder.ins().iadd(row_val2, one2);
+        builder.def_var(v_row, row_next);
+        builder.ins().jump(loop_header_row, &[]);
+        // Now all predecessors of loop_header_row are known — seal it.
+        builder.seal_block(loop_header_row);
+
+        // Exit.
+        builder.switch_to_block(exit_block);
+        builder.seal_block(exit_block);
+        builder.ins().return_(&[]);
+
+        builder.finalize();
+    }
+
+    let mut ctx = cranelift_codegen::Context::for_function(func);
+    jit_module
+        .define_function(func_id, &mut ctx)
+        .map_err(|e| format!("define_function: {e}"))?;
+    jit_module.finalize_definitions().unwrap();
+
+    let code_ptr = jit_module.get_finalized_function(func_id);
+    let fn_ptr: WgslKernelFn = unsafe { std::mem::transmute(code_ptr) };
+
+    Ok(CompiledWgslKernel {
+        _module: jit_module,
+        fn_ptr,
+    })
+}
+
+// ── Module analysis ─────────────────────────────────────────────────────
+
+/// Binding info extracted from the naga module.
+struct BindingInfo {
+    params_global: Handle<naga::GlobalVariable>,
+    /// Byte offset of each Params struct member.
+    params_offsets: Vec<u32>,
+    output_global: Handle<naga::GlobalVariable>,
+}
+
+fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
+    let mut params_global = None;
+    let mut output_global = None;
+
+    for (handle, gv) in module.global_variables.iter() {
+        let binding = match &gv.binding {
+            Some(b) => b,
+            None => continue,
+        };
+        if binding.group != 0 { continue; }
+        match binding.binding {
+            0 => params_global = Some(handle),
+            1 => output_global = Some(handle),
+            _ => {}
+        }
+    }
+
+    let params_handle = params_global.ok_or("no @binding(0) uniform found")?;
+    let output_handle = output_global.ok_or("no @binding(1) storage buffer found")?;
+
+    let params_gv = &module.global_variables[params_handle];
+    let params_ty = &module.types[params_gv.ty];
+    let offsets = match &params_ty.inner {
+        TypeInner::Struct { members, .. } => {
+            members.iter().map(|m| m.offset).collect()
+        }
+        _ => return Err("Params binding(0) is not a struct".into()),
+    };
+
+    Ok(BindingInfo {
+        params_global: params_handle,
+        params_offsets: offsets,
+        output_global: output_handle,
+    })
+}
+
+// ── Shader compiler ─────────────────────────────────────────────────────
+
+struct ShaderCompiler<'a, 'b> {
+    naga_module: &'a naga::Module,
+    analysis: &'a BindingInfo,
+    builder: &'b mut FunctionBuilder<'a>,
+    jit_module: &'b mut JITModule,
+    /// Cached cranelift values for naga expressions.
+    expr_values: HashMap<Handle<Expression>, Vec<cranelift_codegen::ir::Value>>,
+    /// Cranelift Variables for naga LocalVariables.
+    local_vars: HashMap<Handle<naga::LocalVariable>, Vec<Variable>>,
+    // Function parameters.
+    p_output: cranelift_codegen::ir::Value,
+    p_params: cranelift_codegen::ir::Value,
+    #[allow(dead_code)]
+    p_width: cranelift_codegen::ir::Value,
+    #[allow(dead_code)]
+    p_height: cranelift_codegen::ir::Value,
+    #[allow(dead_code)]
+    p_stride: cranelift_codegen::ir::Value,
+    v_row: Variable,
+    v_col: Variable,
+    /// Block to jump to on early return.
+    return_block: cranelift_codegen::ir::Block,
+    /// Whether the current block has been terminated.
+    terminated: bool,
+    /// Stack of (break_block, continue_block) for nested loops.
+    loop_stack: Vec<(cranelift_codegen::ir::Block, cranelift_codegen::ir::Block)>,
+}
+
+// Static type constants to avoid returning references to temporaries in resolve_expr_type.
+static TY_F32: TypeInner = TypeInner::Scalar(naga::Scalar::F32);
+static TY_U32: TypeInner = TypeInner::Scalar(naga::Scalar::U32);
+static TY_I32: TypeInner = TypeInner::Scalar(naga::Scalar::I32);
+static TY_BOOL: TypeInner = TypeInner::Scalar(naga::Scalar::BOOL);
+static TY_F64: TypeInner = TypeInner::Scalar(naga::Scalar::F64);
+static TY_I64: TypeInner = TypeInner::Scalar(naga::Scalar::I64);
+static TY_U64: TypeInner = TypeInner::Scalar(naga::Scalar::U64);
+static TY_VEC3_U32: TypeInner = TypeInner::Vector {
+    size: naga::VectorSize::Tri,
+    scalar: naga::Scalar::U32,
+};
+
+fn scalar_static_type(kind: ScalarKind, width: u8) -> &'static TypeInner {
+    match (kind, width) {
+        (ScalarKind::Float, 4) => &TY_F32,
+        (ScalarKind::Float, 8) => &TY_F64,
+        (ScalarKind::Uint, 4) => &TY_U32,
+        (ScalarKind::Sint, 4) => &TY_I32,
+        (ScalarKind::Uint, 8) => &TY_U64,
+        (ScalarKind::Sint, 8) => &TY_I64,
+        (ScalarKind::Bool, _) => &TY_BOOL,
+        _ => &TY_U32,
+    }
+}
+
+impl<'a, 'b> ShaderCompiler<'a, 'b> {
+    fn new(
+        naga_module: &'a naga::Module,
+        analysis: &'a BindingInfo,
+        builder: &'b mut FunctionBuilder<'a>,
+        jit_module: &'b mut JITModule,
+        p_output: cranelift_codegen::ir::Value,
+        p_params: cranelift_codegen::ir::Value,
+        p_width: cranelift_codegen::ir::Value,
+        p_height: cranelift_codegen::ir::Value,
+        p_stride: cranelift_codegen::ir::Value,
+        v_row: Variable,
+        v_col: Variable,
+    ) -> Self {
+        Self {
+            naga_module,
+            analysis,
+            builder,
+            jit_module,
+            expr_values: HashMap::new(),
+            local_vars: HashMap::new(),
+            p_output,
+            p_params,
+            p_width,
+            p_height,
+            p_stride,
+            v_row,
+            v_col,
+            return_block: cranelift_codegen::ir::Block::reserved_value(),
+            terminated: false,
+            loop_stack: Vec::new(),
+        }
+    }
+
+    fn alloc_var(&mut self, ty: cranelift_codegen::ir::Type) -> Variable {
+        self.builder.declare_var(ty)
+    }
+
+    fn compile_entry_point(&mut self, func: &'a naga::Function) -> Result<(), String> {
+        let ret_block = self.builder.create_block();
+        self.return_block = ret_block;
+
+        // Declare local variables.
+        for (handle, local) in func.local_variables.iter() {
+            let cl_ty = self.naga_type_to_cl(&self.naga_module.types[local.ty].inner);
+            let components = self.type_component_count(&self.naga_module.types[local.ty].inner);
+            let mut vars = Vec::new();
+            for _ in 0..components {
+                let v = self.alloc_var(cl_ty);
+                let zero = self.zero_value(cl_ty);
+                self.builder.def_var(v, zero);
+                vars.push(v);
+            }
+            self.local_vars.insert(handle, vars);
+        }
+
+        self.lower_block(&func.body, func)?;
+
+        // The return block (jumped to by early-return statements).
+        if !self.terminated {
+            self.builder.ins().jump(ret_block, &[]);
+        }
+        self.builder.switch_to_block(ret_block);
+        self.builder.seal_block(ret_block);
+        self.terminated = false;
+
+        Ok(())
+    }
+
+    fn zero_value(&mut self, ty: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::Value {
+        if ty == F32 {
+            self.builder.ins().f32const(0.0)
+        } else if ty == F64 {
+            self.builder.ins().f64const(0.0)
+        } else {
+            self.builder.ins().iconst(ty, 0)
+        }
+    }
+
+    fn naga_scalar_to_cl(&self, kind: ScalarKind, width: u8) -> cranelift_codegen::ir::Type {
+        match (kind, width) {
+            (ScalarKind::Float, 4) => F32,
+            (ScalarKind::Float, 8) => F64,
+            (ScalarKind::Sint | ScalarKind::Uint, 4) => I32,
+            (ScalarKind::Sint | ScalarKind::Uint, 8) => I64,
+            (ScalarKind::Bool, _) => I8,
+            _ => I32,
+        }
+    }
+
+    fn naga_type_to_cl(&self, inner: &TypeInner) -> cranelift_codegen::ir::Type {
+        match inner {
+            TypeInner::Scalar(s) => self.naga_scalar_to_cl(s.kind, s.width),
+            TypeInner::Vector { scalar, .. } => self.naga_scalar_to_cl(scalar.kind, scalar.width),
+            TypeInner::Pointer { .. } | TypeInner::ValuePointer { .. } => I64,
+            _ => I32,
+        }
+    }
+
+    fn type_component_count(&self, inner: &TypeInner) -> usize {
+        match inner {
+            TypeInner::Vector { size, .. } => *size as usize,
+            _ => 1,
+        }
+    }
+
+    fn type_byte_size(&self, inner: &TypeInner) -> u32 {
+        match inner {
+            TypeInner::Scalar(s) => s.width as u32,
+            TypeInner::Vector { size, scalar } => *size as u32 * scalar.width as u32,
+            TypeInner::Struct { span, .. } => *span,
+            TypeInner::Array { stride, .. } => *stride,
+            _ => 4,
+        }
+    }
+
+    // ── Expression evaluation ───────────────────────────────────────────
+
+    fn get_expr(&self, handle: Handle<Expression>) -> &[cranelift_codegen::ir::Value] {
+        self.expr_values
+            .get(&handle)
+            .unwrap_or_else(|| panic!("expression {handle:?} not yet evaluated"))
+    }
+
+    fn get_expr_scalar(&self, handle: Handle<Expression>) -> cranelift_codegen::ir::Value {
+        self.get_expr(handle)[0]
+    }
+
+    /// Ensure an expression is evaluated, then return its values.
+    fn ensure_expr(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<Vec<cranelift_codegen::ir::Value>, String> {
+        if !self.expr_values.contains_key(&handle) {
+            self.eval_expr(handle, func)?;
+        }
+        Ok(self.get_expr(handle).to_vec())
+    }
+
+    fn ensure_expr_scalar(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<cranelift_codegen::ir::Value, String> {
+        Ok(self.ensure_expr(handle, func)?[0])
+    }
+
+    /// Best-effort type resolution by inspecting the expression.
+    fn resolve_expr_type<'c>(&'c self, handle: Handle<Expression>, func: &'c naga::Function) -> &'c TypeInner {
+        match &func.expressions[handle] {
+            Expression::Literal(lit) => match lit {
+                naga::Literal::F32(_) => &TY_F32,
+                naga::Literal::U32(_) => &TY_U32,
+                naga::Literal::I32(_) => &TY_I32,
+                naga::Literal::Bool(_) => &TY_BOOL,
+                naga::Literal::F64(_) => &TY_F64,
+                naga::Literal::I64(_) => &TY_I64,
+                naga::Literal::U64(_) => &TY_U64,
+                _ => &TY_F32,
+            },
+            Expression::Binary { left, .. } => self.resolve_expr_type(*left, func),
+            Expression::Unary { expr, .. } => self.resolve_expr_type(*expr, func),
+            Expression::AccessIndex { base, index } => {
+                let base_ty = self.resolve_expr_type(*base, func);
+                match base_ty {
+                    TypeInner::Struct { members, .. } => {
+                        &self.naga_module.types[members[*index as usize].ty].inner
+                    }
+                    TypeInner::Vector { scalar, .. } => {
+                        scalar_static_type(scalar.kind, scalar.width)
+                    }
+                    TypeInner::Pointer { base, .. } => {
+                        let inner = &self.naga_module.types[*base].inner;
+                        match inner {
+                            TypeInner::Struct { members, .. } => {
+                                &self.naga_module.types[members[*index as usize].ty].inner
+                            }
+                            _ => inner,
+                        }
+                    }
+                    _ => base_ty,
+                }
+            }
+            Expression::GlobalVariable(gv) => {
+                &self.naga_module.types[self.naga_module.global_variables[*gv].ty].inner
+            }
+            Expression::LocalVariable(lv) => {
+                &self.naga_module.types[func.local_variables[*lv].ty].inner
+            }
+            Expression::FunctionArgument(idx) => {
+                if *idx == 0 { return &TY_VEC3_U32; }
+                &TY_U32
+            }
+            Expression::As { expr, kind, convert } => {
+                let width = match self.resolve_expr_type(*expr, func) {
+                    TypeInner::Scalar(s) => convert.unwrap_or(s.width),
+                    _ => 4,
+                };
+                scalar_static_type(*kind, width)
+            }
+            Expression::Load { pointer } => {
+                let ptr_ty = self.resolve_expr_type(*pointer, func);
+                match ptr_ty {
+                    TypeInner::Pointer { base, .. } => &self.naga_module.types[*base].inner,
+                    _ => ptr_ty,
+                }
+            }
+            Expression::Compose { ty, .. } => &self.naga_module.types[*ty].inner,
+            Expression::Select { accept, .. } => self.resolve_expr_type(*accept, func),
+            Expression::Relational { .. } => &TY_BOOL,
+            Expression::Math { fun, arg, .. } => {
+                match fun {
+                    MathFunction::Dot | MathFunction::Length | MathFunction::Distance => {
+                        let arg_ty = self.resolve_expr_type(*arg, func);
+                        match arg_ty {
+                            TypeInner::Vector { scalar, .. } => scalar_static_type(scalar.kind, scalar.width),
+                            _ => arg_ty,
+                        }
+                    }
+                    _ => self.resolve_expr_type(*arg, func),
+                }
+            }
+            Expression::Swizzle { size, vector, .. } => {
+                if (*size as u8) == 1 {
+                    let vec_ty = self.resolve_expr_type(*vector, func);
+                    match vec_ty {
+                        TypeInner::Vector { scalar, .. } => scalar_static_type(scalar.kind, scalar.width),
+                        _ => vec_ty,
+                    }
+                } else {
+                    self.resolve_expr_type(*vector, func)
+                }
+            }
+            _ => &TY_U32,
+        }
+    }
+
+    fn eval_expr(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<(), String> {
+        if self.expr_values.contains_key(&handle) {
+            return Ok(());
+        }
+
+        let values = match &func.expressions[handle] {
+            Expression::Literal(lit) => {
+                vec![match lit {
+                    naga::Literal::F32(v) => self.builder.ins().f32const(*v),
+                    naga::Literal::U32(v) => self.builder.ins().iconst(I32, *v as i64),
+                    naga::Literal::I32(v) => self.builder.ins().iconst(I32, *v as i64),
+                    naga::Literal::Bool(v) => self.builder.ins().iconst(I8, *v as i64),
+                    naga::Literal::F64(v) => self.builder.ins().f64const(*v),
+                    naga::Literal::I64(v) => self.builder.ins().iconst(I64, *v),
+                    naga::Literal::U64(v) => self.builder.ins().iconst(I64, *v as i64),
+                    _ => self.builder.ins().iconst(I32, 0), // F16, AbstractInt, etc.
+                }]
+            }
+
+            Expression::Constant(c) => {
+                let constant = &self.naga_module.constants[*c];
+                match &self.naga_module.global_expressions[constant.init] {
+                    Expression::Literal(lit) => {
+                        vec![match lit {
+                            naga::Literal::F32(v) => self.builder.ins().f32const(*v),
+                            naga::Literal::U32(v) => self.builder.ins().iconst(I32, *v as i64),
+                            naga::Literal::I32(v) => self.builder.ins().iconst(I32, *v as i64),
+                            naga::Literal::Bool(v) => self.builder.ins().iconst(I8, *v as i64),
+                            naga::Literal::F64(v) => self.builder.ins().f64const(*v),
+                            _ => return Err(format!("unsupported constant literal: {lit:?}")),
+                        }]
+                    }
+                    _ => return Err("unsupported constant initializer".into()),
+                }
+            }
+
+            Expression::ZeroValue(ty) => {
+                let inner = &self.naga_module.types[*ty].inner;
+                let cl_ty = self.naga_type_to_cl(inner);
+                let count = self.type_component_count(inner);
+                let zero = self.zero_value(cl_ty);
+                vec![zero; count]
+            }
+
+            Expression::FunctionArgument(idx) => {
+                if *idx == 0 {
+                    // global_invocation_id: vec3<u32> = (col, row, 0)
+                    let col = self.builder.use_var(self.v_col);
+                    let row = self.builder.use_var(self.v_row);
+                    let z = self.builder.ins().iconst(I32, 0);
+                    vec![col, row, z]
+                } else {
+                    return Err(format!("unsupported function argument index: {idx}"));
+                }
+            }
+
+            Expression::GlobalVariable(gv) => {
+                if *gv == self.analysis.params_global {
+                    vec![self.p_params]
+                } else if *gv == self.analysis.output_global {
+                    vec![self.p_output]
+                } else {
+                    return Err(format!("unsupported global variable: {gv:?}"));
+                }
+            }
+
+            Expression::LocalVariable(lv) => {
+                // Return a tag — loads and stores go through local_vars map.
+                let tag = self.builder.ins().iconst(I64, lv.index() as i64);
+                vec![tag]
+            }
+
+            Expression::AccessIndex { base, index } => {
+                self.eval_expr(*base, func)?;
+                let base_ty = self.resolve_expr_type(*base, func);
+                match base_ty {
+                    TypeInner::Struct { members, .. } => {
+                        let base_val = self.get_expr_scalar(*base);
+                        let offset = self.analysis.params_offsets[*index as usize];
+                        let member_ty = &self.naga_module.types[members[*index as usize].ty].inner;
+                        let cl_ty = self.naga_type_to_cl(member_ty);
+                        let val = self.builder.ins().load(cl_ty, MemFlags::trusted(), base_val, offset as i32);
+                        vec![val]
+                    }
+                    TypeInner::Pointer { base: base_ty_handle, .. } => {
+                        let inner = &self.naga_module.types[*base_ty_handle].inner;
+                        match inner {
+                            TypeInner::Struct { members, .. } => {
+                                let base_val = self.get_expr_scalar(*base);
+                                let offset = self.analysis.params_offsets.get(*index as usize)
+                                    .copied().unwrap_or((*index) * 4);
+                                let member_ty = &self.naga_module.types[members[*index as usize].ty].inner;
+                                let cl_ty = self.naga_type_to_cl(member_ty);
+                                let val = self.builder.ins().load(cl_ty, MemFlags::trusted(), base_val, offset as i32);
+                                vec![val]
+                            }
+                            _ => return Err(format!("AccessIndex on pointer to non-struct: {inner:?}")),
+                        }
+                    }
+                    TypeInner::Vector { .. } => {
+                        let base_vals = self.get_expr(*base);
+                        vec![base_vals[*index as usize]]
+                    }
+                    _ => return Err(format!("AccessIndex on unsupported type: {base_ty:?}")),
+                }
+            }
+
+            Expression::Access { base, index } => {
+                self.eval_expr(*base, func)?;
+                self.eval_expr(*index, func)?;
+                let base_ty = self.resolve_expr_type(*base, func);
+                match base_ty {
+                    TypeInner::Array { base: elem_ty, .. } => {
+                        let base_val = self.get_expr_scalar(*base);
+                        let idx_val = self.get_expr_scalar(*index);
+                        let elem_inner = &self.naga_module.types[*elem_ty].inner;
+                        let elem_size = self.type_byte_size(elem_inner);
+                        let idx_i64 = self.builder.ins().uextend(I64, idx_val);
+                        let byte_offset = self.builder.ins().imul_imm(idx_i64, elem_size as i64);
+                        let addr = self.builder.ins().iadd(base_val, byte_offset);
+                        let cl_ty = self.naga_type_to_cl(elem_inner);
+                        let val = self.builder.ins().load(cl_ty, MemFlags::trusted(), addr, 0);
+                        vec![val]
+                    }
+                    TypeInner::Vector { .. } => {
+                        let base_vals = self.get_expr(*base).to_vec();
+                        let idx_val = self.get_expr_scalar(*index);
+                        let mut result = base_vals[0];
+                        for i in 1..base_vals.len() {
+                            let i_const = self.builder.ins().iconst(I32, i as i64);
+                            let cmp = self.builder.ins().icmp(IntCC::Equal, idx_val, i_const);
+                            result = self.builder.ins().select(cmp, base_vals[i], result);
+                        }
+                        vec![result]
+                    }
+                    _ => return Err(format!("Access on unsupported type: {base_ty:?}")),
+                }
+            }
+
+            Expression::Load { pointer } => {
+                self.eval_expr(*pointer, func)?;
+                let ptr_expr = &func.expressions[*pointer];
+                match ptr_expr {
+                    Expression::LocalVariable(lv) => {
+                        let vars = self.local_vars[lv].clone();
+                        vars.iter().map(|v| self.builder.use_var(*v)).collect()
+                    }
+                    _ => {
+                        self.eval_expr(*pointer, func)?;
+                        self.get_expr(*pointer).to_vec()
+                    }
+                }
+            }
+
+            Expression::Binary { op, left, right } => {
+                self.eval_expr(*left, func)?;
+                self.eval_expr(*right, func)?;
+                let lhs = self.get_expr_scalar(*left);
+                let rhs = self.get_expr_scalar(*right);
+                let left_ty = self.resolve_expr_type(*left, func);
+                let is_float = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Float);
+                let is_signed = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Sint);
+
+                let result = match op {
+                    BinaryOperator::Add => if is_float { self.builder.ins().fadd(lhs, rhs) } else { self.builder.ins().iadd(lhs, rhs) },
+                    BinaryOperator::Subtract => if is_float { self.builder.ins().fsub(lhs, rhs) } else { self.builder.ins().isub(lhs, rhs) },
+                    BinaryOperator::Multiply => if is_float { self.builder.ins().fmul(lhs, rhs) } else { self.builder.ins().imul(lhs, rhs) },
+                    BinaryOperator::Divide => {
+                        if is_float { self.builder.ins().fdiv(lhs, rhs) }
+                        else if is_signed { self.builder.ins().sdiv(lhs, rhs) }
+                        else { self.builder.ins().udiv(lhs, rhs) }
+                    }
+                    BinaryOperator::Modulo => {
+                        if is_float {
+                            let div = self.builder.ins().fdiv(lhs, rhs);
+                            let floored = self.builder.ins().floor(div);
+                            let prod = self.builder.ins().fmul(floored, rhs);
+                            self.builder.ins().fsub(lhs, prod)
+                        } else if is_signed { self.builder.ins().srem(lhs, rhs) }
+                        else { self.builder.ins().urem(lhs, rhs) }
+                    }
+                    BinaryOperator::And => self.builder.ins().band(lhs, rhs),
+                    BinaryOperator::InclusiveOr => self.builder.ins().bor(lhs, rhs),
+                    BinaryOperator::ExclusiveOr => self.builder.ins().bxor(lhs, rhs),
+                    BinaryOperator::ShiftLeft => self.builder.ins().ishl(lhs, rhs),
+                    BinaryOperator::ShiftRight => if is_signed { self.builder.ins().sshr(lhs, rhs) } else { self.builder.ins().ushr(lhs, rhs) },
+                    BinaryOperator::Equal => if is_float { self.builder.ins().fcmp(FloatCC::Equal, lhs, rhs) } else { self.builder.ins().icmp(IntCC::Equal, lhs, rhs) },
+                    BinaryOperator::NotEqual => if is_float { self.builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs) } else { self.builder.ins().icmp(IntCC::NotEqual, lhs, rhs) },
+                    BinaryOperator::Less => {
+                        if is_float { self.builder.ins().fcmp(FloatCC::LessThan, lhs, rhs) }
+                        else if is_signed { self.builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs) }
+                        else { self.builder.ins().icmp(IntCC::UnsignedLessThan, lhs, rhs) }
+                    }
+                    BinaryOperator::LessEqual => {
+                        if is_float { self.builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs) }
+                        else if is_signed { self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs) }
+                        else { self.builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, lhs, rhs) }
+                    }
+                    BinaryOperator::Greater => {
+                        if is_float { self.builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs) }
+                        else if is_signed { self.builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs) }
+                        else { self.builder.ins().icmp(IntCC::UnsignedGreaterThan, lhs, rhs) }
+                    }
+                    BinaryOperator::GreaterEqual => {
+                        if is_float { self.builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs) }
+                        else if is_signed { self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs) }
+                        else { self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, lhs, rhs) }
+                    }
+                    BinaryOperator::LogicalAnd => self.builder.ins().band(lhs, rhs),
+                    BinaryOperator::LogicalOr => self.builder.ins().bor(lhs, rhs),
+                };
+                vec![result]
+            }
+
+            Expression::Unary { op, expr } => {
+                self.eval_expr(*expr, func)?;
+                let val = self.get_expr_scalar(*expr);
+                let expr_ty = self.resolve_expr_type(*expr, func);
+                let is_float = matches!(expr_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Float);
+                let result = match op {
+                    UnaryOperator::Negate => if is_float { self.builder.ins().fneg(val) } else { self.builder.ins().ineg(val) },
+                    UnaryOperator::LogicalNot => { let one = self.builder.ins().iconst(I8, 1); self.builder.ins().bxor(val, one) }
+                    UnaryOperator::BitwiseNot => self.builder.ins().bnot(val),
+                };
+                vec![result]
+            }
+
+            Expression::As { expr, kind, convert } => {
+                self.eval_expr(*expr, func)?;
+                let val = self.get_expr_scalar(*expr);
+                let src_ty = self.resolve_expr_type(*expr, func);
+                let src_scalar = match src_ty {
+                    TypeInner::Scalar(s) => s,
+                    _ => return Err(format!("As cast on non-scalar: {src_ty:?}")),
+                };
+                let result = match convert {
+                    Some(width) => match (src_scalar.kind, src_scalar.width, kind, width) {
+                        (ScalarKind::Uint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_uint(F32, val),
+                        (ScalarKind::Sint, 4, ScalarKind::Float, 4) => self.builder.ins().fcvt_from_sint(F32, val),
+                        (ScalarKind::Float, 4, ScalarKind::Sint, 4) => self.builder.ins().fcvt_to_sint(I32, val),
+                        (ScalarKind::Float, 4, ScalarKind::Uint, 4) => self.builder.ins().fcvt_to_uint(I32, val),
+                        (ScalarKind::Sint, 4, ScalarKind::Uint, 4) | (ScalarKind::Uint, 4, ScalarKind::Sint, 4) => val,
+                        _ => return Err(format!("unsupported As convert: {:?}/{} → {:?}/{}", src_scalar.kind, src_scalar.width, kind, width)),
+                    },
+                    None => match (src_scalar.kind, src_scalar.width, kind) {
+                        (ScalarKind::Sint, 4, ScalarKind::Uint) | (ScalarKind::Uint, 4, ScalarKind::Sint) => val,
+                        (ScalarKind::Float, 4, ScalarKind::Uint) | (ScalarKind::Float, 4, ScalarKind::Sint) => self.builder.ins().bitcast(I32, MemFlags::new(), val),
+                        (ScalarKind::Uint, 4, ScalarKind::Float) | (ScalarKind::Sint, 4, ScalarKind::Float) => self.builder.ins().bitcast(F32, MemFlags::new(), val),
+                        _ => return Err(format!("unsupported bitcast: {:?}/{} → {:?}", src_scalar.kind, src_scalar.width, kind)),
+                    },
+                };
+                vec![result]
+            }
+
+            Expression::Compose { components, .. } => {
+                for c in components {
+                    self.eval_expr(*c, func)?;
+                }
+                let components = match &func.expressions[handle] {
+                    Expression::Compose { components, .. } => components.clone(),
+                    _ => unreachable!(),
+                };
+                let mut vals = Vec::new();
+                for c in &components {
+                    vals.extend_from_slice(self.get_expr(*c));
+                }
+                vals
+            }
+
+            Expression::Splat { size, value } => {
+                self.eval_expr(*value, func)?;
+                let val = self.get_expr_scalar(*value);
+                vec![val; *size as usize]
+            }
+
+            Expression::Swizzle { size, vector, pattern } => {
+                self.eval_expr(*vector, func)?;
+                let vec_vals = self.get_expr(*vector).to_vec();
+                (0..*size as usize).map(|i| vec_vals[pattern[i] as usize]).collect()
+            }
+
+            Expression::Select { condition, accept, reject } => {
+                self.eval_expr(*condition, func)?;
+                self.eval_expr(*accept, func)?;
+                self.eval_expr(*reject, func)?;
+                let cond = self.get_expr_scalar(*condition);
+                let acc = self.get_expr(*accept).to_vec();
+                let rej = self.get_expr(*reject).to_vec();
+                acc.iter().zip(rej.iter())
+                    .map(|(a, r)| self.builder.ins().select(cond, *a, *r))
+                    .collect()
+            }
+
+            Expression::Relational { .. } => {
+                vec![self.builder.ins().iconst(I8, 0)]
+            }
+
+            Expression::Math { fun, arg, arg1, arg2, arg3: _ } => {
+                self.eval_expr(*arg, func)?;
+                if let Some(a1) = arg1 { self.eval_expr(*a1, func)?; }
+                if let Some(a2) = arg2 { self.eval_expr(*a2, func)?; }
+                self.lower_math(*fun, *arg, *arg1, *arg2, func)?
+            }
+
+            _ => {
+                return Err(format!("unsupported expression: {:?}", &func.expressions[handle]));
+            }
+        };
+
+        self.expr_values.insert(handle, values);
+        Ok(())
+    }
+
+    // ── Math lowering ───────────────────────────────────────────────────
+
+    fn lower_math(
+        &mut self,
+        fun: MathFunction,
+        arg: Handle<Expression>,
+        arg1: Option<Handle<Expression>>,
+        arg2: Option<Handle<Expression>>,
+        func: &naga::Function,
+    ) -> Result<Vec<cranelift_codegen::ir::Value>, String> {
+        let arg_ty = self.resolve_expr_type(arg, func);
+        if matches!(arg_ty, TypeInner::Vector { .. }) {
+            return self.lower_math_vector(fun, arg, arg1, arg2, func);
+        }
+
+        let val = self.get_expr_scalar(arg);
+        let is_f32 = matches!(arg_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Float);
+
+        let result = match fun {
+            MathFunction::Abs => if is_f32 { self.builder.ins().fabs(val) } else { self.builder.ins().iabs(val) },
+            MathFunction::Min => { let rhs = self.get_expr_scalar(arg1.unwrap()); if is_f32 { self.builder.ins().fmin(val, rhs) } else { self.builder.ins().umin(val, rhs) } }
+            MathFunction::Max => { let rhs = self.get_expr_scalar(arg1.unwrap()); if is_f32 { self.builder.ins().fmax(val, rhs) } else { self.builder.ins().umax(val, rhs) } }
+            MathFunction::Clamp => {
+                let min_val = self.get_expr_scalar(arg1.unwrap());
+                let max_val = self.get_expr_scalar(arg2.unwrap());
+                if is_f32 { let t = self.builder.ins().fmax(val, min_val); self.builder.ins().fmin(t, max_val) }
+                else { let t = self.builder.ins().umax(val, min_val); self.builder.ins().umin(t, max_val) }
+            }
+            MathFunction::Floor => self.builder.ins().floor(val),
+            MathFunction::Ceil => self.builder.ins().ceil(val),
+            MathFunction::Round => self.builder.ins().nearest(val),
+            MathFunction::Trunc => self.builder.ins().trunc(val),
+            MathFunction::Fract => { let f = self.builder.ins().floor(val); self.builder.ins().fsub(val, f) }
+            MathFunction::Sqrt => self.builder.ins().sqrt(val),
+            MathFunction::Sign => {
+                let zero = self.builder.ins().f32const(0.0);
+                let one = self.builder.ins().f32const(1.0);
+                let neg_one = self.builder.ins().f32const(-1.0);
+                let gt = self.builder.ins().fcmp(FloatCC::GreaterThan, val, zero);
+                let lt = self.builder.ins().fcmp(FloatCC::LessThan, val, zero);
+                let pos = self.builder.ins().select(gt, one, zero);
+                self.builder.ins().select(lt, neg_one, pos)
+            }
+            MathFunction::Sin => self.call_libm_f32("sinf", val),
+            MathFunction::Cos => self.call_libm_f32("cosf", val),
+            MathFunction::Tan => self.call_libm_f32("tanf", val),
+            MathFunction::Asin => self.call_libm_f32("asinf", val),
+            MathFunction::Acos => self.call_libm_f32("acosf", val),
+            MathFunction::Atan => self.call_libm_f32("atanf", val),
+            MathFunction::Atan2 => { let rhs = self.get_expr_scalar(arg1.unwrap()); self.call_libm_f32_binary("atan2f", val, rhs) }
+            MathFunction::Exp => self.call_libm_f32("expf", val),
+            MathFunction::Exp2 => self.call_libm_f32("exp2f", val),
+            MathFunction::Log => self.call_libm_f32("logf", val),
+            MathFunction::Log2 => self.call_libm_f32("log2f", val),
+            MathFunction::Pow => { let rhs = self.get_expr_scalar(arg1.unwrap()); self.call_libm_f32_binary("powf", val, rhs) }
+            MathFunction::Mix => {
+                let b = self.get_expr_scalar(arg1.unwrap());
+                let t = self.get_expr_scalar(arg2.unwrap());
+                let one = self.builder.ins().f32const(1.0);
+                let omt = self.builder.ins().fsub(one, t);
+                let at = self.builder.ins().fmul(val, omt);
+                let bt = self.builder.ins().fmul(b, t);
+                self.builder.ins().fadd(at, bt)
+            }
+            MathFunction::SmoothStep => {
+                let edge1 = self.get_expr_scalar(arg1.unwrap());
+                let x = self.get_expr_scalar(arg2.unwrap());
+                let diff = self.builder.ins().fsub(x, val);
+                let range = self.builder.ins().fsub(edge1, val);
+                let ratio = self.builder.ins().fdiv(diff, range);
+                let zero = self.builder.ins().f32const(0.0);
+                let one = self.builder.ins().f32const(1.0);
+                let t = self.builder.ins().fmax(ratio, zero);
+                let t = self.builder.ins().fmin(t, one);
+                let three = self.builder.ins().f32const(3.0);
+                let two = self.builder.ins().f32const(2.0);
+                let two_t = self.builder.ins().fmul(two, t);
+                let s = self.builder.ins().fsub(three, two_t);
+                let t2 = self.builder.ins().fmul(t, t);
+                self.builder.ins().fmul(t2, s)
+            }
+            MathFunction::Length => self.builder.ins().fabs(val),
+            MathFunction::Dot => { let rhs = self.get_expr_scalar(arg1.unwrap()); self.builder.ins().fmul(val, rhs) }
+            _ => return Err(format!("unsupported scalar math: {fun:?}")),
+        };
+        Ok(vec![result])
+    }
+
+    fn lower_math_vector(
+        &mut self,
+        fun: MathFunction,
+        arg: Handle<Expression>,
+        arg1: Option<Handle<Expression>>,
+        arg2: Option<Handle<Expression>>,
+        func: &naga::Function,
+    ) -> Result<Vec<cranelift_codegen::ir::Value>, String> {
+        let vals = self.get_expr(arg).to_vec();
+        let n = vals.len();
+        match fun {
+            MathFunction::Dot => {
+                let rhs = self.get_expr(arg1.unwrap()).to_vec();
+                let mut sum = self.builder.ins().fmul(vals[0], rhs[0]);
+                for i in 1..n { let p = self.builder.ins().fmul(vals[i], rhs[i]); sum = self.builder.ins().fadd(sum, p); }
+                Ok(vec![sum])
+            }
+            MathFunction::Length => {
+                let mut sum = self.builder.ins().fmul(vals[0], vals[0]);
+                for i in 1..n { let p = self.builder.ins().fmul(vals[i], vals[i]); sum = self.builder.ins().fadd(sum, p); }
+                Ok(vec![self.builder.ins().sqrt(sum)])
+            }
+            MathFunction::Normalize => {
+                let mut sum = self.builder.ins().fmul(vals[0], vals[0]);
+                for i in 1..n { let p = self.builder.ins().fmul(vals[i], vals[i]); sum = self.builder.ins().fadd(sum, p); }
+                let len = self.builder.ins().sqrt(sum);
+                Ok(vals.iter().map(|v| self.builder.ins().fdiv(*v, len)).collect())
+            }
+            MathFunction::Cross => {
+                let rhs = self.get_expr(arg1.unwrap()).to_vec();
+                let a = self.builder.ins().fmul(vals[1], rhs[2]);
+                let b = self.builder.ins().fmul(vals[2], rhs[1]);
+                let x = self.builder.ins().fsub(a, b);
+                let a = self.builder.ins().fmul(vals[2], rhs[0]);
+                let b = self.builder.ins().fmul(vals[0], rhs[2]);
+                let y = self.builder.ins().fsub(a, b);
+                let a = self.builder.ins().fmul(vals[0], rhs[1]);
+                let b = self.builder.ins().fmul(vals[1], rhs[0]);
+                let z = self.builder.ins().fsub(a, b);
+                Ok(vec![x, y, z])
+            }
+            MathFunction::Min => { let rhs = self.get_expr(arg1.unwrap()).to_vec(); Ok(vals.iter().zip(rhs.iter()).map(|(a, b)| self.builder.ins().fmin(*a, *b)).collect()) }
+            MathFunction::Max => { let rhs = self.get_expr(arg1.unwrap()).to_vec(); Ok(vals.iter().zip(rhs.iter()).map(|(a, b)| self.builder.ins().fmax(*a, *b)).collect()) }
+            MathFunction::Abs => Ok(vals.iter().map(|v| self.builder.ins().fabs(*v)).collect()),
+            MathFunction::Clamp => {
+                let min_v = self.get_expr(arg1.unwrap()).to_vec();
+                let max_v = self.get_expr(arg2.unwrap()).to_vec();
+                Ok(vals.iter().enumerate().map(|(i, v)| { let t = self.builder.ins().fmax(*v, min_v[i]); self.builder.ins().fmin(t, max_v[i]) }).collect())
+            }
+            _ => {
+                let mut results = Vec::with_capacity(n);
+                for v in &vals {
+                    let r = match fun {
+                        MathFunction::Floor => self.builder.ins().floor(*v),
+                        MathFunction::Ceil => self.builder.ins().ceil(*v),
+                        MathFunction::Sqrt => self.builder.ins().sqrt(*v),
+                        MathFunction::Fract => { let f = self.builder.ins().floor(*v); self.builder.ins().fsub(*v, f) }
+                        _ => return Err(format!("unsupported vector math: {fun:?}")),
+                    };
+                    results.push(r);
+                }
+                Ok(results)
+            }
+        }
+    }
+
+    fn call_libm_f32(&mut self, name: &str, arg: cranelift_codegen::ir::Value) -> cranelift_codegen::ir::Value {
+        let mut sig = self.jit_module.make_signature();
+        sig.params.push(AbiParam::new(F32));
+        sig.returns.push(AbiParam::new(F32));
+        let func_id = self.jit_module.declare_function(name, Linkage::Import, &sig).unwrap();
+        let func_ref = self.jit_module.declare_func_in_func(func_id, self.builder.func);
+        let call = self.builder.ins().call(func_ref, &[arg]);
+        self.builder.inst_results(call)[0]
+    }
+
+    fn call_libm_f32_binary(&mut self, name: &str, a: cranelift_codegen::ir::Value, b: cranelift_codegen::ir::Value) -> cranelift_codegen::ir::Value {
+        let mut sig = self.jit_module.make_signature();
+        sig.params.push(AbiParam::new(F32));
+        sig.params.push(AbiParam::new(F32));
+        sig.returns.push(AbiParam::new(F32));
+        let func_id = self.jit_module.declare_function(name, Linkage::Import, &sig).unwrap();
+        let func_ref = self.jit_module.declare_func_in_func(func_id, self.builder.func);
+        let call = self.builder.ins().call(func_ref, &[a, b]);
+        self.builder.inst_results(call)[0]
+    }
+
+    // ── Statement lowering ──────────────────────────────────────────────
+
+    fn lower_block(&mut self, block: &naga::Block, func: &naga::Function) -> Result<(), String> {
+        for stmt in block.iter() {
+            if self.terminated { break; }
+            self.lower_statement(stmt, func)?;
+        }
+        Ok(())
+    }
+
+    fn lower_statement(&mut self, stmt: &Statement, func: &naga::Function) -> Result<(), String> {
+        match stmt {
+            Statement::Emit(range) => {
+                for handle in range.clone() {
+                    self.eval_expr(handle, func)?;
+                }
+            }
+
+            Statement::If { condition, accept, reject } => {
+                // condition should already be evaluated by an Emit before this If
+                let cond = self.get_expr_scalar(*condition);
+                let then_block = self.builder.create_block();
+                let else_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+
+                self.builder.ins().brif(cond, then_block, &[], else_block, &[]);
+
+                self.builder.switch_to_block(then_block);
+                self.builder.seal_block(then_block);
+                self.terminated = false;
+                self.lower_block(accept, func)?;
+                let then_terminated = self.terminated;
+                if !then_terminated {
+                    self.builder.ins().jump(merge_block, &[]);
+                }
+
+                self.builder.switch_to_block(else_block);
+                self.builder.seal_block(else_block);
+                self.terminated = false;
+                self.lower_block(reject, func)?;
+                let else_terminated = self.terminated;
+                if !else_terminated {
+                    self.builder.ins().jump(merge_block, &[]);
+                }
+
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+                self.terminated = then_terminated && else_terminated;
+            }
+
+            Statement::Return { .. } => {
+                self.builder.ins().jump(self.return_block, &[]);
+                self.terminated = true;
+            }
+
+            Statement::Store { pointer, value } => {
+                let val = self.get_expr_scalar(*value);
+                let ptr_expr = &func.expressions[*pointer];
+                match ptr_expr {
+                    Expression::LocalVariable(lv) => {
+                        let vars = self.local_vars[lv].clone();
+                        let src_vals = self.get_expr(*value).to_vec();
+                        for (i, v) in vars.iter().enumerate() {
+                            if i < src_vals.len() {
+                                self.builder.def_var(*v, src_vals[i]);
+                            }
+                        }
+                    }
+                    Expression::Access { base, index } => {
+                        let base_expr = &func.expressions[*base];
+                        if let Expression::GlobalVariable(gv) = base_expr {
+                            if *gv == self.analysis.output_global {
+                                let idx = self.get_expr_scalar(*index);
+                                let idx_i64 = self.builder.ins().uextend(I64, idx);
+                                let byte_offset = self.builder.ins().imul_imm(idx_i64, 4);
+                                let addr = self.builder.ins().iadd(self.p_output, byte_offset);
+                                self.builder.ins().store(MemFlags::trusted(), val, addr, 0);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::Loop { body, continuing, break_if } => {
+                let loop_body_block = self.builder.create_block();
+                let loop_continuing_block = self.builder.create_block();
+                let loop_exit = self.builder.create_block();
+
+                self.builder.ins().jump(loop_body_block, &[]);
+
+                self.builder.switch_to_block(loop_body_block);
+                self.builder.seal_block(loop_body_block);
+                self.loop_stack.push((loop_exit, loop_continuing_block));
+                self.terminated = false;
+                self.lower_block(body, func)?;
+                if !self.terminated {
+                    self.builder.ins().jump(loop_continuing_block, &[]);
+                }
+
+                self.builder.switch_to_block(loop_continuing_block);
+                self.builder.seal_block(loop_continuing_block);
+                self.terminated = false;
+                self.lower_block(continuing, func)?;
+                if let Some(break_cond) = break_if {
+                    let cond = self.get_expr_scalar(*break_cond);
+                    self.builder.ins().brif(cond, loop_exit, &[], loop_body_block, &[]);
+                } else if !self.terminated {
+                    self.builder.ins().jump(loop_body_block, &[]);
+                }
+
+                self.loop_stack.pop();
+                self.builder.switch_to_block(loop_exit);
+                self.builder.seal_block(loop_exit);
+                self.terminated = false;
+            }
+
+            Statement::Break => {
+                let (exit, _) = *self.loop_stack.last().unwrap();
+                self.builder.ins().jump(exit, &[]);
+                self.terminated = true;
+            }
+
+            Statement::Continue => {
+                let (_, cont) = *self.loop_stack.last().unwrap();
+                self.builder.ins().jump(cont, &[]);
+                self.terminated = true;
+            }
+
+            Statement::Block(block) => {
+                self.lower_block(block, func)?;
+            }
+
+            Statement::Switch { selector, cases } => {
+                let sel_val = self.get_expr_scalar(*selector);
+                let merge_block = self.builder.create_block();
+                let mut case_blocks = Vec::new();
+                let mut default_idx = None;
+
+                for (i, case) in cases.iter().enumerate() {
+                    case_blocks.push(self.builder.create_block());
+                    if case.value == naga::SwitchValue::Default {
+                        default_idx = Some(i);
+                    }
+                }
+                let default_block = default_idx.map(|i| case_blocks[i]).unwrap_or(merge_block);
+
+                // Emit comparison chain.
+                for (i, case) in cases.iter().enumerate() {
+                    let val = match case.value {
+                        naga::SwitchValue::I32(v) => Some(self.builder.ins().iconst(I32, v as i64)),
+                        naga::SwitchValue::U32(v) => Some(self.builder.ins().iconst(I32, v as i64)),
+                        naga::SwitchValue::Default => None,
+                    };
+                    if let Some(v) = val {
+                        let cmp = self.builder.ins().icmp(IntCC::Equal, sel_val, v);
+                        let next = self.builder.create_block();
+                        self.builder.ins().brif(cmp, case_blocks[i], &[], next, &[]);
+                        self.builder.switch_to_block(next);
+                        self.builder.seal_block(next);
+                    }
+                }
+                self.builder.ins().jump(default_block, &[]);
+
+                // Lower case bodies.
+                self.loop_stack.push((merge_block, merge_block));
+                for (i, case) in cases.iter().enumerate() {
+                    self.builder.switch_to_block(case_blocks[i]);
+                    self.builder.seal_block(case_blocks[i]);
+                    self.terminated = false;
+                    self.lower_block(&case.body, func)?;
+                    if !self.terminated {
+                        if case.fall_through && i + 1 < cases.len() {
+                            self.builder.ins().jump(case_blocks[i + 1], &[]);
+                        } else {
+                            self.builder.ins().jump(merge_block, &[]);
+                        }
+                    }
+                }
+                self.loop_stack.pop();
+
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+                self.terminated = false;
+            }
+
+            _ => {} // Ignore unsupported statements.
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gradient_wgsl_renders_on_cpu() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/basic/gradient/gradient.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile gradient.wgsl");
+
+        let width: u32 = 64;
+        let height: u32 = 64;
+        let stride: u32 = width; // no alignment padding needed for test
+
+        // Build a Params struct matching the WGSL layout:
+        // width: u32, height: u32, max_iter: u32, stride: u32,
+        // x_min: f32, y_min: f32, x_step: f32, y_step: f32
+        let mut params = [0u8; 48];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&256u32.to_le_bytes()); // max_iter
+        params[12..16].copy_from_slice(&stride.to_le_bytes());
+        params[16..20].copy_from_slice(&0.0f32.to_le_bytes()); // x_min
+        params[20..24].copy_from_slice(&0.0f32.to_le_bytes()); // y_min
+        params[24..28].copy_from_slice(&(1.0f32 / width as f32).to_le_bytes()); // x_step
+        params[28..32].copy_from_slice(&(1.0f32 / height as f32).to_le_bytes()); // y_step
+
+        let mut output = vec![0u32; (stride * height) as usize];
+
+        unsafe {
+            (compiled.fn_ptr)(
+                output.as_mut_ptr(),
+                params.as_ptr(),
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // Verify: pixel at (0, 0) should be near (r=0, g=0, b=128) = 0xFF000080
+        let p00 = output[0];
+        let b00 = p00 & 0xFF;
+        assert_eq!(b00, 128, "pixel (0,0) blue channel should be 128, got {b00}");
+
+        // Pixel at (63, 63) should have r ≈ 252, g ≈ 252, b = 128
+        let p_last = output[(63 * stride + 63) as usize];
+        let r_last = (p_last >> 16) & 0xFF;
+        let g_last = (p_last >> 8) & 0xFF;
+        let b_last = p_last & 0xFF;
+        assert_eq!(b_last, 128, "pixel (63,63) blue should be 128");
+        assert!(r_last > 240, "pixel (63,63) red should be >240, got {r_last}");
+        assert!(g_last > 240, "pixel (63,63) green should be >240, got {g_last}");
+
+        // Alpha should always be 0xFF
+        assert_eq!(p00 >> 24, 0xFF, "alpha should be 0xFF");
+        assert_eq!(p_last >> 24, 0xFF, "alpha should be 0xFF");
+
+        // Check a middle pixel (32, 32) — should have r ≈ 128, g ≈ 128
+        let p_mid = output[(32 * stride + 32) as usize];
+        let r_mid = (p_mid >> 16) & 0xFF;
+        let g_mid = (p_mid >> 8) & 0xFF;
+        assert!((120..136).contains(&r_mid), "pixel (32,32) red should be ~128, got {r_mid}");
+        assert!((120..136).contains(&g_mid), "pixel (32,32) green should be ~128, got {g_mid}");
+    }
+}

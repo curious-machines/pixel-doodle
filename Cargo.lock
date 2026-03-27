@@ -1539,6 +1539,7 @@ dependencies = [
  "cranelift-module",
  "image",
  "inkwell",
+ "naga",
  "pollster",
  "rayon",
  "target-lexicon 0.12.16",

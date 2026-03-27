@@ -16,6 +16,7 @@ llvm-backend = ["dep:inkwell"]
 
 [dependencies]
 wgpu = "25"
+naga = { version = "25", features = ["wgsl-in"] }
 winit = "0.30"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
