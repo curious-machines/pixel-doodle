@@ -28,10 +28,14 @@ use naga::{
 /// Signature: `fn(output: *mut u32, params: *const u8, width: u32, height: u32, stride: u32)`
 ///
 /// The function iterates all rows/cols internally.
+/// JIT'd WGSL compute kernel.
+///
+/// `buffers` is an array of pointers, one per storage buffer binding (in binding
+/// order). For pixel shaders: buffers[0] = output (u32), buffers[1] = accum (f32).
+/// For sim shaders: buffers[N] corresponds to @binding(N+1).
 pub type WgslKernelFn = unsafe extern "C" fn(
-    output: *mut u32,
-    accum: *mut f32,  // accumulation buffer (may be null)
     params: *const u8,
+    buffers: *const *mut u8,
     width: u32,
     height: u32,
     stride: u32,
@@ -73,11 +77,10 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     let jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     let mut jit_module = JITModule::new(jit_builder);
 
-    // Build the function signature: (output, accum, params, width, height, stride) -> void
+    // Build the function signature: (params, buffers, width, height, stride) -> void
     let mut sig = Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(I64)); // output: *mut u32
-    sig.params.push(AbiParam::new(I64)); // accum: *mut f32
     sig.params.push(AbiParam::new(I64)); // params: *const u8
+    sig.params.push(AbiParam::new(I64)); // buffers: *const *mut u8
     sig.params.push(AbiParam::new(I32)); // width: u32
     sig.params.push(AbiParam::new(I32)); // height: u32
     sig.params.push(AbiParam::new(I32)); // stride: u32
@@ -101,12 +104,11 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
         builder.seal_block(entry_block);
 
         // Extract function parameters.
-        let p_output = builder.block_params(entry_block)[0];
-        let p_accum = builder.block_params(entry_block)[1];
-        let p_params = builder.block_params(entry_block)[2];
-        let p_width = builder.block_params(entry_block)[3];
-        let p_height = builder.block_params(entry_block)[4];
-        let p_stride = builder.block_params(entry_block)[5];
+        let p_params = builder.block_params(entry_block)[0];
+        let p_buffers = builder.block_params(entry_block)[1];
+        let p_width = builder.block_params(entry_block)[2];
+        let p_height = builder.block_params(entry_block)[3];
+        let p_stride = builder.block_params(entry_block)[4];
 
         // Build row/col loop: for row in 0..height { for col in 0..width { ... } }
         let loop_header_row = builder.create_block();
@@ -154,9 +156,8 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
             &analysis,
             &mut builder,
             &mut jit_module,
-            p_output,
-            p_accum,
             p_params,
+            p_buffers,
             p_width,
             p_height,
             p_stride,
@@ -221,19 +222,28 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
 // ── Module analysis ─────────────────────────────────────────────────────
 
 /// Binding info extracted from the naga module.
+/// Info about a storage buffer binding.
+struct StorageBufferInfo {
+    global: Handle<naga::GlobalVariable>,
+    /// Binding index (1, 2, 3, ...).
+    binding: u32,
+    /// Byte size per element.
+    elem_bytes: u32,
+    /// Number of scalar components per element (1 for scalar, 4 for vec4, etc.).
+    elem_components: usize,
+}
+
 struct BindingInfo {
     params_global: Handle<naga::GlobalVariable>,
     /// Byte offset of each Params struct member.
     params_offsets: Vec<u32>,
-    output_global: Handle<naga::GlobalVariable>,
-    /// Accumulation buffer (binding 2), if present.
-    accum_global: Option<Handle<naga::GlobalVariable>>,
+    /// Storage buffers, sorted by binding index.
+    storage_buffers: Vec<StorageBufferInfo>,
 }
 
 fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     let mut params_global = None;
-    let mut output_global = None;
-    let mut accum_global = None;
+    let mut storage_buffers = Vec::new();
 
     for (handle, gv) in module.global_variables.iter() {
         let binding = match &gv.binding {
@@ -241,16 +251,38 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
             None => continue,
         };
         if binding.group != 0 { continue; }
-        match binding.binding {
-            0 => params_global = Some(handle),
-            1 => output_global = Some(handle),
-            2 => accum_global = Some(handle),
-            _ => {}
+        if binding.binding == 0 {
+            params_global = Some(handle);
+        } else {
+            // Storage buffer — determine element type.
+            let ty_inner = &module.types[gv.ty].inner;
+            let (elem_bytes, elem_components) = match ty_inner {
+                TypeInner::Array { base, .. } => {
+                    let elem = &module.types[*base].inner;
+                    let bytes = match elem {
+                        TypeInner::Scalar(s) => s.width as u32,
+                        TypeInner::Vector { size, scalar } => *size as u32 * scalar.width as u32,
+                        _ => 4,
+                    };
+                    let components = match elem {
+                        TypeInner::Vector { size, .. } => *size as usize,
+                        _ => 1,
+                    };
+                    (bytes, components)
+                }
+                _ => (4, 1),
+            };
+            storage_buffers.push(StorageBufferInfo {
+                global: handle,
+                binding: binding.binding,
+                elem_bytes,
+                elem_components,
+            });
         }
     }
 
     let params_handle = params_global.ok_or("no @binding(0) uniform found")?;
-    let output_handle = output_global.ok_or("no @binding(1) storage buffer found")?;
+    storage_buffers.sort_by_key(|b| b.binding);
 
     let params_gv = &module.global_variables[params_handle];
     let params_ty = &module.types[params_gv.ty];
@@ -264,8 +296,7 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     Ok(BindingInfo {
         params_global: params_handle,
         params_offsets: offsets,
-        output_global: output_handle,
-        accum_global,
+        storage_buffers,
     })
 }
 
@@ -283,9 +314,8 @@ struct ShaderCompiler<'a, 'b> {
     /// Return values captured from inlined function calls, keyed by CallResult expression handle.
     call_results: HashMap<Handle<Expression>, Vec<cranelift_codegen::ir::Value>>,
     // Function parameters.
-    p_output: cranelift_codegen::ir::Value,
-    p_accum: cranelift_codegen::ir::Value,
     p_params: cranelift_codegen::ir::Value,
+    p_buffers: cranelift_codegen::ir::Value,
     #[allow(dead_code)]
     p_width: cranelift_codegen::ir::Value,
     #[allow(dead_code)]
@@ -334,9 +364,8 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         analysis: &'a BindingInfo,
         builder: &'b mut FunctionBuilder<'a>,
         jit_module: &'b mut JITModule,
-        p_output: cranelift_codegen::ir::Value,
-        p_accum: cranelift_codegen::ir::Value,
         p_params: cranelift_codegen::ir::Value,
+        p_buffers: cranelift_codegen::ir::Value,
         p_width: cranelift_codegen::ir::Value,
         p_height: cranelift_codegen::ir::Value,
         p_stride: cranelift_codegen::ir::Value,
@@ -351,9 +380,8 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             expr_values: HashMap::new(),
             local_vars: HashMap::new(),
             call_results: HashMap::new(),
-            p_output,
-            p_accum,
             p_params,
+            p_buffers,
             p_width,
             p_height,
             p_stride,
@@ -636,10 +664,12 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             Expression::GlobalVariable(gv) => {
                 if *gv == self.analysis.params_global {
                     vec![self.p_params]
-                } else if *gv == self.analysis.output_global {
-                    vec![self.p_output]
-                } else if self.analysis.accum_global == Some(*gv) {
-                    vec![self.p_accum]
+                } else if let Some(idx) = self.analysis.storage_buffers.iter().position(|b| b.global == *gv) {
+                    // Load buffer pointer from buffers array: buffers[idx]
+                    let offset = self.builder.ins().iconst(I64, (idx * 8) as i64); // 8 bytes per pointer
+                    let buf_ptr_addr = self.builder.ins().iadd(self.p_buffers, offset);
+                    let buf_ptr = self.builder.ins().load(I64, MemFlags::trusted(), buf_ptr_addr, 0);
+                    vec![buf_ptr]
                 } else {
                     return Err(format!("unsupported global variable: {gv:?}"));
                 }
@@ -753,11 +783,20 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             Expression::Binary { op, left, right } => {
                 self.eval_expr(*left, func)?;
                 self.eval_expr(*right, func)?;
-                let lhs = self.get_expr_scalar(*left);
-                let rhs = self.get_expr_scalar(*right);
+                let mut lhs = self.get_expr_scalar(*left);
+                let mut rhs = self.get_expr_scalar(*right);
                 let left_ty = self.resolve_expr_type(*left, func);
                 let is_float = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Float);
                 let is_signed = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Sint);
+
+                // Promote i8 (bool) operands to i32 when the other is i32.
+                let lhs_cl = self.builder.func.dfg.value_type(lhs);
+                let rhs_cl = self.builder.func.dfg.value_type(rhs);
+                if lhs_cl == I8 && rhs_cl == I32 {
+                    lhs = self.builder.ins().uextend(I32, lhs);
+                } else if rhs_cl == I8 && lhs_cl == I32 {
+                    rhs = self.builder.ins().uextend(I32, rhs);
+                }
 
                 let result = match op {
                     BinaryOperator::Add => if is_float { self.builder.ins().fadd(lhs, rhs) } else { self.builder.ins().iadd(lhs, rhs) },
@@ -937,8 +976,22 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
 
         let result = match fun {
             MathFunction::Abs => if is_f32 { self.builder.ins().fabs(val) } else { self.builder.ins().iabs(val) },
-            MathFunction::Min => { let rhs = self.get_expr_scalar(arg1.unwrap()); if is_f32 { self.builder.ins().fmin(val, rhs) } else { self.builder.ins().umin(val, rhs) } }
-            MathFunction::Max => { let rhs = self.get_expr_scalar(arg1.unwrap()); if is_f32 { self.builder.ins().fmax(val, rhs) } else { self.builder.ins().umax(val, rhs) } }
+            MathFunction::Min => {
+                let rhs = self.get_expr_scalar(arg1.unwrap());
+                if is_f32 { self.builder.ins().fmin(val, rhs) }
+                else {
+                    let is_signed = matches!(arg_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Sint);
+                    if is_signed { self.builder.ins().smin(val, rhs) } else { self.builder.ins().umin(val, rhs) }
+                }
+            }
+            MathFunction::Max => {
+                let rhs = self.get_expr_scalar(arg1.unwrap());
+                if is_f32 { self.builder.ins().fmax(val, rhs) }
+                else {
+                    let is_signed = matches!(arg_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Sint);
+                    if is_signed { self.builder.ins().smax(val, rhs) } else { self.builder.ins().umax(val, rhs) }
+                }
+            }
             MathFunction::Clamp => {
                 let min_val = self.get_expr_scalar(arg1.unwrap());
                 let max_val = self.get_expr_scalar(arg2.unwrap());
@@ -1091,6 +1144,17 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 (ScalarKind::Float, 4, ScalarKind::Sint, 4) => self.builder.ins().fcvt_to_sint(I32, val),
                 (ScalarKind::Float, 4, ScalarKind::Uint, 4) => self.builder.ins().fcvt_to_uint(I32, val),
                 (ScalarKind::Sint, 4, ScalarKind::Uint, 4) | (ScalarKind::Uint, 4, ScalarKind::Sint, 4) => val,
+                // Bool → integer: zero-extend i8 to i32
+                (ScalarKind::Bool, 1, ScalarKind::Uint, 4) | (ScalarKind::Bool, 1, ScalarKind::Sint, 4) => {
+                    self.builder.ins().uextend(I32, val)
+                }
+                // Bool → float
+                (ScalarKind::Bool, 1, ScalarKind::Float, 4) => {
+                    let ext = self.builder.ins().uextend(I32, val);
+                    self.builder.ins().fcvt_from_uint(F32, ext)
+                }
+                // i32 ↔ i32 (same width, same kind — shouldn't reach here but handle gracefully)
+                _ if src.width == width && src.kind == dst_kind => val,
                 _ => return Err(format!("unsupported cast: {:?}/{} → {:?}/{}", src.kind, src.width, dst_kind, width)),
             },
             None => match (src.kind, src.width, dst_kind) {
@@ -1193,23 +1257,28 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         }
                     }
                     Expression::Access { base, index } => {
-                        let base_expr = &func.expressions[*base];
-                        if let Expression::GlobalVariable(gv) = base_expr {
-                            let idx = self.get_expr_scalar(*index);
-                            let idx_i64 = self.builder.ins().uextend(I64, idx);
+                        self.eval_expr(*base, func)?;
+                        self.eval_expr(*index, func)?;
+                        let buf_ptr = self.get_expr_scalar(*base);
+                        let idx_val = self.get_expr_scalar(*index);
+                        let idx_i64 = self.builder.ins().uextend(I64, idx_val);
 
-                            if *gv == self.analysis.output_global {
-                                // output[idx] = u32 (4 bytes per element)
-                                let byte_offset = self.builder.ins().imul_imm(idx_i64, 4);
-                                let addr = self.builder.ins().iadd(self.p_output, byte_offset);
-                                self.builder.ins().store(MemFlags::trusted(), src_vals[0], addr, 0);
-                            } else if self.analysis.accum_global == Some(*gv) {
-                                // accum[idx] = vec4<f32> (16 bytes per element)
-                                let byte_offset = self.builder.ins().imul_imm(idx_i64, 16);
-                                let addr = self.builder.ins().iadd(self.p_accum, byte_offset);
-                                for (i, v) in src_vals.iter().enumerate() {
-                                    self.builder.ins().store(MemFlags::trusted(), *v, addr, (i * 4) as i32);
-                                }
+                        // Determine element size from the base global's storage buffer info.
+                        let base_expr = &func.expressions[*base];
+                        let (elem_bytes, n_components) = if let Expression::GlobalVariable(gv) = base_expr {
+                            if let Some(info) = self.analysis.storage_buffers.iter().find(|b| b.global == *gv) {
+                                (info.elem_bytes, info.elem_components)
+                            } else { (4, 1) }
+                        } else { (4, 1) };
+
+                        let byte_offset = self.builder.ins().imul_imm(idx_i64, elem_bytes as i64);
+                        let addr = self.builder.ins().iadd(buf_ptr, byte_offset);
+                        if n_components == 1 {
+                            self.builder.ins().store(MemFlags::trusted(), src_vals[0], addr, 0);
+                        } else {
+                            let component_bytes = elem_bytes / n_components as u32;
+                            for (i, v) in src_vals.iter().enumerate() {
+                                self.builder.ins().store(MemFlags::trusted(), *v, addr, (i as u32 * component_bytes) as i32);
                             }
                         }
                     }
@@ -1553,12 +1622,12 @@ mod tests {
         params[28..32].copy_from_slice(&(1.0f32 / height as f32).to_le_bytes()); // y_step
 
         let mut output = vec![0u32; (stride * height) as usize];
+        let buffers: [*mut u8; 1] = [output.as_mut_ptr() as *mut u8];
 
         unsafe {
             (compiled.fn_ptr)(
-                output.as_mut_ptr(),
-                std::ptr::null_mut(),
                 params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
                 width,
                 height,
                 stride,
@@ -1621,12 +1690,12 @@ mod tests {
         params[28..32].copy_from_slice(&y_step.to_le_bytes());
 
         let mut output = vec![0u32; (stride * height) as usize];
+        let buffers: [*mut u8; 1] = [output.as_mut_ptr() as *mut u8];
 
         unsafe {
             (compiled.fn_ptr)(
-                output.as_mut_ptr(),
-                std::ptr::null_mut(),
                 params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
                 width,
                 height,
                 stride,
@@ -1684,12 +1753,15 @@ mod tests {
 
         let mut output = vec![0u32; (stride * height) as usize];
         let mut accum = vec![0.0f32; (stride * height * 4) as usize]; // vec4<f32> per pixel
+        let buffers: [*mut u8; 2] = [
+            output.as_mut_ptr() as *mut u8,
+            accum.as_mut_ptr() as *mut u8,
+        ];
 
         unsafe {
             (compiled.fn_ptr)(
-                output.as_mut_ptr(),
-                accum.as_mut_ptr(),
                 params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
                 width,
                 height,
                 stride,
@@ -1717,5 +1789,58 @@ mod tests {
         // Accum buffer should have been written to (non-zero values).
         let accum_nonzero = accum.iter().filter(|&&v| v != 0.0).count();
         assert!(accum_nonzero > 0, "accum buffer should have non-zero values");
+    }
+
+    #[test]
+    fn game_of_life_step_wgsl_on_cpu() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/sim/game_of_life/game_of_life_step.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile game_of_life_step.wgsl");
+
+        let width: u32 = 16;
+        let height: u32 = 16;
+        let stride: u32 = width;
+        let total = (width * height) as usize;
+
+        // Params: width, height, stride, _pad (4 × u32 = 16 bytes)
+        let mut params = [0u8; 16];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&stride.to_le_bytes());
+
+        // Set up a blinker: 3 alive cells in a row at (7,8), (8,8), (9,8)
+        let mut grid_in = vec![0i32; total];
+        grid_in[(8 * width + 7) as usize] = 1;
+        grid_in[(8 * width + 8) as usize] = 1;
+        grid_in[(8 * width + 9) as usize] = 1;
+
+        let mut grid_out = vec![0i32; total];
+
+        let buffers: [*mut u8; 2] = [
+            grid_in.as_ptr() as *mut u8,   // binding 1: grid_in (read-only)
+            grid_out.as_mut_ptr() as *mut u8, // binding 2: grid_out (read-write)
+        ];
+
+        unsafe {
+            (compiled.fn_ptr)(
+                params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // Blinker should rotate: horizontal → vertical
+        // After one step, alive cells should be at (8,7), (8,8), (8,9)
+        assert!(grid_out[(7 * width + 8) as usize] > 0, "cell (8,7) should be alive");
+        assert!(grid_out[(8 * width + 8) as usize] > 0, "cell (8,8) should be alive");
+        assert!(grid_out[(9 * width + 8) as usize] > 0, "cell (8,9) should be alive");
+
+        // Original horizontal cells (except center) should be dead
+        assert!(grid_out[(8 * width + 7) as usize] <= 0, "cell (7,8) should be dead");
+        assert!(grid_out[(8 * width + 9) as usize] <= 0, "cell (9,8) should be dead");
     }
 }
