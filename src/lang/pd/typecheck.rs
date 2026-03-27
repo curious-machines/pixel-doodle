@@ -27,8 +27,14 @@ pub enum TExpr {
     FloatLit(f64),
     F32Lit(f32),
     IntLit(u64, ValType),
-    U32Lit(u32),
+    I8Lit(i8),
+    U8Lit(u8),
+    I16Lit(i16),
+    U16Lit(u16),
     I32Lit(i32),
+    U32Lit(u32),
+    I64Lit(i64),
+    U64Lit(u64),
     BoolLit(bool),
     Ident(String, ValType),
     BinOp {
@@ -71,8 +77,14 @@ impl TExpr {
             TExpr::FloatLit(_) => ValType::F64,
             TExpr::F32Lit(_) => ValType::F32,
             TExpr::IntLit(_, ty) => *ty,
-            TExpr::U32Lit(_) => ValType::U32,
+            TExpr::I8Lit(_) => ValType::I8,
+            TExpr::U8Lit(_) => ValType::U8,
+            TExpr::I16Lit(_) => ValType::I16,
+            TExpr::U16Lit(_) => ValType::U16,
             TExpr::I32Lit(_) => ValType::I32,
+            TExpr::U32Lit(_) => ValType::U32,
+            TExpr::I64Lit(_) => ValType::I64,
+            TExpr::U64Lit(_) => ValType::U64,
             TExpr::BoolLit(_) => ValType::BOOL,
             TExpr::Ident(_, ty) => *ty,
             TExpr::BinOp { ty, .. } => *ty,
@@ -191,8 +203,14 @@ impl Checker {
         match expr {
             Expr::FloatLit(v, _) => Ok(TExpr::FloatLit(*v)),
             Expr::F32Lit(v, _) => Ok(TExpr::F32Lit(*v)),
+            Expr::I8Lit(v, _) => Ok(TExpr::I8Lit(*v)),
+            Expr::U8Lit(v, _) => Ok(TExpr::U8Lit(*v)),
+            Expr::I16Lit(v, _) => Ok(TExpr::I16Lit(*v)),
+            Expr::U16Lit(v, _) => Ok(TExpr::U16Lit(*v)),
             Expr::U32Lit(v, _) => Ok(TExpr::U32Lit(*v)),
             Expr::I32Lit(v, _) => Ok(TExpr::I32Lit(*v)),
+            Expr::I64Lit(v, _) => Ok(TExpr::I64Lit(*v)),
+            Expr::U64Lit(v, _) => Ok(TExpr::U64Lit(*v)),
             Expr::BoolLit(v, _) => Ok(TExpr::BoolLit(*v)),
 
             Expr::IntLit(v, span) => {
@@ -204,6 +222,30 @@ impl Checker {
                 match ty {
                     ValType::Scalar(ScalarType::F64) => Ok(TExpr::FloatLit(*v as f64)),
                     ValType::Scalar(ScalarType::F32) => Ok(TExpr::F32Lit(*v as f32)),
+                    ValType::Scalar(ScalarType::I8) => {
+                        if *v > i8::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for i8", v)));
+                        }
+                        Ok(TExpr::I8Lit(*v as i8))
+                    }
+                    ValType::Scalar(ScalarType::U8) => {
+                        if *v > u8::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for u8", v)));
+                        }
+                        Ok(TExpr::U8Lit(*v as u8))
+                    }
+                    ValType::Scalar(ScalarType::I16) => {
+                        if *v > i16::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for i16", v)));
+                        }
+                        Ok(TExpr::I16Lit(*v as i16))
+                    }
+                    ValType::Scalar(ScalarType::U16) => {
+                        if *v > u16::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for u16", v)));
+                        }
+                        Ok(TExpr::U16Lit(*v as u16))
+                    }
                     ValType::Scalar(ScalarType::U32) => {
                         if *v > u32::MAX as u64 {
                             return Err(err(span, format!("integer {} too large for u32", v)));
@@ -215,6 +257,15 @@ impl Checker {
                             return Err(err(span, format!("integer {} too large for i32", v)));
                         }
                         Ok(TExpr::I32Lit(*v as i32))
+                    }
+                    ValType::Scalar(ScalarType::I64) => {
+                        if *v > i64::MAX as u64 {
+                            return Err(err(span, format!("integer {} too large for i64", v)));
+                        }
+                        Ok(TExpr::I64Lit(*v as i64))
+                    }
+                    ValType::Scalar(ScalarType::U64) => {
+                        Ok(TExpr::U64Lit(*v))
                     }
                     ValType::Scalar(ScalarType::Bool) => Err(err(span, "cannot use integer literal as bool".into())),
                     ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
@@ -236,7 +287,11 @@ impl Checker {
                     UnaryOpKind::Neg => {
                         let inner = self.check_expr(inner, Some(ValType::F64))?;
                         let ty = inner.ty();
-                        if ty != ValType::F64 && ty != ValType::F32 && ty != ValType::U32 && ty != ValType::I32 && !ty.is_vec() {
+                        let negatable = match ty {
+                            ValType::Scalar(s) => s.is_float() || s.is_integer(),
+                            ValType::Vec { .. } => true,
+                        };
+                        if !negatable {
                             return Err(err(span, format!("cannot negate {}", ty)));
                         }
                         Ok(TExpr::UnaryOp { op: *op, expr: Box::new(inner), ty })
@@ -354,8 +409,9 @@ impl Checker {
                 let l = self.check_expr(lhs, Some(ValType::U32))?;
                 let r = self.check_expr(rhs, Some(l.ty()))?;
                 let ty = l.ty();
-                if (ty != ValType::U32 && ty != ValType::I32) || r.ty() != ty {
-                    return Err(err(span, format!("bitwise op requires matching u32 or i32 operands, got {} and {}", l.ty(), r.ty())));
+                let is_int = matches!(ty, ValType::Scalar(s) if s.is_integer());
+                if !is_int || r.ty() != ty {
+                    return Err(err(span, format!("bitwise op requires matching integer operands, got {} and {}", l.ty(), r.ty())));
                 }
                 Ok(TExpr::BinOp { op, lhs: Box::new(l), rhs: Box::new(r), ty })
             }
@@ -876,8 +932,14 @@ fn expected_for_arith(expr: &Expr, check: &dyn Fn(&Expr) -> TypeResult<TExpr>) -
     match expr {
         Expr::FloatLit(_, _) => Some(ValType::F64),
         Expr::F32Lit(_, _) => Some(ValType::F32),
-        Expr::U32Lit(_, _) => Some(ValType::U32),
+        Expr::I8Lit(_, _) => Some(ValType::I8),
+        Expr::U8Lit(_, _) => Some(ValType::U8),
+        Expr::I16Lit(_, _) => Some(ValType::I16),
+        Expr::U16Lit(_, _) => Some(ValType::U16),
         Expr::I32Lit(_, _) => Some(ValType::I32),
+        Expr::U32Lit(_, _) => Some(ValType::U32),
+        Expr::I64Lit(_, _) => Some(ValType::I64),
+        Expr::U64Lit(_, _) => Some(ValType::U64),
         Expr::BoolLit(_, _) => None,
         Expr::IntLit(_, _) => None,
         Expr::Ident(_, _) | Expr::Call { .. } | Expr::Cast { .. } | Expr::IfElse { .. } | Expr::FieldAccess { .. } => {

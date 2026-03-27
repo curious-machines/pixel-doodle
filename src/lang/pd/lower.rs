@@ -79,11 +79,41 @@ impl Lowerer {
                 let c = match ty {
                     ValType::Scalar(ScalarType::F64) => Const::F64(*v as f64),
                     ValType::Scalar(ScalarType::F32) => Const::F32(*v as f32),
+                    ValType::Scalar(ScalarType::I8) => Const::I8(*v as i8),
+                    ValType::Scalar(ScalarType::U8) => Const::U8(*v as u8),
+                    ValType::Scalar(ScalarType::I16) => Const::I16(*v as i16),
+                    ValType::Scalar(ScalarType::U16) => Const::U16(*v as u16),
                     ValType::Scalar(ScalarType::U32) => Const::U32(*v as u32),
                     ValType::Scalar(ScalarType::I32) => Const::I32(*v as i32),
+                    ValType::Scalar(ScalarType::I64) => Const::I64(*v as i64),
+                    ValType::Scalar(ScalarType::U64) => Const::U64(*v),
                     ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } => unreachable!(),
                 };
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
+                var
+            }
+            TExpr::I8Lit(v) => {
+                let var = self.auto_var("lit", ValType::I8);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::I8, Inst::Const(Const::I8(*v)))));
+                var
+            }
+            TExpr::U8Lit(v) => {
+                let var = self.auto_var("lit", ValType::U8);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::U8, Inst::Const(Const::U8(*v)))));
+                var
+            }
+            TExpr::I16Lit(v) => {
+                let var = self.auto_var("lit", ValType::I16);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::I16, Inst::Const(Const::I16(*v)))));
+                var
+            }
+            TExpr::U16Lit(v) => {
+                let var = self.auto_var("lit", ValType::U16);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::U16, Inst::Const(Const::U16(*v)))));
                 var
             }
             TExpr::U32Lit(v) => {
@@ -96,6 +126,18 @@ impl Lowerer {
                 let var = self.auto_var("lit", ValType::I32);
                 let name = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::I32, Inst::Const(Const::I32(*v)))));
+                var
+            }
+            TExpr::I64Lit(v) => {
+                let var = self.auto_var("lit", ValType::I64);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::I64, Inst::Const(Const::I64(*v)))));
+                var
+            }
+            TExpr::U64Lit(v) => {
+                let var = self.auto_var("lit", ValType::U64);
+                let name = self.binding_name(var);
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ValType::U64, Inst::Const(Const::U64(*v)))));
                 var
             }
             TExpr::BoolLit(v) => {

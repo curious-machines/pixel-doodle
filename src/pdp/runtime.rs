@@ -597,7 +597,7 @@ impl Runtime {
 
     /// Pack user-defined argument values into a byte buffer matching the compiled layout.
     fn pack_user_args(&self, slots: &[UserArgSlot], args: &[NamedArg]) -> Vec<u8> {
-        use crate::kernel_ir::ValType;
+        use crate::kernel_ir::{ScalarType, ValType};
         if slots.is_empty() {
             // Warn if caller passed args to a kernel that has no user params
             for arg in args {
@@ -614,10 +614,7 @@ impl Runtime {
         // Compute total size from last slot
         let last = slots.last().unwrap();
         let last_size = match last.ty {
-            ValType::F64 => 8,
-            ValType::F32 => 4,
-            ValType::U32 => 4,
-            ValType::I32 => 4,
+            ValType::Scalar(s) => s.byte_size(),
             _ => 8,
         };
         let total = ((last.offset + last_size) + 7) & !7;
@@ -635,21 +632,37 @@ impl Runtime {
                 },
                 None => panic!("missing argument '{}' for kernel", slot.name),
             };
+            let o = slot.offset;
             match slot.ty {
-                ValType::F64 => {
-                    buf[slot.offset..slot.offset + 8].copy_from_slice(&f.to_le_bytes());
+                ValType::Scalar(ScalarType::F64) => {
+                    buf[o..o + 8].copy_from_slice(&f.to_le_bytes());
                 }
-                ValType::F32 => {
-                    let v = f as f32;
-                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                ValType::Scalar(ScalarType::F32) => {
+                    buf[o..o + 4].copy_from_slice(&(f as f32).to_le_bytes());
                 }
-                ValType::U32 => {
-                    let v = f as u32;
-                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                ValType::Scalar(ScalarType::I8) => {
+                    buf[o..o + 1].copy_from_slice(&(f as i8).to_le_bytes());
                 }
-                ValType::I32 => {
-                    let v = f as i32;
-                    buf[slot.offset..slot.offset + 4].copy_from_slice(&v.to_le_bytes());
+                ValType::Scalar(ScalarType::U8) => {
+                    buf[o..o + 1].copy_from_slice(&(f as u8).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::I16) => {
+                    buf[o..o + 2].copy_from_slice(&(f as i16).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::U16) => {
+                    buf[o..o + 2].copy_from_slice(&(f as u16).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::I32) => {
+                    buf[o..o + 4].copy_from_slice(&(f as i32).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::U32) => {
+                    buf[o..o + 4].copy_from_slice(&(f as u32).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::I64) => {
+                    buf[o..o + 8].copy_from_slice(&(f as i64).to_le_bytes());
+                }
+                ValType::Scalar(ScalarType::U64) => {
+                    buf[o..o + 8].copy_from_slice(&(f as u64).to_le_bytes());
                 }
                 _ => panic!("unsupported user-arg type {:?}", slot.ty),
             }

@@ -349,11 +349,8 @@ fn lower_kernel_body(
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), user_args_ptr, &[offset], &format!("arg_{name}_ptr")).unwrap()
                 };
-                match slot.ty {
-                    ValType::F64 => builder.build_load(f64_type, addr, &format!("arg_{name}")).unwrap(),
-                    ValType::U32 => builder.build_load(i32_type, addr, &format!("arg_{name}")).unwrap(),
-                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
-                }
+                let load_ty = scalar_to_llvm_type(context, slot.ty.element_scalar());
+                builder.build_load(load_ty, addr, &format!("arg_{name}")).unwrap()
             }
         };
         val_map.insert(param.var, VarValues::Scalar(val));
@@ -397,10 +394,6 @@ fn lower_while(
     val_map: &mut std::collections::HashMap<Var, VarValues<'static>>,
     buf_ctx: Option<&LlvmBufContext<'static>>,
 ) {
-    let i32_type = context.i32_type();
-    let f64_type = context.f64_type();
-    let i1_type = context.bool_type();
-
     // Create blocks
     let pre_block = builder.get_insert_block().unwrap();
     let loop_header = context.append_basic_block(function, "while_header");
@@ -418,13 +411,7 @@ fn lower_while(
     let mut carry_phis: Vec<Vec<inkwell::values::PhiValue<'static>>> = Vec::new();
     for cv in &w.carry {
         let component_count = cv.binding.ty.component_count();
-        let llvm_ty: inkwell::types::BasicTypeEnum = match cv.binding.ty.element_scalar() {
-            ScalarType::F64 => f64_type.into(),
-            ScalarType::F32 => context.f32_type().into(),
-            ScalarType::U32 => i32_type.into(),
-            ScalarType::I32 => i32_type.into(),
-            ScalarType::Bool => i1_type.into(),
-        };
+        let llvm_ty = scalar_to_llvm_type(context, cv.binding.ty.element_scalar());
 
         let mut phis = Vec::new();
         for comp in 0..component_count {
@@ -506,145 +493,233 @@ fn lower_inst(
         Inst::Const(c) => VarValues::Scalar(match c {
             Const::F32(v) => context.f32_type().const_float(*v as f64).into(),
             Const::F64(v) => f64_type.const_float(*v).into(),
+            Const::I8(v) => context.i8_type().const_int(*v as u64, true).into(),
+            Const::U8(v) => context.i8_type().const_int(*v as u64, false).into(),
+            Const::I16(v) => context.i16_type().const_int(*v as u64, true).into(),
+            Const::U16(v) => context.i16_type().const_int(*v as u64, false).into(),
             Const::I32(v) => i32_type.const_int(*v as u64, true).into(),
             Const::U32(v) => i32_type.const_int(*v as u64, false).into(),
+            Const::I64(v) => context.i64_type().const_int(*v as u64, true).into(),
+            Const::U64(v) => context.i64_type().const_int(*v, false).into(),
             Const::Bool(v) => i1_type.const_int(if *v { 1 } else { 0 }, false).into(),
         }),
         Inst::Binary { op, lhs, rhs } => {
             let l = get_scalar(val_map, lhs);
             let r = get_scalar(val_map, rhs);
-            VarValues::Scalar(match (op, binding.ty) {
-                (BinOp::Add, ValType::F64) => builder.build_float_add(l.into_float_value(), r.into_float_value(), "add").unwrap().into(),
-                (BinOp::Sub, ValType::F64) => builder.build_float_sub(l.into_float_value(), r.into_float_value(), "sub").unwrap().into(),
-                (BinOp::Mul, ValType::F64) => builder.build_float_mul(l.into_float_value(), r.into_float_value(), "mul").unwrap().into(),
-                (BinOp::Div, ValType::F64) => builder.build_float_div(l.into_float_value(), r.into_float_value(), "div").unwrap().into(),
-                (BinOp::Rem, ValType::F64) => builder.build_float_rem(l.into_float_value(), r.into_float_value(), "rem").unwrap().into(),
-                (BinOp::Add, ValType::U32) => builder.build_int_add(l.into_int_value(), r.into_int_value(), "add").unwrap().into(),
-                (BinOp::Sub, ValType::U32) => builder.build_int_sub(l.into_int_value(), r.into_int_value(), "sub").unwrap().into(),
-                (BinOp::Mul, ValType::U32) => builder.build_int_mul(l.into_int_value(), r.into_int_value(), "mul").unwrap().into(),
-                (BinOp::Div, ValType::U32) => builder.build_int_unsigned_div(l.into_int_value(), r.into_int_value(), "div").unwrap().into(),
-                (BinOp::Rem, ValType::U32) => builder.build_int_unsigned_rem(l.into_int_value(), r.into_int_value(), "rem").unwrap().into(),
-                (BinOp::BitAnd, _) | (BinOp::And, _) => builder.build_and(l.into_int_value(), r.into_int_value(), "and").unwrap().into(),
-                (BinOp::BitOr, _) | (BinOp::Or, _) => builder.build_or(l.into_int_value(), r.into_int_value(), "or").unwrap().into(),
-                (BinOp::BitXor, _) => builder.build_xor(l.into_int_value(), r.into_int_value(), "xor").unwrap().into(),
-                (BinOp::Shl, _) => builder.build_left_shift(l.into_int_value(), r.into_int_value(), "shl").unwrap().into(),
-                (BinOp::Shr, _) => builder.build_right_shift(l.into_int_value(), r.into_int_value(), false, "shr").unwrap().into(),
-                (BinOp::Min, ValType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.minnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
-                (BinOp::Max, ValType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.maxnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
-                (BinOp::Min, ValType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umin.i32", l.into_int_value(), r.into_int_value(), i32_type),
-                (BinOp::Max, ValType::U32) => call_i32_binary_intrinsic(module, builder, "llvm.umax.i32", l.into_int_value(), r.into_int_value(), i32_type),
-                (BinOp::Atan2, ValType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.atan2.f64", l.into_float_value(), r.into_float_value(), f64_type),
-                (BinOp::Pow, ValType::F64) => call_f64_binary_intrinsic(module, builder, "llvm.pow.f64", l.into_float_value(), r.into_float_value(), f64_type),
-                (BinOp::Hash, ValType::U32) => {
-                    let l = l.into_int_value();
-                    let r = r.into_int_value();
-                    let hash_k = i32_type.const_int(0x45d9f3b, false);
-                    let sixteen = i32_type.const_int(16, false);
-                    // h = a * k + b
-                    let h = builder.build_int_mul(l, hash_k, "hash1").unwrap();
-                    let h = builder.build_int_add(h, r, "hash2").unwrap();
-                    // h ^= h >> 16
-                    let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr1").unwrap();
-                    let h = builder.build_xor(h, h_s, "hash3").unwrap();
-                    // h *= k
-                    let h = builder.build_int_mul(h, hash_k, "hash4").unwrap();
-                    // h ^= h >> 16
-                    let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr2").unwrap();
-                    builder.build_xor(h, h_s, "hash5").unwrap().into()
+            let elem = binding.ty.element_scalar();
+            VarValues::Scalar(if elem.is_float() {
+                match op {
+                    BinOp::Add => builder.build_float_add(l.into_float_value(), r.into_float_value(), "add").unwrap().into(),
+                    BinOp::Sub => builder.build_float_sub(l.into_float_value(), r.into_float_value(), "sub").unwrap().into(),
+                    BinOp::Mul => builder.build_float_mul(l.into_float_value(), r.into_float_value(), "mul").unwrap().into(),
+                    BinOp::Div => builder.build_float_div(l.into_float_value(), r.into_float_value(), "div").unwrap().into(),
+                    BinOp::Rem => builder.build_float_rem(l.into_float_value(), r.into_float_value(), "rem").unwrap().into(),
+                    BinOp::Min => call_f64_binary_intrinsic(module, builder, "llvm.minnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                    BinOp::Max => call_f64_binary_intrinsic(module, builder, "llvm.maxnum.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                    BinOp::Atan2 => call_f64_binary_intrinsic(module, builder, "llvm.atan2.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                    BinOp::Pow => call_f64_binary_intrinsic(module, builder, "llvm.pow.f64", l.into_float_value(), r.into_float_value(), f64_type),
+                    _ => unreachable!("invalid float binary op {:?}", op),
                 }
-                _ => unreachable!("invalid binary op/type combination"),
+            } else if elem.is_integer() {
+                let int_ty = scalar_to_llvm_int_type(context, elem);
+                match op {
+                    BinOp::Add => builder.build_int_add(l.into_int_value(), r.into_int_value(), "add").unwrap().into(),
+                    BinOp::Sub => builder.build_int_sub(l.into_int_value(), r.into_int_value(), "sub").unwrap().into(),
+                    BinOp::Mul => builder.build_int_mul(l.into_int_value(), r.into_int_value(), "mul").unwrap().into(),
+                    BinOp::Div if elem.is_signed() => builder.build_int_signed_div(l.into_int_value(), r.into_int_value(), "div").unwrap().into(),
+                    BinOp::Div => builder.build_int_unsigned_div(l.into_int_value(), r.into_int_value(), "div").unwrap().into(),
+                    BinOp::Rem if elem.is_signed() => builder.build_int_signed_rem(l.into_int_value(), r.into_int_value(), "rem").unwrap().into(),
+                    BinOp::Rem => builder.build_int_unsigned_rem(l.into_int_value(), r.into_int_value(), "rem").unwrap().into(),
+                    BinOp::BitAnd | BinOp::And => builder.build_and(l.into_int_value(), r.into_int_value(), "and").unwrap().into(),
+                    BinOp::BitOr | BinOp::Or => builder.build_or(l.into_int_value(), r.into_int_value(), "or").unwrap().into(),
+                    BinOp::BitXor => builder.build_xor(l.into_int_value(), r.into_int_value(), "xor").unwrap().into(),
+                    BinOp::Shl => builder.build_left_shift(l.into_int_value(), r.into_int_value(), "shl").unwrap().into(),
+                    BinOp::Shr => builder.build_right_shift(l.into_int_value(), r.into_int_value(), elem.is_signed(), "shr").unwrap().into(),
+                    BinOp::Min if elem.is_signed() => {
+                        let name = format!("llvm.smin.i{}", elem.byte_size() * 8);
+                        call_int_binary_intrinsic(module, builder, &name, l.into_int_value(), r.into_int_value(), int_ty)
+                    }
+                    BinOp::Min => {
+                        let name = format!("llvm.umin.i{}", elem.byte_size() * 8);
+                        call_int_binary_intrinsic(module, builder, &name, l.into_int_value(), r.into_int_value(), int_ty)
+                    }
+                    BinOp::Max if elem.is_signed() => {
+                        let name = format!("llvm.smax.i{}", elem.byte_size() * 8);
+                        call_int_binary_intrinsic(module, builder, &name, l.into_int_value(), r.into_int_value(), int_ty)
+                    }
+                    BinOp::Max => {
+                        let name = format!("llvm.umax.i{}", elem.byte_size() * 8);
+                        call_int_binary_intrinsic(module, builder, &name, l.into_int_value(), r.into_int_value(), int_ty)
+                    }
+                    BinOp::Hash => {
+                        let l = l.into_int_value();
+                        let r = r.into_int_value();
+                        let hash_k = i32_type.const_int(0x45d9f3b, false);
+                        let sixteen = i32_type.const_int(16, false);
+                        let h = builder.build_int_mul(l, hash_k, "hash1").unwrap();
+                        let h = builder.build_int_add(h, r, "hash2").unwrap();
+                        let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr1").unwrap();
+                        let h = builder.build_xor(h, h_s, "hash3").unwrap();
+                        let h = builder.build_int_mul(h, hash_k, "hash4").unwrap();
+                        let h_s = builder.build_right_shift(h, sixteen, false, "hash_shr2").unwrap();
+                        builder.build_xor(h, h_s, "hash5").unwrap().into()
+                    }
+                    _ => unreachable!("invalid integer binary op {:?}", op),
+                }
+            } else {
+                // Bool
+                match op {
+                    BinOp::BitAnd | BinOp::And => builder.build_and(l.into_int_value(), r.into_int_value(), "and").unwrap().into(),
+                    BinOp::BitOr | BinOp::Or => builder.build_or(l.into_int_value(), r.into_int_value(), "or").unwrap().into(),
+                    BinOp::BitXor => builder.build_xor(l.into_int_value(), r.into_int_value(), "xor").unwrap().into(),
+                    _ => unreachable!("invalid bool binary op {:?}", op),
+                }
             })
         }
         Inst::Unary { op, arg } => {
             let a = get_scalar(val_map, arg);
-            VarValues::Scalar(match (op, binding.ty) {
-                (UnaryOp::Neg, ValType::F64) => builder.build_float_neg(a.into_float_value(), "neg").unwrap().into(),
-                (UnaryOp::Neg, ValType::U32) => builder.build_int_sub(i32_type.const_zero(), a.into_int_value(), "neg").unwrap().into(),
-                (UnaryOp::Not, _) => builder.build_not(a.into_int_value(), "not").unwrap().into(),
-                (UnaryOp::Abs, ValType::F64) => {
-                    call_f64_intrinsic(module, builder, "llvm.fabs.f64", a.into_float_value(), f64_type)
+            let elem = binding.ty.element_scalar();
+            VarValues::Scalar(if elem.is_float() {
+                match op {
+                    UnaryOp::Neg => builder.build_float_neg(a.into_float_value(), "neg").unwrap().into(),
+                    UnaryOp::Abs => call_f64_intrinsic(module, builder, "llvm.fabs.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Sqrt => call_f64_intrinsic(module, builder, "llvm.sqrt.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Floor => call_f64_intrinsic(module, builder, "llvm.floor.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Ceil => call_f64_intrinsic(module, builder, "llvm.ceil.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Sin => call_f64_intrinsic(module, builder, "llvm.sin.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Cos => call_f64_intrinsic(module, builder, "llvm.cos.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Tan => call_f64_intrinsic(module, builder, "llvm.tan.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Asin => call_f64_intrinsic(module, builder, "llvm.asin.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Acos => call_f64_intrinsic(module, builder, "llvm.acos.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Atan => call_f64_intrinsic(module, builder, "llvm.atan.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Exp => call_f64_intrinsic(module, builder, "llvm.exp.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Exp2 => call_f64_intrinsic(module, builder, "llvm.exp2.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Log => call_f64_intrinsic(module, builder, "llvm.log.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Log2 => call_f64_intrinsic(module, builder, "llvm.log2.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Log10 => call_f64_intrinsic(module, builder, "llvm.log10.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Round => call_f64_intrinsic(module, builder, "llvm.round.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Trunc => call_f64_intrinsic(module, builder, "llvm.trunc.f64", a.into_float_value(), f64_type),
+                    UnaryOp::Fract => {
+                        let floored = call_f64_intrinsic(module, builder, "llvm.floor.f64", a.into_float_value(), f64_type);
+                        builder.build_float_sub(a.into_float_value(), floored.into_float_value(), "fract").unwrap().into()
+                    }
+                    UnaryOp::Not => unreachable!("Not is not valid for floats"),
                 }
-                (UnaryOp::Abs, ValType::U32) => a,
-                (UnaryOp::Sqrt, _) => {
-                    call_f64_intrinsic(module, builder, "llvm.sqrt.f64", a.into_float_value(), f64_type)
+            } else if elem.is_integer() {
+                let int_ty = scalar_to_llvm_int_type(context, elem);
+                match op {
+                    UnaryOp::Neg => builder.build_int_sub(int_ty.const_zero(), a.into_int_value(), "neg").unwrap().into(),
+                    UnaryOp::Not => builder.build_not(a.into_int_value(), "not").unwrap().into(),
+                    UnaryOp::Abs if elem.is_unsigned() => a, // unsigned abs is identity
+                    UnaryOp::Abs => {
+                        // signed abs: val < 0 ? -val : val
+                        let zero = int_ty.const_zero();
+                        let is_neg = builder.build_int_compare(IntPredicate::SLT, a.into_int_value(), zero, "is_neg").unwrap();
+                        let negated = builder.build_int_sub(zero, a.into_int_value(), "negated").unwrap();
+                        builder.build_select(is_neg, negated, a.into_int_value(), "abs").unwrap()
+                    }
+                    _ => unreachable!("invalid integer unary op {:?}", op),
                 }
-                (UnaryOp::Floor, _) => {
-                    call_f64_intrinsic(module, builder, "llvm.floor.f64", a.into_float_value(), f64_type)
+            } else {
+                // Bool
+                match op {
+                    UnaryOp::Not => builder.build_not(a.into_int_value(), "not").unwrap().into(),
+                    _ => unreachable!("invalid bool unary op {:?}", op),
                 }
-                (UnaryOp::Ceil, _) => {
-                    call_f64_intrinsic(module, builder, "llvm.ceil.f64", a.into_float_value(), f64_type)
-                }
-                (UnaryOp::Sin, _) => call_f64_intrinsic(module, builder, "llvm.sin.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Cos, _) => call_f64_intrinsic(module, builder, "llvm.cos.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Tan, _) => call_f64_intrinsic(module, builder, "llvm.tan.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Asin, _) => call_f64_intrinsic(module, builder, "llvm.asin.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Acos, _) => call_f64_intrinsic(module, builder, "llvm.acos.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Atan, _) => call_f64_intrinsic(module, builder, "llvm.atan.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Exp, _) => call_f64_intrinsic(module, builder, "llvm.exp.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Exp2, _) => call_f64_intrinsic(module, builder, "llvm.exp2.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Log, _) => call_f64_intrinsic(module, builder, "llvm.log.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Log2, _) => call_f64_intrinsic(module, builder, "llvm.log2.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Log10, _) => call_f64_intrinsic(module, builder, "llvm.log10.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Round, _) => call_f64_intrinsic(module, builder, "llvm.round.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Trunc, _) => call_f64_intrinsic(module, builder, "llvm.trunc.f64", a.into_float_value(), f64_type),
-                (UnaryOp::Fract, _) => {
-                    let floored = call_f64_intrinsic(module, builder, "llvm.floor.f64", a.into_float_value(), f64_type);
-                    builder.build_float_sub(a.into_float_value(), floored.into_float_value(), "fract").unwrap().into()
-                }
-                _ => unreachable!("invalid unary op/type combination"),
             })
         }
         Inst::Cmp { op, lhs, rhs } => {
             let l = get_scalar(val_map, lhs);
             let r = get_scalar(val_map, rhs);
             let operand_ty = kernel.var_type(*lhs).unwrap();
-            VarValues::Scalar(match operand_ty {
-                ValType::F64 => {
-                    let pred = match op {
-                        CmpOp::Eq => FloatPredicate::OEQ,
-                        CmpOp::Ne => FloatPredicate::ONE,
-                        CmpOp::Lt => FloatPredicate::OLT,
-                        CmpOp::Le => FloatPredicate::OLE,
-                        CmpOp::Gt => FloatPredicate::OGT,
-                        CmpOp::Ge => FloatPredicate::OGE,
-                    };
-                    builder.build_float_compare(pred, l.into_float_value(), r.into_float_value(), "cmp").unwrap().into()
-                }
-                ValType::U32 => {
-                    let pred = match op {
-                        CmpOp::Eq => IntPredicate::EQ,
-                        CmpOp::Ne => IntPredicate::NE,
-                        CmpOp::Lt => IntPredicate::ULT,
-                        CmpOp::Le => IntPredicate::ULE,
-                        CmpOp::Gt => IntPredicate::UGT,
-                        CmpOp::Ge => IntPredicate::UGE,
-                    };
-                    builder.build_int_compare(pred, l.into_int_value(), r.into_int_value(), "cmp").unwrap().into()
-                }
-                _ => unreachable!("cannot compare bools"),
+            let operand_scalar = operand_ty.element_scalar();
+            VarValues::Scalar(if operand_scalar.is_float() {
+                let pred = match op {
+                    CmpOp::Eq => FloatPredicate::OEQ,
+                    CmpOp::Ne => FloatPredicate::ONE,
+                    CmpOp::Lt => FloatPredicate::OLT,
+                    CmpOp::Le => FloatPredicate::OLE,
+                    CmpOp::Gt => FloatPredicate::OGT,
+                    CmpOp::Ge => FloatPredicate::OGE,
+                };
+                builder.build_float_compare(pred, l.into_float_value(), r.into_float_value(), "cmp").unwrap().into()
+            } else if operand_scalar.is_integer() {
+                let pred = match (op, operand_scalar.is_signed()) {
+                    (CmpOp::Eq, _) => IntPredicate::EQ,
+                    (CmpOp::Ne, _) => IntPredicate::NE,
+                    (CmpOp::Lt, true) => IntPredicate::SLT,
+                    (CmpOp::Le, true) => IntPredicate::SLE,
+                    (CmpOp::Gt, true) => IntPredicate::SGT,
+                    (CmpOp::Ge, true) => IntPredicate::SGE,
+                    (CmpOp::Lt, false) => IntPredicate::ULT,
+                    (CmpOp::Le, false) => IntPredicate::ULE,
+                    (CmpOp::Gt, false) => IntPredicate::UGT,
+                    (CmpOp::Ge, false) => IntPredicate::UGE,
+                };
+                builder.build_int_compare(pred, l.into_int_value(), r.into_int_value(), "cmp").unwrap().into()
+            } else {
+                // Bool: only Eq/Ne make sense
+                let pred = match op {
+                    CmpOp::Eq => IntPredicate::EQ,
+                    CmpOp::Ne => IntPredicate::NE,
+                    _ => unreachable!("invalid comparison op {:?} for bool", op),
+                };
+                builder.build_int_compare(pred, l.into_int_value(), r.into_int_value(), "cmp").unwrap().into()
             })
         }
         Inst::Conv { op, arg } => {
             let a = get_scalar(val_map, arg);
-            let f32_type = context.f32_type();
-            VarValues::Scalar(match (op.from, op.to, op.norm) {
-                (ScalarType::F64, ScalarType::U32, false) => builder.build_float_to_unsigned_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
-                (ScalarType::F64, ScalarType::I32, false) => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
-                (ScalarType::U32, ScalarType::F64, false) => builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
-                (ScalarType::I32, ScalarType::F64, false) => builder.build_signed_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
-                (ScalarType::U32, ScalarType::F64, true) => {
-                    let f = builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv_f").unwrap();
-                    let recip = f64_type.const_float(1.0 / 4294967296.0);
-                    builder.build_float_mul(f, recip, "norm").unwrap().into()
+            let from = op.from;
+            let to = op.to;
+            VarValues::Scalar(if op.norm {
+                // Normalizing conversion: unsigned int -> float, divide by 2^bits
+                assert!(from.is_unsigned() && to.is_float(), "norm conv requires unsigned->float");
+                let float_ty = if to == ScalarType::F64 { context.f64_type() } else { context.f32_type() };
+                let f = builder.build_unsigned_int_to_float(a.into_int_value(), float_ty, "conv_f").unwrap();
+                let max_val = (1u128 << (from.byte_size() * 8)) as f64;
+                let recip = float_ty.const_float(1.0 / max_val);
+                builder.build_float_mul(f, recip, "norm").unwrap().into()
+            } else if from.is_float() && to.is_float() {
+                // Float to float
+                let from_size = from.byte_size();
+                let to_size = to.byte_size();
+                let target_ty = if to == ScalarType::F64 { context.f64_type() } else { context.f32_type() };
+                if to_size > from_size {
+                    builder.build_float_ext(a.into_float_value(), target_ty, "conv").unwrap().into()
+                } else if to_size < from_size {
+                    builder.build_float_trunc(a.into_float_value(), target_ty, "conv").unwrap().into()
+                } else {
+                    a // same size float-to-float is identity
                 }
-                (ScalarType::F32, ScalarType::F64, false) => builder.build_float_ext(a.into_float_value(), f64_type, "conv").unwrap().into(),
-                (ScalarType::F64, ScalarType::F32, false) => builder.build_float_trunc(a.into_float_value(), f32_type, "conv").unwrap().into(),
-                (ScalarType::I32, ScalarType::U32, false) | (ScalarType::U32, ScalarType::I32, false) => a, // same bit width, reinterpret
-                (ScalarType::I32, ScalarType::F32, false) => builder.build_signed_int_to_float(a.into_int_value(), f32_type, "conv").unwrap().into(),
-                (ScalarType::F32, ScalarType::I32, false) => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
-                (ScalarType::F32, ScalarType::U32, false) => builder.build_float_to_unsigned_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
-                (ScalarType::U32, ScalarType::F32, false) => builder.build_unsigned_int_to_float(a.into_int_value(), f32_type, "conv").unwrap().into(),
-                _ => unreachable!("unsupported conv {:?}", op),
+            } else if from.is_float() && to.is_signed() {
+                let int_ty = scalar_to_llvm_int_type(context, to);
+                builder.build_float_to_signed_int(a.into_float_value(), int_ty, "conv").unwrap().into()
+            } else if from.is_float() && to.is_unsigned() {
+                let int_ty = scalar_to_llvm_int_type(context, to);
+                builder.build_float_to_unsigned_int(a.into_float_value(), int_ty, "conv").unwrap().into()
+            } else if from.is_signed() && to.is_float() {
+                let float_ty = if to == ScalarType::F64 { context.f64_type() } else { context.f32_type() };
+                builder.build_signed_int_to_float(a.into_int_value(), float_ty, "conv").unwrap().into()
+            } else if from.is_unsigned() && to.is_float() {
+                let float_ty = if to == ScalarType::F64 { context.f64_type() } else { context.f32_type() };
+                builder.build_unsigned_int_to_float(a.into_int_value(), float_ty, "conv").unwrap().into()
+            } else if from.is_integer() && to.is_integer() {
+                let from_size = from.byte_size();
+                let to_size = to.byte_size();
+                if from_size == to_size {
+                    a // same bit width, reinterpret (e.g. i32 <-> u32)
+                } else if to_size < from_size {
+                    let int_ty = scalar_to_llvm_int_type(context, to);
+                    builder.build_int_truncate(a.into_int_value(), int_ty, "conv").unwrap().into()
+                } else if from.is_signed() {
+                    let int_ty = scalar_to_llvm_int_type(context, to);
+                    builder.build_int_s_extend(a.into_int_value(), int_ty, "conv").unwrap().into()
+                } else {
+                    let int_ty = scalar_to_llvm_int_type(context, to);
+                    builder.build_int_z_extend(a.into_int_value(), int_ty, "conv").unwrap().into()
+                }
+            } else {
+                unreachable!("unsupported conv {:?}", op)
             })
         }
         Inst::Select { cond, then_val, else_val } => {
@@ -663,12 +738,13 @@ fn lower_inst(
                     }).collect();
                     VarValues::Vec(results)
                 }
-                ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) => {
+                ValType::Scalar(s) if s.is_float() => {
                     let t = get_scalar(val_map, then_val);
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_float_value(), e.into_float_value(), "sel").unwrap())
                 }
-                ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::Bool) => {
+                ValType::Scalar(_) => {
+                    // All integer types and bool
                     let t = get_scalar(val_map, then_val);
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_int_value(), e.into_int_value(), "sel").unwrap())
@@ -913,23 +989,6 @@ fn call_f64_binary_intrinsic(
         .unwrap_basic()
 }
 
-fn call_i32_binary_intrinsic(
-    module: &Module<'static>,
-    builder: &inkwell::builder::Builder<'static>,
-    name: &str,
-    lhs: inkwell::values::IntValue<'static>,
-    rhs: inkwell::values::IntValue<'static>,
-    i32_type: inkwell::types::IntType<'static>,
-) -> BasicValueEnum<'static> {
-    let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
-        .unwrap_or_else(|| panic!("intrinsic {name} not found"));
-    let decl = intrinsic.get_declaration(module, &[i32_type.into()]).unwrap();
-    builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
-        .unwrap()
-        .try_as_basic_value()
-        .unwrap_basic()
-}
-
 fn call_f64_intrinsic(
     module: &Module<'static>,
     builder: &inkwell::builder::Builder<'static>,
@@ -944,6 +1003,47 @@ fn call_f64_intrinsic(
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
+}
+
+fn call_int_binary_intrinsic(
+    module: &Module<'static>,
+    builder: &inkwell::builder::Builder<'static>,
+    name: &str,
+    lhs: inkwell::values::IntValue<'static>,
+    rhs: inkwell::values::IntValue<'static>,
+    int_type: inkwell::types::IntType<'static>,
+) -> BasicValueEnum<'static> {
+    let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
+        .unwrap_or_else(|| panic!("intrinsic {name} not found"));
+    let decl = intrinsic.get_declaration(module, &[int_type.into()]).unwrap();
+    builder.build_call(decl, &[lhs.into(), rhs.into()], "minmax")
+        .unwrap()
+        .try_as_basic_value()
+        .unwrap_basic()
+}
+
+/// Map a ScalarType to the corresponding LLVM basic type.
+fn scalar_to_llvm_type(context: &Context, ty: ScalarType) -> inkwell::types::BasicTypeEnum<'_> {
+    match ty {
+        ScalarType::F32 => context.f32_type().into(),
+        ScalarType::F64 => context.f64_type().into(),
+        ScalarType::I8 | ScalarType::U8 => context.i8_type().into(),
+        ScalarType::I16 | ScalarType::U16 => context.i16_type().into(),
+        ScalarType::I32 | ScalarType::U32 => context.i32_type().into(),
+        ScalarType::I64 | ScalarType::U64 => context.i64_type().into(),
+        ScalarType::Bool => context.bool_type().into(),
+    }
+}
+
+/// Map a ScalarType to an LLVM integer type (panics for floats/bool).
+fn scalar_to_llvm_int_type(context: &Context, ty: ScalarType) -> inkwell::types::IntType<'_> {
+    match ty {
+        ScalarType::I8 | ScalarType::U8 => context.i8_type(),
+        ScalarType::I16 | ScalarType::U16 => context.i16_type(),
+        ScalarType::I32 | ScalarType::U32 => context.i32_type(),
+        ScalarType::I64 | ScalarType::U64 => context.i64_type(),
+        _ => panic!("scalar_to_llvm_int_type called on non-integer type {:?}", ty),
+    }
 }
 
 fn create_llvm_module_and_machine(context: &'static Context, name: &str) -> (Module<'static>, TargetMachine) {
@@ -1110,11 +1210,8 @@ fn build_sim_tile_loop(
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), p_user_args, &[offset], &format!("arg_{name}_ptr")).unwrap()
                 };
-                match slot.ty {
-                    ValType::F64 => builder.build_load(f64_type, addr, &format!("arg_{name}")).unwrap(),
-                    ValType::U32 => builder.build_load(i32_type, addr, &format!("arg_{name}")).unwrap(),
-                    _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
-                }
+                let load_ty = scalar_to_llvm_type(context, slot.ty.element_scalar());
+                builder.build_load(load_ty, addr, &format!("arg_{name}")).unwrap()
             }
         };
         val_map.insert(param.var, VarValues::Scalar(val));

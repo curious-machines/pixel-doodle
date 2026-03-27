@@ -205,8 +205,14 @@ impl Parser {
         match self.peek() {
             Token::TyF32 => { self.advance(); Ok(ValType::F32) }
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
+            Token::TyI8 => { self.advance(); Ok(ValType::I8) }
+            Token::TyU8 => { self.advance(); Ok(ValType::U8) }
+            Token::TyI16 => { self.advance(); Ok(ValType::I16) }
+            Token::TyU16 => { self.advance(); Ok(ValType::U16) }
             Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
+            Token::TyI64 => { self.advance(); Ok(ValType::I64) }
+            Token::TyU64 => { self.advance(); Ok(ValType::U64) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
             Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
                 let len: u8 = match self.peek() {
@@ -229,8 +235,14 @@ impl Parser {
         match self.peek() {
             Token::TyF32 => { self.advance(); Ok(ScalarType::F32) }
             Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyI8 => { self.advance(); Ok(ScalarType::I8) }
+            Token::TyU8 => { self.advance(); Ok(ScalarType::U8) }
+            Token::TyI16 => { self.advance(); Ok(ScalarType::I16) }
+            Token::TyU16 => { self.advance(); Ok(ScalarType::U16) }
             Token::TyI32 => { self.advance(); Ok(ScalarType::I32) }
             Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
+            Token::TyI64 => { self.advance(); Ok(ScalarType::I64) }
+            Token::TyU64 => { self.advance(); Ok(ScalarType::U64) }
             Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
             _ => Err(self.error(format!("expected scalar type, got '{}'", self.peek()))),
         }
@@ -560,6 +572,26 @@ impl Parser {
                 self.advance();
                 Ok(Expr::IntLit(v, span))
             }
+            Token::I8Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::I8Lit(v, span))
+            }
+            Token::U8Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::U8Lit(v, span))
+            }
+            Token::I16Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::I16Lit(v, span))
+            }
+            Token::U16Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::U16Lit(v, span))
+            }
             Token::U32Lit(v) => {
                 let span = self.span();
                 self.advance();
@@ -569,6 +601,16 @@ impl Parser {
                 let span = self.span();
                 self.advance();
                 Ok(Expr::I32Lit(v, span))
+            }
+            Token::I64Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::I64Lit(v, span))
+            }
+            Token::U64Lit(v) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::U64Lit(v, span))
             }
             Token::True => {
                 let span = self.span();

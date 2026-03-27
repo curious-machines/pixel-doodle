@@ -23,8 +23,14 @@ pub enum Token {
     // Types
     TyF32,
     TyF64,
+    TyI8,
+    TyU8,
+    TyI16,
+    TyU16,
     TyI32,
     TyU32,
+    TyI64,
+    TyU64,
     TyBool,
     TyVec2,
     TyVec3,
@@ -32,9 +38,15 @@ pub enum Token {
     // Literals
     F32Lit(f32),
     FloatLit(f64),
+    I8Lit(i8),
+    U8Lit(u8),
+    I16Lit(i16),
+    U16Lit(u16),
     I32Lit(i32),
     IntLit(u64),
     U32Lit(u32),
+    I64Lit(i64),
+    U64Lit(u64),
     StringLit(String),
     // Identifier
     Ident(String),
@@ -96,17 +108,29 @@ impl fmt::Display for Token {
             Token::Write => write!(f, "write"),
             Token::TyF32 => write!(f, "f32"),
             Token::TyF64 => write!(f, "f64"),
+            Token::TyI8 => write!(f, "i8"),
+            Token::TyU8 => write!(f, "u8"),
+            Token::TyI16 => write!(f, "i16"),
+            Token::TyU16 => write!(f, "u16"),
             Token::TyI32 => write!(f, "i32"),
             Token::TyU32 => write!(f, "u32"),
+            Token::TyI64 => write!(f, "i64"),
+            Token::TyU64 => write!(f, "u64"),
             Token::TyBool => write!(f, "bool"),
             Token::TyVec2 => write!(f, "vec2"),
             Token::TyVec3 => write!(f, "vec3"),
             Token::TyVec4 => write!(f, "vec4"),
             Token::F32Lit(v) => write!(f, "{}f32", v),
             Token::FloatLit(v) => write!(f, "{}", v),
+            Token::I8Lit(v) => write!(f, "{}i8", v),
+            Token::U8Lit(v) => write!(f, "{}u8", v),
+            Token::I16Lit(v) => write!(f, "{}i16", v),
+            Token::U16Lit(v) => write!(f, "{}u16", v),
             Token::I32Lit(v) => write!(f, "{}i32", v),
             Token::IntLit(v) => write!(f, "{}", v),
             Token::U32Lit(v) => write!(f, "{}u32", v),
+            Token::I64Lit(v) => write!(f, "{}i64", v),
+            Token::U64Lit(v) => write!(f, "{}u64", v),
             Token::StringLit(s) => write!(f, "\"{}\"", s),
             Token::Ident(s) => write!(f, "{}", s),
             Token::Plus => write!(f, "+"),
@@ -198,37 +222,80 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 i += 1;
                 col += 1;
             }
-            // Check for type suffixes: u32, i32, f32, f64
-            let suffix = if i + 2 < chars.len() { Some([chars[i], chars[i + 1], chars[i + 2]]) } else { None };
+            // Check for type suffixes: 3-char (u32, i32, f32, f64, i16, u16, i64, u64) then 2-char (i8, u8)
+            let suffix3 = if i + 2 < chars.len() { Some([chars[i], chars[i + 1], chars[i + 2]]) } else { None };
+            let suffix2 = if i + 1 < chars.len() { Some([chars[i], chars[i + 1]]) } else { None };
             let text: String = chars[start..i].iter().collect();
-            if !has_dot && suffix == Some(['u', '3', '2']) {
+            if !has_dot && suffix3 == Some(['u', '3', '2']) {
                 i += 3;
                 col += 3;
                 let val = text.parse::<u32>().map_err(|e| {
                     format!("{}:{}: invalid u32 literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::U32Lit(val), line, col: start_col });
-            } else if !has_dot && suffix == Some(['i', '3', '2']) {
+            } else if !has_dot && suffix3 == Some(['i', '3', '2']) {
                 i += 3;
                 col += 3;
                 let val = text.parse::<i32>().map_err(|e| {
                     format!("{}:{}: invalid i32 literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::I32Lit(val), line, col: start_col });
-            } else if suffix == Some(['f', '3', '2']) {
+            } else if !has_dot && suffix3 == Some(['i', '1', '6']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<i16>().map_err(|e| {
+                    format!("{}:{}: invalid i16 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::I16Lit(val), line, col: start_col });
+            } else if !has_dot && suffix3 == Some(['u', '1', '6']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<u16>().map_err(|e| {
+                    format!("{}:{}: invalid u16 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::U16Lit(val), line, col: start_col });
+            } else if !has_dot && suffix3 == Some(['i', '6', '4']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<i64>().map_err(|e| {
+                    format!("{}:{}: invalid i64 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::I64Lit(val), line, col: start_col });
+            } else if !has_dot && suffix3 == Some(['u', '6', '4']) {
+                i += 3;
+                col += 3;
+                let val = text.parse::<u64>().map_err(|e| {
+                    format!("{}:{}: invalid u64 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::U64Lit(val), line, col: start_col });
+            } else if suffix3 == Some(['f', '3', '2']) {
                 i += 3;
                 col += 3;
                 let val = text.parse::<f32>().map_err(|e| {
                     format!("{}:{}: invalid f32 literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::F32Lit(val), line, col: start_col });
-            } else if suffix == Some(['f', '6', '4']) {
+            } else if suffix3 == Some(['f', '6', '4']) {
                 i += 3;
                 col += 3;
                 let val = text.parse::<f64>().map_err(|e| {
                     format!("{}:{}: invalid f64 literal '{}': {}", line, start_col, text, e)
                 })?;
                 tokens.push(Spanned { token: Token::FloatLit(val), line, col: start_col });
+            } else if !has_dot && suffix2 == Some(['i', '8']) {
+                i += 2;
+                col += 2;
+                let val = text.parse::<i8>().map_err(|e| {
+                    format!("{}:{}: invalid i8 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::I8Lit(val), line, col: start_col });
+            } else if !has_dot && suffix2 == Some(['u', '8']) {
+                i += 2;
+                col += 2;
+                let val = text.parse::<u8>().map_err(|e| {
+                    format!("{}:{}: invalid u8 literal '{}': {}", line, start_col, text, e)
+                })?;
+                tokens.push(Spanned { token: Token::U8Lit(val), line, col: start_col });
             } else if has_dot {
                 let val = text.parse::<f64>().map_err(|e| {
                     format!("{}:{}: invalid float literal '{}': {}", line, start_col, text, e)
@@ -271,8 +338,14 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "write" => Token::Write,
                 "f32" => Token::TyF32,
                 "f64" => Token::TyF64,
+                "i8" => Token::TyI8,
+                "u8" => Token::TyU8,
+                "i16" => Token::TyI16,
+                "u16" => Token::TyU16,
                 "i32" => Token::TyI32,
                 "u32" => Token::TyU32,
+                "i64" => Token::TyI64,
+                "u64" => Token::TyU64,
                 "bool" => Token::TyBool,
                 "vec2" => Token::TyVec2,
                 "vec3" => Token::TyVec3,

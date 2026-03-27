@@ -37,6 +37,18 @@ fn get_vec<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var
     }
 }
 
+/// Map a kernel ScalarType to the corresponding Cranelift IR type.
+fn scalar_to_cl(s: ScalarType) -> cranelift_codegen::ir::Type {
+    match s {
+        ScalarType::F32 => F32,
+        ScalarType::F64 => F64,
+        ScalarType::I8 | ScalarType::U8 | ScalarType::Bool => I8,
+        ScalarType::I16 | ScalarType::U16 => I16,
+        ScalarType::I32 | ScalarType::U32 => I32,
+        ScalarType::I64 | ScalarType::U64 => I64,
+    }
+}
+
 pub struct CraneliftBackend;
 
 struct CraneliftKernel {
@@ -344,10 +356,7 @@ fn lower_kernel_body(
                 let offset = builder.ins().iconst(I64, slot.offset as i64);
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
-                    ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::F32) => builder.ins().load(F32, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::I32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(s) => builder.ins().load(scalar_to_cl(s), MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }
@@ -417,11 +426,7 @@ fn lower_while(
             }
             _ => {
                 let cl_ty = match cv.binding.ty {
-                    ValType::Scalar(ScalarType::F64) => F64,
-                    ValType::Scalar(ScalarType::F32) => F32,
-                    ValType::Scalar(ScalarType::U32) => I32,
-                    ValType::Scalar(ScalarType::I32) => I32,
-                    ValType::Scalar(ScalarType::Bool) => I8,
+                    ValType::Scalar(s) => scalar_to_cl(s),
                     _ => unreachable!(),
                 };
                 let cl_var = builder.declare_var(cl_ty);
@@ -573,60 +578,57 @@ fn lower_inst(
         Inst::Const(c) => VarValues::Scalar(match c {
             Const::F32(v) => builder.ins().f32const(*v),
             Const::F64(v) => builder.ins().f64const(*v),
+            Const::I8(v) => builder.ins().iconst(I8, *v as i64),
+            Const::U8(v) => builder.ins().iconst(I8, *v as i64),
+            Const::I16(v) => builder.ins().iconst(I16, *v as i64),
+            Const::U16(v) => builder.ins().iconst(I16, *v as i64),
             Const::I32(v) => builder.ins().iconst(I32, *v as i64),
             Const::U32(v) => builder.ins().iconst(I32, *v as i64),
+            Const::I64(v) => builder.ins().iconst(I64, *v as i64),
+            Const::U64(v) => builder.ins().iconst(I64, *v as i64),
             Const::Bool(v) => builder.ins().iconst(I8, if *v { 1 } else { 0 }),
         }),
         Inst::Binary { op, lhs, rhs } => {
             let l = get_scalar(val_map, lhs);
             let r = get_scalar(val_map, rhs);
             VarValues::Scalar(match (op, binding.ty) {
-                (BinOp::Add, ValType::Scalar(ScalarType::F64)) => builder.ins().fadd(l, r),
-                (BinOp::Sub, ValType::Scalar(ScalarType::F64)) => builder.ins().fsub(l, r),
-                (BinOp::Mul, ValType::Scalar(ScalarType::F64)) => builder.ins().fmul(l, r),
-                (BinOp::Div, ValType::Scalar(ScalarType::F64)) => builder.ins().fdiv(l, r),
-                (BinOp::Add, ValType::Scalar(ScalarType::F32)) => builder.ins().fadd(l, r),
-                (BinOp::Sub, ValType::Scalar(ScalarType::F32)) => builder.ins().fsub(l, r),
-                (BinOp::Mul, ValType::Scalar(ScalarType::F32)) => builder.ins().fmul(l, r),
-                (BinOp::Div, ValType::Scalar(ScalarType::F32)) => builder.ins().fdiv(l, r),
-                (BinOp::Add, ValType::Scalar(ScalarType::U32)) => builder.ins().iadd(l, r),
-                (BinOp::Sub, ValType::Scalar(ScalarType::U32)) => builder.ins().isub(l, r),
-                (BinOp::Mul, ValType::Scalar(ScalarType::U32)) => builder.ins().imul(l, r),
-                (BinOp::Div, ValType::Scalar(ScalarType::U32)) => builder.ins().udiv(l, r),
-                (BinOp::Add, ValType::Scalar(ScalarType::I32)) => builder.ins().iadd(l, r),
-                (BinOp::Sub, ValType::Scalar(ScalarType::I32)) => builder.ins().isub(l, r),
-                (BinOp::Mul, ValType::Scalar(ScalarType::I32)) => builder.ins().imul(l, r),
-                (BinOp::Div, ValType::Scalar(ScalarType::I32)) => builder.ins().sdiv(l, r),
-                (BinOp::Rem, ValType::Scalar(ScalarType::F64)) => {
+                // Float arithmetic
+                (BinOp::Add, ValType::Scalar(s)) if s.is_float() => builder.ins().fadd(l, r),
+                (BinOp::Sub, ValType::Scalar(s)) if s.is_float() => builder.ins().fsub(l, r),
+                (BinOp::Mul, ValType::Scalar(s)) if s.is_float() => builder.ins().fmul(l, r),
+                (BinOp::Div, ValType::Scalar(s)) if s.is_float() => builder.ins().fdiv(l, r),
+                (BinOp::Rem, ValType::Scalar(s)) if s.is_float() => {
                     let q = builder.ins().fdiv(l, r);
                     let q_floor = builder.ins().floor(q);
                     let prod = builder.ins().fmul(q_floor, r);
                     builder.ins().fsub(l, prod)
                 }
-                (BinOp::Rem, ValType::Scalar(ScalarType::F32)) => {
-                    let q = builder.ins().fdiv(l, r);
-                    let q_floor = builder.ins().floor(q);
-                    let prod = builder.ins().fmul(q_floor, r);
-                    builder.ins().fsub(l, prod)
-                }
-                (BinOp::Rem, ValType::Scalar(ScalarType::U32)) => builder.ins().urem(l, r),
-                (BinOp::Rem, ValType::Scalar(ScalarType::I32)) => builder.ins().srem(l, r),
+                // Integer arithmetic
+                (BinOp::Add, ValType::Scalar(s)) if s.is_integer() => builder.ins().iadd(l, r),
+                (BinOp::Sub, ValType::Scalar(s)) if s.is_integer() => builder.ins().isub(l, r),
+                (BinOp::Mul, ValType::Scalar(s)) if s.is_integer() => builder.ins().imul(l, r),
+                (BinOp::Div, ValType::Scalar(s)) if s.is_unsigned() => builder.ins().udiv(l, r),
+                (BinOp::Div, ValType::Scalar(s)) if s.is_signed() => builder.ins().sdiv(l, r),
+                (BinOp::Rem, ValType::Scalar(s)) if s.is_unsigned() => builder.ins().urem(l, r),
+                (BinOp::Rem, ValType::Scalar(s)) if s.is_signed() => builder.ins().srem(l, r),
+                // Bitwise ops (all integer types)
                 (BinOp::BitAnd, _) => builder.ins().band(l, r),
                 (BinOp::BitOr, _) => builder.ins().bor(l, r),
                 (BinOp::BitXor, _) => builder.ins().bxor(l, r),
                 (BinOp::Shl, _) => builder.ins().ishl(l, r),
-                (BinOp::Shr, ValType::Scalar(ScalarType::I32)) => builder.ins().sshr(l, r),
+                (BinOp::Shr, ValType::Scalar(s)) if s.is_signed() => builder.ins().sshr(l, r),
                 (BinOp::Shr, _) => builder.ins().ushr(l, r),
+                // Logical ops
                 (BinOp::And, _) => builder.ins().band(l, r),
                 (BinOp::Or, _) => builder.ins().bor(l, r),
-                (BinOp::Min, ValType::Scalar(ScalarType::F64)) => builder.ins().fmin(l, r),
-                (BinOp::Max, ValType::Scalar(ScalarType::F64)) => builder.ins().fmax(l, r),
-                (BinOp::Min, ValType::Scalar(ScalarType::F32)) => builder.ins().fmin(l, r),
-                (BinOp::Max, ValType::Scalar(ScalarType::F32)) => builder.ins().fmax(l, r),
-                (BinOp::Min, ValType::Scalar(ScalarType::U32)) => builder.ins().umin(l, r),
-                (BinOp::Max, ValType::Scalar(ScalarType::U32)) => builder.ins().umax(l, r),
-                (BinOp::Min, ValType::Scalar(ScalarType::I32)) => builder.ins().smin(l, r),
-                (BinOp::Max, ValType::Scalar(ScalarType::I32)) => builder.ins().smax(l, r),
+                // Min/Max
+                (BinOp::Min, ValType::Scalar(s)) if s.is_float() => builder.ins().fmin(l, r),
+                (BinOp::Max, ValType::Scalar(s)) if s.is_float() => builder.ins().fmax(l, r),
+                (BinOp::Min, ValType::Scalar(s)) if s.is_unsigned() => builder.ins().umin(l, r),
+                (BinOp::Max, ValType::Scalar(s)) if s.is_unsigned() => builder.ins().umax(l, r),
+                (BinOp::Min, ValType::Scalar(s)) if s.is_signed() => builder.ins().smin(l, r),
+                (BinOp::Max, ValType::Scalar(s)) if s.is_signed() => builder.ins().smax(l, r),
+                // Float-only ops
                 (BinOp::Atan2, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "atan2", l, r),
                 (BinOp::Pow, ValType::Scalar(ScalarType::F64)) => call_libm_f64_binary(module, builder, "pow", l, r),
                 (BinOp::Atan2, ValType::Scalar(ScalarType::F32)) => call_libm_f32_binary(module, builder, "atan2f", l, r),
@@ -652,27 +654,26 @@ fn lower_inst(
         Inst::Unary { op, arg } => {
             let a = get_scalar(val_map, arg);
             VarValues::Scalar(match (op, binding.ty) {
-                (UnaryOp::Neg, ValType::Scalar(ScalarType::F64)) => builder.ins().fneg(a),
-                (UnaryOp::Neg, ValType::Scalar(ScalarType::F32)) => builder.ins().fneg(a),
-                (UnaryOp::Neg, ValType::Scalar(ScalarType::I32)) => builder.ins().ineg(a),
-                (UnaryOp::Neg, ValType::Scalar(ScalarType::U32)) => {
-                    let zero = builder.ins().iconst(I32, 0);
+                (UnaryOp::Neg, ValType::Scalar(s)) if s.is_float() => builder.ins().fneg(a),
+                (UnaryOp::Neg, ValType::Scalar(s)) if s.is_signed() => builder.ins().ineg(a),
+                (UnaryOp::Neg, ValType::Scalar(s)) if s.is_unsigned() => {
+                    let zero = builder.ins().iconst(scalar_to_cl(s), 0);
                     builder.ins().isub(zero, a)
                 }
                 (UnaryOp::Not, _) => {
                     let one = builder.ins().iconst(I8, 1);
                     builder.ins().bxor(a, one)
                 }
-                (UnaryOp::Abs, ValType::Scalar(ScalarType::F64)) => builder.ins().fabs(a),
-                (UnaryOp::Abs, ValType::Scalar(ScalarType::F32)) => builder.ins().fabs(a),
-                (UnaryOp::Abs, ValType::Scalar(ScalarType::I32)) => {
+                (UnaryOp::Abs, ValType::Scalar(s)) if s.is_float() => builder.ins().fabs(a),
+                (UnaryOp::Abs, ValType::Scalar(s)) if s.is_signed() => {
                     // abs(x) = select(x < 0, -x, x)
-                    let zero = builder.ins().iconst(I32, 0);
+                    let cl_ty = scalar_to_cl(s);
+                    let zero = builder.ins().iconst(cl_ty, 0);
                     let neg = builder.ins().ineg(a);
                     let is_neg = builder.ins().icmp(IntCC::SignedLessThan, a, zero);
                     builder.ins().select(is_neg, neg, a)
                 }
-                (UnaryOp::Abs, ValType::Scalar(ScalarType::U32)) => a,
+                (UnaryOp::Abs, ValType::Scalar(s)) if s.is_unsigned() => a,
                 (UnaryOp::Sqrt, ValType::Scalar(ScalarType::F64)) => builder.ins().sqrt(a),
                 (UnaryOp::Sqrt, ValType::Scalar(ScalarType::F32)) => builder.ins().sqrt(a),
                 (UnaryOp::Floor, ValType::Scalar(ScalarType::F64)) => builder.ins().floor(a),
@@ -721,7 +722,7 @@ fn lower_inst(
             let r = get_scalar(val_map, rhs);
             let operand_ty = kernel.var_type(*lhs).unwrap();
             VarValues::Scalar(match operand_ty {
-                ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) => {
+                ValType::Scalar(s) if s.is_float() => {
                     let cc = match op {
                         CmpOp::Eq => FloatCC::Equal,
                         CmpOp::Ne => FloatCC::NotEqual,
@@ -732,7 +733,7 @@ fn lower_inst(
                     };
                     builder.ins().fcmp(cc, l, r)
                 }
-                ValType::Scalar(ScalarType::U32) => {
+                ValType::Scalar(s) if s.is_unsigned() => {
                     let cc = match op {
                         CmpOp::Eq => IntCC::Equal,
                         CmpOp::Ne => IntCC::NotEqual,
@@ -743,7 +744,7 @@ fn lower_inst(
                     };
                     builder.ins().icmp(cc, l, r)
                 }
-                ValType::Scalar(ScalarType::I32) => {
+                ValType::Scalar(s) if s.is_signed() => {
                     let cc = match op {
                         CmpOp::Eq => IntCC::Equal,
                         CmpOp::Ne => IntCC::NotEqual,
@@ -754,35 +755,68 @@ fn lower_inst(
                     };
                     builder.ins().icmp(cc, l, r)
                 }
-                _ => unreachable!("cannot compare bools"),
+                _ => unreachable!("cannot compare type {:?}", operand_ty),
             })
         }
         Inst::Conv { op, arg } => {
             let a = get_scalar(val_map, arg);
-            VarValues::Scalar(match (op.from, op.to, op.norm) {
-                (ScalarType::F64, ScalarType::U32, false) => builder.ins().fcvt_to_sint(I32, a),
-                (ScalarType::U32, ScalarType::F64, false) => builder.ins().fcvt_from_uint(F64, a),
-                (ScalarType::U32, ScalarType::F64, true) => {
-                    let f = builder.ins().fcvt_from_uint(F64, a);
-                    let recip = builder.ins().f64const(1.0 / 4294967296.0);
-                    builder.ins().fmul(f, recip)
+            let from = op.from;
+            let to = op.to;
+            let from_cl = scalar_to_cl(from);
+            let to_cl = scalar_to_cl(to);
+            VarValues::Scalar(if op.norm {
+                // Normalizing conversion (e.g. u32 -> f64: divide by 2^32)
+                assert!(from.is_unsigned() && to.is_float(), "norm only for uint->float");
+                let max_val = match from {
+                    ScalarType::U8 => 256.0,
+                    ScalarType::U16 => 65536.0,
+                    ScalarType::U32 => 4294967296.0,
+                    ScalarType::U64 => 18446744073709551616.0,
+                    _ => unreachable!(),
+                };
+                let f = builder.ins().fcvt_from_uint(to_cl, a);
+                let recip = if to == ScalarType::F64 {
+                    builder.ins().f64const(1.0 / max_val)
+                } else {
+                    builder.ins().f32const((1.0 / max_val) as f32)
+                };
+                builder.ins().fmul(f, recip)
+            } else if from == to {
+                // Identity
+                a
+            } else if from.is_float() && to.is_float() {
+                // Float <-> float
+                if from.byte_size() < to.byte_size() {
+                    builder.ins().fpromote(to_cl, a)
+                } else {
+                    builder.ins().fdemote(to_cl, a)
                 }
-                // F32 <-> F64
-                (ScalarType::F32, ScalarType::F64, false) => builder.ins().fpromote(F64, a),
-                (ScalarType::F64, ScalarType::F32, false) => builder.ins().fdemote(F32, a),
-                // I32 <-> F64
-                (ScalarType::I32, ScalarType::F64, false) => builder.ins().fcvt_from_sint(F64, a),
-                (ScalarType::F64, ScalarType::I32, false) => builder.ins().fcvt_to_sint(I32, a),
-                // I32 <-> F32
-                (ScalarType::I32, ScalarType::F32, false) => builder.ins().fcvt_from_sint(F32, a),
-                (ScalarType::F32, ScalarType::I32, false) => builder.ins().fcvt_to_sint(I32, a),
-                // F32 <-> U32
-                (ScalarType::F32, ScalarType::U32, false) => builder.ins().fcvt_to_uint(I32, a),
-                (ScalarType::U32, ScalarType::F32, false) => builder.ins().fcvt_from_uint(F32, a),
-                // I32 <-> U32 (same bit representation in Cranelift)
-                (ScalarType::I32, ScalarType::U32, false) => a,
-                (ScalarType::U32, ScalarType::I32, false) => a,
-                _ => unreachable!("unsupported conversion"),
+            } else if from.is_float() && to.is_signed() {
+                builder.ins().fcvt_to_sint(to_cl, a)
+            } else if from.is_float() && to.is_unsigned() {
+                builder.ins().fcvt_to_uint(to_cl, a)
+            } else if from.is_signed() && to.is_float() {
+                builder.ins().fcvt_from_sint(to_cl, a)
+            } else if from.is_unsigned() && to.is_float() {
+                builder.ins().fcvt_from_uint(to_cl, a)
+            } else if from.is_integer() && to.is_integer() {
+                // Integer <-> integer
+                if from_cl == to_cl {
+                    // Same Cranelift type (e.g. i32 <-> u32): identity
+                    a
+                } else if from.byte_size() < to.byte_size() {
+                    // Widening
+                    if from.is_signed() {
+                        builder.ins().sextend(to_cl, a)
+                    } else {
+                        builder.ins().uextend(to_cl, a)
+                    }
+                } else {
+                    // Narrowing
+                    builder.ins().ireduce(to_cl, a)
+                }
+            } else {
+                unreachable!("unsupported conversion: {:?} -> {:?}", from, to)
             })
         }
         Inst::Select { cond, then_val, else_val } => {
@@ -1098,10 +1132,7 @@ fn compile_sim_kernel(kernel: &Kernel, user_args: &[UserArgSlot]) -> CraneliftSi
                 let offset = builder.ins().iconst(I64, slot.offset as i64);
                 let addr = builder.ins().iadd(user_args_ptr, offset);
                 match slot.ty {
-                    ValType::Scalar(ScalarType::F64) => builder.ins().load(F64, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::F32) => builder.ins().load(F32, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::U32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
-                    ValType::Scalar(ScalarType::I32) => builder.ins().load(I32, MemFlags::trusted(), addr, 0),
+                    ValType::Scalar(s) => builder.ins().load(scalar_to_cl(s), MemFlags::trusted(), addr, 0),
                     _ => panic!("unsupported user-arg type {:?} for param '{name}'", slot.ty),
                 }
             }

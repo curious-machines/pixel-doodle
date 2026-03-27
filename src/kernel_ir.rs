@@ -11,8 +11,14 @@
 pub enum ScalarType {
     F32,
     F64,
+    I8,
+    U8,
+    I16,
+    U16,
     I32,
     U32,
+    I64,
+    U64,
     Bool,
 }
 
@@ -24,12 +30,28 @@ impl ScalarType {
 
     /// Returns true if this is an integer type (signed or unsigned).
     pub fn is_integer(self) -> bool {
-        matches!(self, ScalarType::I32 | ScalarType::U32)
+        matches!(self, ScalarType::I8 | ScalarType::U8 | ScalarType::I16 | ScalarType::U16
+            | ScalarType::I32 | ScalarType::U32 | ScalarType::I64 | ScalarType::U64)
     }
 
-    /// Returns true if this is a signed type.
+    /// Returns true if this is a signed integer type.
     pub fn is_signed(self) -> bool {
-        matches!(self, ScalarType::I32)
+        matches!(self, ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64)
+    }
+
+    /// Returns true if this is an unsigned integer type.
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, ScalarType::U8 | ScalarType::U16 | ScalarType::U32 | ScalarType::U64)
+    }
+
+    /// Size in bytes of this scalar type.
+    pub fn byte_size(self) -> usize {
+        match self {
+            ScalarType::Bool | ScalarType::I8 | ScalarType::U8 => 1,
+            ScalarType::I16 | ScalarType::U16 => 2,
+            ScalarType::F32 | ScalarType::I32 | ScalarType::U32 => 4,
+            ScalarType::F64 | ScalarType::I64 | ScalarType::U64 => 8,
+        }
     }
 }
 
@@ -38,8 +60,14 @@ impl std::fmt::Display for ScalarType {
         match self {
             ScalarType::F32 => write!(f, "f32"),
             ScalarType::F64 => write!(f, "f64"),
+            ScalarType::I8 => write!(f, "i8"),
+            ScalarType::U8 => write!(f, "u8"),
+            ScalarType::I16 => write!(f, "i16"),
+            ScalarType::U16 => write!(f, "u16"),
             ScalarType::I32 => write!(f, "i32"),
             ScalarType::U32 => write!(f, "u32"),
+            ScalarType::I64 => write!(f, "i64"),
+            ScalarType::U64 => write!(f, "u64"),
             ScalarType::Bool => write!(f, "bool"),
         }
     }
@@ -52,11 +80,17 @@ pub enum ValType {
 }
 
 impl ValType {
-    // Convenience constants for common scalar types.
+    // Convenience constants for scalar types.
     pub const F32: ValType = ValType::Scalar(ScalarType::F32);
     pub const F64: ValType = ValType::Scalar(ScalarType::F64);
+    pub const I8: ValType = ValType::Scalar(ScalarType::I8);
+    pub const U8: ValType = ValType::Scalar(ScalarType::U8);
+    pub const I16: ValType = ValType::Scalar(ScalarType::I16);
+    pub const U16: ValType = ValType::Scalar(ScalarType::U16);
     pub const I32: ValType = ValType::Scalar(ScalarType::I32);
     pub const U32: ValType = ValType::Scalar(ScalarType::U32);
+    pub const I64: ValType = ValType::Scalar(ScalarType::I64);
+    pub const U64: ValType = ValType::Scalar(ScalarType::U64);
     pub const BOOL: ValType = ValType::Scalar(ScalarType::Bool);
 
     /// Returns true if this is a vector type.
@@ -114,8 +148,14 @@ pub struct Binding {
 pub enum Const {
     F32(f32),
     F64(f64),
+    I8(i8),
+    U8(u8),
+    I16(i16),
+    U16(u16),
     I32(i32),
     U32(u32),
+    I64(i64),
+    U64(u64),
     Bool(bool),
 }
 

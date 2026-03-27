@@ -111,8 +111,14 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
                         out.push_str(".0");
                     }
                 }
+                Const::I8(v) => out.push_str(&format!("{v}i8")),
+                Const::U8(v) => out.push_str(&format!("{v}u8")),
+                Const::I16(v) => out.push_str(&format!("{v}i16")),
+                Const::U16(v) => out.push_str(&format!("{v}u16")),
                 Const::I32(v) => out.push_str(&format!("{v}i32")),
                 Const::U32(v) => out.push_str(&format!("{v}")),
+                Const::I64(v) => out.push_str(&format!("{v}i64")),
+                Const::U64(v) => out.push_str(&format!("{v}u64")),
                 Const::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
             }
         }
@@ -254,12 +260,36 @@ fn print_operand(out: &mut String, var: Var, kernel: &Kernel) {
                         }
                         return;
                     }
+                    Const::I8(v) => {
+                        out.push_str(&format!("{v}i8"));
+                        return;
+                    }
+                    Const::U8(v) => {
+                        out.push_str(&format!("{v}u8"));
+                        return;
+                    }
+                    Const::I16(v) => {
+                        out.push_str(&format!("{v}i16"));
+                        return;
+                    }
+                    Const::U16(v) => {
+                        out.push_str(&format!("{v}u16"));
+                        return;
+                    }
                     Const::I32(v) => {
                         out.push_str(&format!("{v}i32"));
                         return;
                     }
                     Const::U32(v) => {
                         out.push_str(&format!("{v}"));
+                        return;
+                    }
+                    Const::I64(v) => {
+                        out.push_str(&format!("{v}i64"));
+                        return;
+                    }
+                    Const::U64(v) => {
+                        out.push_str(&format!("{v}u64"));
                         return;
                     }
                     Const::Bool(v) => {

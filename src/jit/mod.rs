@@ -28,10 +28,7 @@ pub fn compute_user_arg_layout(kernel: &Kernel, builtins: &[&str]) -> (Vec<UserA
             continue;
         }
         let size = match param.ty {
-            ValType::F64 => 8usize,
-            ValType::F32 => 4usize,
-            ValType::U32 => 4usize,
-            ValType::I32 => 4usize,
+            ValType::Scalar(s) => s.byte_size(),
             _ => panic!("unsupported user-arg type {:?} for param '{}'", param.ty, param.name),
         };
         // Natural alignment

@@ -20,8 +20,14 @@ enum Token {
     // Types
     TyF32,
     TyF64,
+    TyI8,
+    TyU8,
+    TyI16,
+    TyU16,
     TyI32,
     TyU32,
+    TyI64,
+    TyU64,
     TyBool,
     TyVec2,
     TyVec3,
@@ -182,8 +188,14 @@ fn keyword_lookup(word: &str) -> Token {
         "yield" => Token::Yield,
         "f32" => Token::TyF32,
         "f64" => Token::TyF64,
+        "i8" => Token::TyI8,
+        "u8" => Token::TyU8,
+        "i16" => Token::TyI16,
+        "u16" => Token::TyU16,
         "i32" => Token::TyI32,
         "u32" => Token::TyU32,
+        "i64" => Token::TyI64,
+        "u64" => Token::TyU64,
         "bool" => Token::TyBool,
         "vec2" => Token::TyVec2,
         "vec3" => Token::TyVec3,
@@ -645,13 +657,19 @@ impl Parser {
         match sp.token {
             Token::TyF32 => { self.advance(); Ok(ScalarType::F32) }
             Token::TyF64 => { self.advance(); Ok(ScalarType::F64) }
+            Token::TyI8 => { self.advance(); Ok(ScalarType::I8) }
+            Token::TyU8 => { self.advance(); Ok(ScalarType::U8) }
+            Token::TyI16 => { self.advance(); Ok(ScalarType::I16) }
+            Token::TyU16 => { self.advance(); Ok(ScalarType::U16) }
             Token::TyI32 => { self.advance(); Ok(ScalarType::I32) }
             Token::TyU32 => { self.advance(); Ok(ScalarType::U32) }
+            Token::TyI64 => { self.advance(); Ok(ScalarType::I64) }
+            Token::TyU64 => { self.advance(); Ok(ScalarType::U64) }
             Token::TyBool => { self.advance(); Ok(ScalarType::Bool) }
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected scalar type (f32, f64, i32, u32, bool), got {:?}", sp.token),
+                message: format!("expected scalar type, got {:?}", sp.token),
             }),
         }
     }
@@ -661,8 +679,14 @@ impl Parser {
         match sp.token {
             Token::TyF32 => { self.advance(); Ok(ValType::F32) }
             Token::TyF64 => { self.advance(); Ok(ValType::F64) }
+            Token::TyI8 => { self.advance(); Ok(ValType::I8) }
+            Token::TyU8 => { self.advance(); Ok(ValType::U8) }
+            Token::TyI16 => { self.advance(); Ok(ValType::I16) }
+            Token::TyU16 => { self.advance(); Ok(ValType::U16) }
             Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
+            Token::TyI64 => { self.advance(); Ok(ValType::I64) }
+            Token::TyU64 => { self.advance(); Ok(ValType::U64) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
             Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
                 let len: u8 = match sp.token {
@@ -680,7 +704,7 @@ impl Parser {
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected type (f32, f64, i32, u32, bool, vec2<T>, vec3<T>, vec4<T>), got {:?}", sp.token),
+                message: format!("expected type, got {:?}", sp.token),
             }),
         }
     }
@@ -717,6 +741,28 @@ impl Parser {
                 }
                 Ok(self.alloc_implicit(ValType::F32, Const::F32(v)))
             }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I8)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI8 { self.advance(); }
+                Ok(self.alloc_implicit(ValType::I8, Const::I8(v as i8)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U8)) => {
+                let v = *v;
+                self.advance();
+                Ok(self.alloc_implicit(ValType::U8, Const::U8(v as u8)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I16)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI16 { self.advance(); }
+                Ok(self.alloc_implicit(ValType::I16, Const::I16(v as i16)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U16)) => {
+                let v = *v;
+                self.advance();
+                Ok(self.alloc_implicit(ValType::U16, Const::U16(v as u16)))
+            }
             (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
@@ -730,6 +776,17 @@ impl Parser {
                     self.advance();
                 }
                 Ok(self.alloc_implicit(ValType::I32, Const::I32(v as i32)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I64)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI64 { self.advance(); }
+                Ok(self.alloc_implicit(ValType::I64, Const::I64(v as i64)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U64)) => {
+                let v = *v;
+                self.advance();
+                Ok(self.alloc_implicit(ValType::U64, Const::U64(v)))
             }
             (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
@@ -778,8 +835,8 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if !matches!(declared_ty, ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::U32)) {
-                    return Err(ParseError { line, col, message: format!("arithmetic ops require f32, f64, i32, or u32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(s) if s.is_float() || s.is_integer()) {
+                    return Err(ParseError { line, col, message: format!("arithmetic ops require numeric type, got {declared_ty}") });
                 }
                 let lhs = self.parse_operand(declared_ty)?;
                 self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
@@ -797,8 +854,8 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                if !matches!(declared_ty, ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32)) {
-                    return Err(ParseError { line, col, message: format!("bitwise ops require u32 or i32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(s) if s.is_integer()) {
+                    return Err(ParseError { line, col, message: format!("bitwise ops require integer type, got {declared_ty}") });
                 }
                 let lhs = self.parse_operand(declared_ty)?;
                 self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
@@ -845,8 +902,8 @@ impl Parser {
             Token::Neg | Token::Abs => {
                 let op = if sp.token == Token::Neg { UnaryOp::Neg } else { UnaryOp::Abs };
                 self.advance();
-                if !matches!(declared_ty, ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::U32)) {
-                    return Err(ParseError { line, col, message: format!("{op:?} requires f32, f64, i32, or u32, got {declared_ty}") });
+                if !matches!(declared_ty, ValType::Scalar(s) if s.is_float() || s.is_integer()) {
+                    return Err(ParseError { line, col, message: format!("{op:?} requires numeric type, got {declared_ty}") });
                 }
                 let arg = self.resolve_var_ident()?;
                 self.check_types_match(declared_ty, self.var_ty(arg), "arg", line, col)?;
@@ -1277,6 +1334,58 @@ impl Parser {
                 }
                 Ok(Inst::Const(Const::F32(v)))
             }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I8)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI8 { self.advance(); }
+                if v > i8::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i8 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I8(v as i8)))
+            }
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::I8)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI8 { self.advance(); }
+                if v < i8::MIN as f64 || v > i8::MAX as f64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i8 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I8(v as i8)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U8)) => {
+                let v = *v;
+                self.advance();
+                if v > u8::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("u8 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::U8(v as u8)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I16)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI16 { self.advance(); }
+                if v > i16::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i16 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I16(v as i16)))
+            }
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::I16)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI16 { self.advance(); }
+                if v < i16::MIN as f64 || v > i16::MAX as f64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i16 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I16(v as i16)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U16)) => {
+                let v = *v;
+                self.advance();
+                if v > u16::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("u16 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::U16(v as u16)))
+            }
             (Token::IntLit(v), ValType::Scalar(ScalarType::U32)) => {
                 let v = *v;
                 self.advance();
@@ -1309,6 +1418,29 @@ impl Parser {
                     return Err(ParseError { line: sp.line, col: sp.col, message: format!("i32 literal out of range: {v}") });
                 }
                 Ok(Inst::Const(Const::I32(v as i32)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::I64)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI64 { self.advance(); }
+                if v > i64::MAX as u64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i64 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I64(v as i64)))
+            }
+            (Token::FloatLit(v), ValType::Scalar(ScalarType::I64)) => {
+                let v = *v;
+                self.advance();
+                if self.peek().token == Token::TyI64 { self.advance(); }
+                if v < i64::MIN as f64 || v > i64::MAX as f64 {
+                    return Err(ParseError { line: sp.line, col: sp.col, message: format!("i64 literal out of range: {v}") });
+                }
+                Ok(Inst::Const(Const::I64(v as i64)))
+            }
+            (Token::IntLit(v), ValType::Scalar(ScalarType::U64)) => {
+                let v = *v;
+                self.advance();
+                Ok(Inst::Const(Const::U64(v)))
             }
             (Token::IntLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v as f64;
@@ -1712,12 +1844,36 @@ impl Parser {
                     let zero = self.alloc_implicit(ValType::F64, Const::F64(0.0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
+                ValType::Scalar(ScalarType::I8) => {
+                    let zero = self.alloc_implicit(ValType::I8, Const::I8(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::U8) => {
+                    let zero = self.alloc_implicit(ValType::U8, Const::U8(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::I16) => {
+                    let zero = self.alloc_implicit(ValType::I16, Const::I16(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::U16) => {
+                    let zero = self.alloc_implicit(ValType::U16, Const::U16(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
                 ValType::Scalar(ScalarType::I32) => {
                     let zero = self.alloc_implicit(ValType::I32, Const::I32(0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
                 ValType::Scalar(ScalarType::U32) => {
                     let zero = self.alloc_implicit(ValType::U32, Const::U32(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::I64) => {
+                    let zero = self.alloc_implicit(ValType::I64, Const::I64(0));
+                    Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
+                }
+                ValType::Scalar(ScalarType::U64) => {
+                    let zero = self.alloc_implicit(ValType::U64, Const::U64(0));
                     Ok(Inst::Binary { op: BinOp::Add, lhs: remapped, rhs: zero })
                 }
                 ValType::Scalar(ScalarType::Bool) => {
