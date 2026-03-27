@@ -353,7 +353,7 @@ pipeline pd {
 
 Variable references are resolved at runtime before each kernel dispatch, so changes via key bindings or `--set` take effect immediately.
 
-Supported argument types: `f64` and `u32`. All user args must be explicitly provided — there are no default values.
+Supported argument types: all scalar types (`f32`, `f64`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`). All user args must be explicitly provided — there are no default values.
 
 ### `display` — Show pixels on screen
 
