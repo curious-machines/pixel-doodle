@@ -208,8 +208,13 @@ impl Parser {
             Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
-            Token::TyVec2 | Token::TyVec3 => {
-                let len: u8 = if *self.peek() == Token::TyVec2 { 2 } else { 3 };
+            Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
+                let len: u8 = match self.peek() {
+                    Token::TyVec2 => 2,
+                    Token::TyVec3 => 3,
+                    Token::TyVec4 => 4,
+                    _ => unreachable!(),
+                };
                 self.advance();
                 self.expect(&Token::Lt)?;
                 let elem = self.parse_scalar_type()?;
@@ -575,11 +580,12 @@ impl Parser {
                 self.advance();
                 Ok(Expr::BoolLit(false, span))
             }
-            // vec2(...) and vec3(...) constructors — type keywords used as function calls
-            Token::TyVec2 | Token::TyVec3 => {
+            // vec2(...), vec3(...), vec4(...) constructors — type keywords used as function calls
+            Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
                 let name = match self.peek() {
                     Token::TyVec2 => "vec2".to_string(),
                     Token::TyVec3 => "vec3".to_string(),
+                    Token::TyVec4 => "vec4".to_string(),
                     _ => unreachable!(),
                 };
                 let span = self.span();

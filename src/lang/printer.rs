@@ -156,25 +156,21 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *b, kernel);
         }
-        Inst::MakeVec2 { x, y } => {
-            out.push_str("make_vec2 ");
-            print_operand(out, *x, kernel);
-            out.push(' ');
-            print_operand(out, *y, kernel);
-        }
-        Inst::MakeVec3 { x, y, z } => {
-            out.push_str("make_vec3 ");
-            print_operand(out, *x, kernel);
-            out.push(' ');
-            print_operand(out, *y, kernel);
-            out.push(' ');
-            print_operand(out, *z, kernel);
+        Inst::MakeVec(components) => {
+            out.push_str(&format!("make_vec{} ", components.len()));
+            for (i, c) in components.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                print_operand(out, *c, kernel);
+            }
         }
         Inst::VecExtract { vec, index } => {
             let name = match index {
                 0 => "extract_x",
                 1 => "extract_y",
                 2 => "extract_z",
+                3 => "extract_w",
                 _ => "extract_?",
             };
             out.push_str(name);

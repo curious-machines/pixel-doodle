@@ -28,6 +28,7 @@ pub enum Token {
     TyBool,
     TyVec2,
     TyVec3,
+    TyVec4,
     // Literals
     F32Lit(f32),
     FloatLit(f64),
@@ -100,6 +101,7 @@ impl fmt::Display for Token {
             Token::TyBool => write!(f, "bool"),
             Token::TyVec2 => write!(f, "vec2"),
             Token::TyVec3 => write!(f, "vec3"),
+            Token::TyVec4 => write!(f, "vec4"),
             Token::F32Lit(v) => write!(f, "{}f32", v),
             Token::FloatLit(v) => write!(f, "{}", v),
             Token::I32Lit(v) => write!(f, "{}i32", v),
@@ -274,6 +276,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "bool" => Token::TyBool,
                 "vec2" => Token::TyVec2,
                 "vec3" => Token::TyVec3,
+                "vec4" => Token::TyVec4,
                 _ => Token::Ident(text),
             };
             tokens.push(Spanned { token, line, col: start_col });

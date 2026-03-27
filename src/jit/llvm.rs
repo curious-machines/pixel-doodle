@@ -8,11 +8,10 @@ use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 use crate::jit::{CompiledKernel, CompiledSimKernel, JitBackend, SimTileKernelFn, TileKernelFn, UserArgSlot};
 use crate::kernel_ir::*;
 
-/// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
+/// Decomposed vector values. Backends store vec vars as N scalar values (2, 3, or 4 components).
 enum VarValues<'ctx> {
     Scalar(BasicValueEnum<'ctx>),
-    Vec2(BasicValueEnum<'ctx>, BasicValueEnum<'ctx>),
-    Vec3(BasicValueEnum<'ctx>, BasicValueEnum<'ctx>, BasicValueEnum<'ctx>),
+    Vec(Vec<BasicValueEnum<'ctx>>),  // 2, 3, or 4 components
 }
 
 fn get_scalar<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> BasicValueEnum<'ctx> {
@@ -22,17 +21,10 @@ fn get_scalar<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, v
     }
 }
 
-fn get_vec2<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> (BasicValueEnum<'ctx>, BasicValueEnum<'ctx>) {
+fn get_vec<'a, 'ctx>(val_map: &'a std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> &'a [BasicValueEnum<'ctx>] {
     match &val_map[var] {
-        VarValues::Vec2(x, y) => (*x, *y),
-        _ => panic!("expected vec2 value for {:?}", var),
-    }
-}
-
-fn get_vec3<'ctx>(val_map: &std::collections::HashMap<Var, VarValues<'ctx>>, var: &Var) -> (BasicValueEnum<'ctx>, BasicValueEnum<'ctx>, BasicValueEnum<'ctx>) {
-    match &val_map[var] {
-        VarValues::Vec3(x, y, z) => (*x, *y, *z),
-        _ => panic!("expected vec3 value for {:?}", var),
+        VarValues::Vec(v) => v,
+        _ => panic!("expected vec value for {:?}", var),
     }
 }
 
@@ -426,11 +418,12 @@ fn lower_while(
     let mut carry_phis: Vec<Vec<inkwell::values::PhiValue<'static>>> = Vec::new();
     for cv in &w.carry {
         let component_count = cv.binding.ty.component_count();
-        let llvm_ty: inkwell::types::BasicTypeEnum = match cv.binding.ty.element_type() {
-            ValType::F64 => f64_type.into(),
-            ValType::U32 => i32_type.into(),
-            ValType::Bool => i1_type.into(),
-            _ => unreachable!(),
+        let llvm_ty: inkwell::types::BasicTypeEnum = match cv.binding.ty.element_scalar() {
+            ScalarType::F64 => f64_type.into(),
+            ScalarType::F32 => context.f32_type().into(),
+            ScalarType::U32 => i32_type.into(),
+            ScalarType::I32 => i32_type.into(),
+            ScalarType::Bool => i1_type.into(),
         };
 
         let mut phis = Vec::new();
@@ -444,37 +437,20 @@ fn lower_while(
 
             // Add incoming from pre-block (initial value)
             let init_vals = &val_map[&cv.init];
-            let init_val = match (init_vals, comp) {
-                (VarValues::Scalar(v), 0) => *v,
-                (VarValues::Vec2(x, _), 0) => *x,
-                (VarValues::Vec2(_, y), 1) => *y,
-                (VarValues::Vec3(x, _, _), 0) => *x,
-                (VarValues::Vec3(_, y, _), 1) => *y,
-                (VarValues::Vec3(_, _, z), 2) => *z,
-                _ => unreachable!(),
+            let init_val = match init_vals {
+                VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
+                VarValues::Vec(components) => components[comp],
             };
             phi.add_incoming(&[(&init_val, pre_block)]);
             phis.push(phi);
         }
 
         // Map carry var to phi values
-        match cv.binding.ty {
-            ValType::Vec2 => {
-                val_map.insert(cv.binding.var, VarValues::Vec2(
-                    phis[0].as_basic_value(),
-                    phis[1].as_basic_value(),
-                ));
-            }
-            ValType::Vec3 => {
-                val_map.insert(cv.binding.var, VarValues::Vec3(
-                    phis[0].as_basic_value(),
-                    phis[1].as_basic_value(),
-                    phis[2].as_basic_value(),
-                ));
-            }
-            _ => {
-                val_map.insert(cv.binding.var, VarValues::Scalar(phis[0].as_basic_value()));
-            }
+        if component_count > 1 {
+            let components: Vec<_> = phis.iter().map(|p| p.as_basic_value()).collect();
+            val_map.insert(cv.binding.var, VarValues::Vec(components));
+        } else {
+            val_map.insert(cv.binding.var, VarValues::Scalar(phis[0].as_basic_value()));
         }
         carry_phis.push(phis);
     }
@@ -497,14 +473,9 @@ fn lower_while(
         let yield_var = &w.yields[i];
         let yield_vals = &val_map[yield_var];
         for (comp, phi) in phis.iter().enumerate() {
-            let yield_val = match (yield_vals, comp) {
-                (VarValues::Scalar(v), 0) => *v,
-                (VarValues::Vec2(x, _), 0) => *x,
-                (VarValues::Vec2(_, y), 1) => *y,
-                (VarValues::Vec3(x, _, _), 0) => *x,
-                (VarValues::Vec3(_, y, _), 1) => *y,
-                (VarValues::Vec3(_, _, z), 2) => *z,
-                _ => unreachable!(),
+            let yield_val = match yield_vals {
+                VarValues::Scalar(v) => { assert_eq!(comp, 0); *v }
+                VarValues::Vec(components) => components[comp],
             };
             phi.add_incoming(&[(&yield_val, body_block)]);
         }
@@ -533,7 +504,9 @@ fn lower_inst(
 
     match inst {
         Inst::Const(c) => VarValues::Scalar(match c {
+            Const::F32(v) => context.f32_type().const_float(*v as f64).into(),
             Const::F64(v) => f64_type.const_float(*v).into(),
+            Const::I32(v) => i32_type.const_int(*v as u64, true).into(),
             Const::U32(v) => i32_type.const_int(*v as u64, false).into(),
             Const::Bool(v) => i1_type.const_int(if *v { 1 } else { 0 }, false).into(),
         }),
@@ -653,40 +626,49 @@ fn lower_inst(
         }
         Inst::Conv { op, arg } => {
             let a = get_scalar(val_map, arg);
-            VarValues::Scalar(match op {
-                ConvOp::F64ToU32 => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
-                ConvOp::U32ToF64 => builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
-                ConvOp::U32ToF64Norm => {
+            let f32_type = context.f32_type();
+            VarValues::Scalar(match (op.from, op.to, op.norm) {
+                (ScalarType::F64, ScalarType::U32, false) => builder.build_float_to_unsigned_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
+                (ScalarType::F64, ScalarType::I32, false) => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
+                (ScalarType::U32, ScalarType::F64, false) => builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
+                (ScalarType::I32, ScalarType::F64, false) => builder.build_signed_int_to_float(a.into_int_value(), f64_type, "conv").unwrap().into(),
+                (ScalarType::U32, ScalarType::F64, true) => {
                     let f = builder.build_unsigned_int_to_float(a.into_int_value(), f64_type, "conv_f").unwrap();
                     let recip = f64_type.const_float(1.0 / 4294967296.0);
                     builder.build_float_mul(f, recip, "norm").unwrap().into()
                 }
+                (ScalarType::F32, ScalarType::F64, false) => builder.build_float_ext(a.into_float_value(), f64_type, "conv").unwrap().into(),
+                (ScalarType::F64, ScalarType::F32, false) => builder.build_float_trunc(a.into_float_value(), f32_type, "conv").unwrap().into(),
+                (ScalarType::I32, ScalarType::U32, false) | (ScalarType::U32, ScalarType::I32, false) => a, // same bit width, reinterpret
+                (ScalarType::I32, ScalarType::F32, false) => builder.build_signed_int_to_float(a.into_int_value(), f32_type, "conv").unwrap().into(),
+                (ScalarType::F32, ScalarType::I32, false) => builder.build_float_to_signed_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
+                (ScalarType::F32, ScalarType::U32, false) => builder.build_float_to_unsigned_int(a.into_float_value(), i32_type, "conv").unwrap().into(),
+                (ScalarType::U32, ScalarType::F32, false) => builder.build_unsigned_int_to_float(a.into_int_value(), f32_type, "conv").unwrap().into(),
+                _ => unreachable!("unsupported conv {:?}", op),
             })
         }
         Inst::Select { cond, then_val, else_val } => {
             let c = get_scalar(val_map, cond).into_int_value();
             match binding.ty {
-                ValType::Vec2 => {
-                    let (tx, ty) = get_vec2(val_map, then_val);
-                    let (ex, ey) = get_vec2(val_map, else_val);
-                    let rx = builder.build_select(c, tx.into_float_value(), ex.into_float_value(), "sel_x").unwrap();
-                    let ry = builder.build_select(c, ty.into_float_value(), ey.into_float_value(), "sel_y").unwrap();
-                    VarValues::Vec2(rx, ry)
+                ValType::Vec { .. } => {
+                    let t_comps = get_vec(val_map, then_val);
+                    let e_comps = get_vec(val_map, else_val);
+                    let results: Vec<_> = t_comps.iter().zip(e_comps.iter()).enumerate().map(|(i, (t, e))| {
+                        let name = format!("sel_{}", i);
+                        if binding.ty.element_scalar().is_float() {
+                            builder.build_select(c, t.into_float_value(), e.into_float_value(), &name).unwrap()
+                        } else {
+                            builder.build_select(c, t.into_int_value(), e.into_int_value(), &name).unwrap()
+                        }
+                    }).collect();
+                    VarValues::Vec(results)
                 }
-                ValType::Vec3 => {
-                    let (tx, ty, tz) = get_vec3(val_map, then_val);
-                    let (ex, ey, ez) = get_vec3(val_map, else_val);
-                    let rx = builder.build_select(c, tx.into_float_value(), ex.into_float_value(), "sel_x").unwrap();
-                    let ry = builder.build_select(c, ty.into_float_value(), ey.into_float_value(), "sel_y").unwrap();
-                    let rz = builder.build_select(c, tz.into_float_value(), ez.into_float_value(), "sel_z").unwrap();
-                    VarValues::Vec3(rx, ry, rz)
-                }
-                ValType::F64 => {
+                ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) => {
                     let t = get_scalar(val_map, then_val);
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_float_value(), e.into_float_value(), "sel").unwrap())
                 }
-                ValType::U32 | ValType::Bool => {
+                ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32) | ValType::Scalar(ScalarType::Bool) => {
                     let t = get_scalar(val_map, then_val);
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_int_value(), e.into_int_value(), "sel").unwrap())
@@ -706,208 +688,133 @@ fn lower_inst(
         }
 
         // -- Vector construction --
-        Inst::MakeVec2 { x, y } => {
-            let xv = get_scalar(val_map, x);
-            let yv = get_scalar(val_map, y);
-            VarValues::Vec2(xv, yv)
-        }
-        Inst::MakeVec3 { x, y, z } => {
-            let xv = get_scalar(val_map, x);
-            let yv = get_scalar(val_map, y);
-            let zv = get_scalar(val_map, z);
-            VarValues::Vec3(xv, yv, zv)
+        Inst::MakeVec(components) => {
+            let vals: Vec<_> = components.iter().map(|v| get_scalar(val_map, v)).collect();
+            VarValues::Vec(vals)
         }
 
         // -- Component extraction --
         Inst::VecExtract { vec, index } => {
-            let val = match &val_map[vec] {
-                VarValues::Vec2(x, y) => match index {
-                    0 => *x,
-                    1 => *y,
-                    _ => unreachable!("invalid vec2 index"),
-                },
-                VarValues::Vec3(x, y, z) => match index {
-                    0 => *x,
-                    1 => *y,
-                    2 => *z,
-                    _ => unreachable!("invalid vec3 index"),
-                },
-                _ => unreachable!("VecExtract on non-vector"),
-            };
-            VarValues::Scalar(val)
+            let components = get_vec(val_map, vec);
+            VarValues::Scalar(components[*index as usize])
         }
 
         // -- Component-wise binary --
         Inst::VecBinary { op, lhs, rhs } => {
-            match binding.ty {
-                ValType::Vec2 => {
-                    let (lx, ly) = get_vec2(val_map, lhs);
-                    let (rx, ry) = get_vec2(val_map, rhs);
-                    let res_x = lower_vec_bin_op(module, builder, f64_type, *op, lx.into_float_value(), rx.into_float_value());
-                    let res_y = lower_vec_bin_op(module, builder, f64_type, *op, ly.into_float_value(), ry.into_float_value());
-                    VarValues::Vec2(res_x.into(), res_y.into())
-                }
-                ValType::Vec3 => {
-                    let (lx, ly, lz) = get_vec3(val_map, lhs);
-                    let (rx, ry, rz) = get_vec3(val_map, rhs);
-                    let res_x = lower_vec_bin_op(module, builder, f64_type, *op, lx.into_float_value(), rx.into_float_value());
-                    let res_y = lower_vec_bin_op(module, builder, f64_type, *op, ly.into_float_value(), ry.into_float_value());
-                    let res_z = lower_vec_bin_op(module, builder, f64_type, *op, lz.into_float_value(), rz.into_float_value());
-                    VarValues::Vec3(res_x.into(), res_y.into(), res_z.into())
-                }
-                _ => unreachable!("VecBinary on non-vector type"),
-            }
+            let l_comps = get_vec(val_map, lhs);
+            let r_comps = get_vec(val_map, rhs);
+            let results: Vec<_> = l_comps.iter().zip(r_comps.iter()).map(|(l, r)| {
+                let res = lower_vec_bin_op(module, builder, f64_type, *op, l.into_float_value(), r.into_float_value());
+                res.into()
+            }).collect();
+            VarValues::Vec(results)
         }
 
         // -- Scalar-vector multiply --
         Inst::VecScale { scalar, vec } => {
             let s = get_scalar(val_map, scalar).into_float_value();
-            match binding.ty {
-                ValType::Vec2 => {
-                    let (vx, vy) = get_vec2(val_map, vec);
-                    let rx = builder.build_float_mul(s, vx.into_float_value(), "scale_x").unwrap();
-                    let ry = builder.build_float_mul(s, vy.into_float_value(), "scale_y").unwrap();
-                    VarValues::Vec2(rx.into(), ry.into())
-                }
-                ValType::Vec3 => {
-                    let (vx, vy, vz) = get_vec3(val_map, vec);
-                    let rx = builder.build_float_mul(s, vx.into_float_value(), "scale_x").unwrap();
-                    let ry = builder.build_float_mul(s, vy.into_float_value(), "scale_y").unwrap();
-                    let rz = builder.build_float_mul(s, vz.into_float_value(), "scale_z").unwrap();
-                    VarValues::Vec3(rx.into(), ry.into(), rz.into())
-                }
-                _ => unreachable!("VecScale on non-vector type"),
-            }
+            let v_comps = get_vec(val_map, vec);
+            let results: Vec<_> = v_comps.iter().enumerate().map(|(i, v)| {
+                let name = format!("scale_{}", i);
+                let r: BasicValueEnum = builder.build_float_mul(s, v.into_float_value(), &name).unwrap().into();
+                r
+            }).collect();
+            VarValues::Vec(results)
         }
 
         // -- Vector unary --
         Inst::VecUnary { op, arg } => {
-            match binding.ty {
-                ValType::Vec2 => {
-                    let (ax, ay) = get_vec2(val_map, arg);
-                    match op {
-                        VecUnaryOp::Neg => {
-                            let rx = builder.build_float_neg(ax.into_float_value(), "neg_x").unwrap();
-                            let ry = builder.build_float_neg(ay.into_float_value(), "neg_y").unwrap();
-                            VarValues::Vec2(rx.into(), ry.into())
-                        }
-                        VecUnaryOp::Abs => {
-                            let rx = call_f64_intrinsic(module, builder, "llvm.fabs.f64", ax.into_float_value(), f64_type);
-                            let ry = call_f64_intrinsic(module, builder, "llvm.fabs.f64", ay.into_float_value(), f64_type);
-                            VarValues::Vec2(rx, ry)
-                        }
-                        VecUnaryOp::Normalize => {
-                            // length = sqrt(x*x + y*y)
-                            let xx = builder.build_float_mul(ax.into_float_value(), ax.into_float_value(), "xx").unwrap();
-                            let yy = builder.build_float_mul(ay.into_float_value(), ay.into_float_value(), "yy").unwrap();
-                            let dot = builder.build_float_add(xx, yy, "dot").unwrap();
-                            let len = call_f64_intrinsic(module, builder, "llvm.sqrt.f64", dot, f64_type).into_float_value();
-                            let rx = builder.build_float_div(ax.into_float_value(), len, "norm_x").unwrap();
-                            let ry = builder.build_float_div(ay.into_float_value(), len, "norm_y").unwrap();
-                            VarValues::Vec2(rx.into(), ry.into())
-                        }
-                    }
+            let a_comps = get_vec(val_map, arg);
+            match op {
+                VecUnaryOp::Neg => {
+                    let results: Vec<_> = a_comps.iter().enumerate().map(|(i, a)| {
+                        let name = format!("neg_{}", i);
+                        let r: BasicValueEnum = builder.build_float_neg(a.into_float_value(), &name).unwrap().into();
+                        r
+                    }).collect();
+                    VarValues::Vec(results)
                 }
-                ValType::Vec3 => {
-                    let (ax, ay, az) = get_vec3(val_map, arg);
-                    match op {
-                        VecUnaryOp::Neg => {
-                            let rx = builder.build_float_neg(ax.into_float_value(), "neg_x").unwrap();
-                            let ry = builder.build_float_neg(ay.into_float_value(), "neg_y").unwrap();
-                            let rz = builder.build_float_neg(az.into_float_value(), "neg_z").unwrap();
-                            VarValues::Vec3(rx.into(), ry.into(), rz.into())
-                        }
-                        VecUnaryOp::Abs => {
-                            let rx = call_f64_intrinsic(module, builder, "llvm.fabs.f64", ax.into_float_value(), f64_type);
-                            let ry = call_f64_intrinsic(module, builder, "llvm.fabs.f64", ay.into_float_value(), f64_type);
-                            let rz = call_f64_intrinsic(module, builder, "llvm.fabs.f64", az.into_float_value(), f64_type);
-                            VarValues::Vec3(rx, ry, rz)
-                        }
-                        VecUnaryOp::Normalize => {
-                            // length = sqrt(x*x + y*y + z*z)
-                            let xx = builder.build_float_mul(ax.into_float_value(), ax.into_float_value(), "xx").unwrap();
-                            let yy = builder.build_float_mul(ay.into_float_value(), ay.into_float_value(), "yy").unwrap();
-                            let zz = builder.build_float_mul(az.into_float_value(), az.into_float_value(), "zz").unwrap();
-                            let dot = builder.build_float_add(xx, yy, "dot_xy").unwrap();
-                            let dot = builder.build_float_add(dot, zz, "dot").unwrap();
-                            let len = call_f64_intrinsic(module, builder, "llvm.sqrt.f64", dot, f64_type).into_float_value();
-                            let rx = builder.build_float_div(ax.into_float_value(), len, "norm_x").unwrap();
-                            let ry = builder.build_float_div(ay.into_float_value(), len, "norm_y").unwrap();
-                            let rz = builder.build_float_div(az.into_float_value(), len, "norm_z").unwrap();
-                            VarValues::Vec3(rx.into(), ry.into(), rz.into())
-                        }
-                    }
+                VecUnaryOp::Abs => {
+                    let results: Vec<_> = a_comps.iter().map(|a| {
+                        call_f64_intrinsic(module, builder, "llvm.fabs.f64", a.into_float_value(), f64_type)
+                    }).collect();
+                    VarValues::Vec(results)
                 }
-                _ => unreachable!("VecUnary on non-vector type"),
+                VecUnaryOp::Normalize => {
+                    // length = sqrt(sum of squares)
+                    let mut dot = builder.build_float_mul(
+                        a_comps[0].into_float_value(), a_comps[0].into_float_value(), "sq_0"
+                    ).unwrap();
+                    for i in 1..a_comps.len() {
+                        let sq = builder.build_float_mul(
+                            a_comps[i].into_float_value(), a_comps[i].into_float_value(), &format!("sq_{}", i)
+                        ).unwrap();
+                        dot = builder.build_float_add(dot, sq, &format!("dot_{}", i)).unwrap();
+                    }
+                    let len = call_f64_intrinsic(module, builder, "llvm.sqrt.f64", dot, f64_type).into_float_value();
+                    let results: Vec<_> = a_comps.iter().enumerate().map(|(i, a)| {
+                        let name = format!("norm_{}", i);
+                        let r: BasicValueEnum = builder.build_float_div(a.into_float_value(), len, &name).unwrap().into();
+                        r
+                    }).collect();
+                    VarValues::Vec(results)
+                }
             }
         }
 
         // -- Dot product (vec -> f64) --
         Inst::VecDot { lhs, rhs } => {
-            let lhs_ty = kernel.var_type(*lhs).unwrap();
-            let result = match lhs_ty {
-                ValType::Vec2 => {
-                    let (lx, ly) = get_vec2(val_map, lhs);
-                    let (rx, ry) = get_vec2(val_map, rhs);
-                    let xx = builder.build_float_mul(lx.into_float_value(), rx.into_float_value(), "dot_xx").unwrap();
-                    let yy = builder.build_float_mul(ly.into_float_value(), ry.into_float_value(), "dot_yy").unwrap();
-                    builder.build_float_add(xx, yy, "dot").unwrap()
-                }
-                ValType::Vec3 => {
-                    let (lx, ly, lz) = get_vec3(val_map, lhs);
-                    let (rx, ry, rz) = get_vec3(val_map, rhs);
-                    let xx = builder.build_float_mul(lx.into_float_value(), rx.into_float_value(), "dot_xx").unwrap();
-                    let yy = builder.build_float_mul(ly.into_float_value(), ry.into_float_value(), "dot_yy").unwrap();
-                    let zz = builder.build_float_mul(lz.into_float_value(), rz.into_float_value(), "dot_zz").unwrap();
-                    let sum = builder.build_float_add(xx, yy, "dot_xy").unwrap();
-                    builder.build_float_add(sum, zz, "dot").unwrap()
-                }
-                _ => unreachable!("VecDot on non-vector type"),
-            };
-            VarValues::Scalar(result.into())
+            let l_comps = get_vec(val_map, lhs);
+            let r_comps = get_vec(val_map, rhs);
+            let mut sum = builder.build_float_mul(
+                l_comps[0].into_float_value(), r_comps[0].into_float_value(), "dot_0"
+            ).unwrap();
+            for i in 1..l_comps.len() {
+                let prod = builder.build_float_mul(
+                    l_comps[i].into_float_value(), r_comps[i].into_float_value(), &format!("dot_{}", i)
+                ).unwrap();
+                sum = builder.build_float_add(sum, prod, &format!("dot_sum_{}", i)).unwrap();
+            }
+            VarValues::Scalar(sum.into())
         }
 
         // -- Vector length (vec -> f64) --
         Inst::VecLength { arg } => {
-            let arg_ty = kernel.var_type(*arg).unwrap();
-            let dot = match arg_ty {
-                ValType::Vec2 => {
-                    let (ax, ay) = get_vec2(val_map, arg);
-                    let xx = builder.build_float_mul(ax.into_float_value(), ax.into_float_value(), "len_xx").unwrap();
-                    let yy = builder.build_float_mul(ay.into_float_value(), ay.into_float_value(), "len_yy").unwrap();
-                    builder.build_float_add(xx, yy, "len_dot").unwrap()
-                }
-                ValType::Vec3 => {
-                    let (ax, ay, az) = get_vec3(val_map, arg);
-                    let xx = builder.build_float_mul(ax.into_float_value(), ax.into_float_value(), "len_xx").unwrap();
-                    let yy = builder.build_float_mul(ay.into_float_value(), ay.into_float_value(), "len_yy").unwrap();
-                    let zz = builder.build_float_mul(az.into_float_value(), az.into_float_value(), "len_zz").unwrap();
-                    let sum = builder.build_float_add(xx, yy, "len_xy").unwrap();
-                    builder.build_float_add(sum, zz, "len_dot").unwrap()
-                }
-                _ => unreachable!("VecLength on non-vector type"),
-            };
+            let a_comps = get_vec(val_map, arg);
+            let mut dot = builder.build_float_mul(
+                a_comps[0].into_float_value(), a_comps[0].into_float_value(), "len_sq_0"
+            ).unwrap();
+            for i in 1..a_comps.len() {
+                let sq = builder.build_float_mul(
+                    a_comps[i].into_float_value(), a_comps[i].into_float_value(), &format!("len_sq_{}", i)
+                ).unwrap();
+                dot = builder.build_float_add(dot, sq, &format!("len_sum_{}", i)).unwrap();
+            }
             let len = call_f64_intrinsic(module, builder, "llvm.sqrt.f64", dot, f64_type);
             VarValues::Scalar(len)
         }
 
         // -- Cross product (vec3 x vec3 -> vec3) --
         Inst::VecCross { lhs, rhs } => {
-            let (lx, ly, lz) = get_vec3(val_map, lhs);
-            let (rx, ry, rz) = get_vec3(val_map, rhs);
+            let l = get_vec(val_map, lhs);
+            let r = get_vec(val_map, rhs);
+            assert_eq!(l.len(), 3, "VecCross requires vec3");
+            assert_eq!(r.len(), 3, "VecCross requires vec3");
+            let (lx, ly, lz) = (l[0].into_float_value(), l[1].into_float_value(), l[2].into_float_value());
+            let (rx, ry, rz) = (r[0].into_float_value(), r[1].into_float_value(), r[2].into_float_value());
             // cross.x = ly*rz - lz*ry
-            let a = builder.build_float_mul(ly.into_float_value(), rz.into_float_value(), "cross_a").unwrap();
-            let b = builder.build_float_mul(lz.into_float_value(), ry.into_float_value(), "cross_b").unwrap();
-            let cx = builder.build_float_sub(a, b, "cross_x").unwrap();
+            let a = builder.build_float_mul(ly, rz, "cross_a").unwrap();
+            let b = builder.build_float_mul(lz, ry, "cross_b").unwrap();
+            let cx: BasicValueEnum = builder.build_float_sub(a, b, "cross_x").unwrap().into();
             // cross.y = lz*rx - lx*rz
-            let a = builder.build_float_mul(lz.into_float_value(), rx.into_float_value(), "cross_c").unwrap();
-            let b = builder.build_float_mul(lx.into_float_value(), rz.into_float_value(), "cross_d").unwrap();
-            let cy = builder.build_float_sub(a, b, "cross_y").unwrap();
+            let a = builder.build_float_mul(lz, rx, "cross_c").unwrap();
+            let b = builder.build_float_mul(lx, rz, "cross_d").unwrap();
+            let cy: BasicValueEnum = builder.build_float_sub(a, b, "cross_y").unwrap().into();
             // cross.z = lx*ry - ly*rx
-            let a = builder.build_float_mul(lx.into_float_value(), ry.into_float_value(), "cross_e").unwrap();
-            let b = builder.build_float_mul(ly.into_float_value(), rx.into_float_value(), "cross_f").unwrap();
-            let cz = builder.build_float_sub(a, b, "cross_z").unwrap();
-            VarValues::Vec3(cx.into(), cy.into(), cz.into())
+            let a = builder.build_float_mul(lx, ry, "cross_e").unwrap();
+            let b = builder.build_float_mul(ly, rx, "cross_f").unwrap();
+            let cz: BasicValueEnum = builder.build_float_sub(a, b, "cross_z").unwrap().into();
+            VarValues::Vec(vec![cx, cy, cz])
         }
         Inst::BufLoad { buf, x, y } => {
             let ctx = buf_ctx.expect("BufLoad requires simulation context");

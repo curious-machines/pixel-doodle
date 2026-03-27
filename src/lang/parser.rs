@@ -25,16 +25,19 @@ enum Token {
     TyBool,
     TyVec2,
     TyVec3,
+    TyVec4,
     // Angle brackets (for parameterized types like vec2<f64>)
     LAngle,
     RAngle,
     // Vec construction
     MakeVec2,
     MakeVec3,
+    MakeVec4,
     // Vec extraction
     ExtractX,
     ExtractY,
     ExtractZ,
+    ExtractW,
     // Vec binary ops
     VecAdd,
     VecSub,
@@ -184,11 +187,14 @@ fn keyword_lookup(word: &str) -> Token {
         "bool" => Token::TyBool,
         "vec2" => Token::TyVec2,
         "vec3" => Token::TyVec3,
+        "vec4" => Token::TyVec4,
         "make_vec2" => Token::MakeVec2,
         "make_vec3" => Token::MakeVec3,
+        "make_vec4" => Token::MakeVec4,
         "extract_x" => Token::ExtractX,
         "extract_y" => Token::ExtractY,
         "extract_z" => Token::ExtractZ,
+        "extract_w" => Token::ExtractW,
         "vec_add" => Token::VecAdd,
         "vec_sub" => Token::VecSub,
         "vec_mul" => Token::VecMul,
@@ -658,24 +664,23 @@ impl Parser {
             Token::TyI32 => { self.advance(); Ok(ValType::I32) }
             Token::TyU32 => { self.advance(); Ok(ValType::U32) }
             Token::TyBool => { self.advance(); Ok(ValType::BOOL) }
-            Token::TyVec2 => {
+            Token::TyVec2 | Token::TyVec3 | Token::TyVec4 => {
+                let len: u8 = match sp.token {
+                    Token::TyVec2 => 2,
+                    Token::TyVec3 => 3,
+                    Token::TyVec4 => 4,
+                    _ => unreachable!(),
+                };
                 self.advance();
                 self.expect_tok(&Token::LAngle)?;
                 let elem = self.parse_scalar_type()?;
                 self.expect_tok(&Token::RAngle)?;
-                Ok(ValType::Vec { len: 2, elem })
-            }
-            Token::TyVec3 => {
-                self.advance();
-                self.expect_tok(&Token::LAngle)?;
-                let elem = self.parse_scalar_type()?;
-                self.expect_tok(&Token::RAngle)?;
-                Ok(ValType::Vec { len: 3, elem })
+                Ok(ValType::Vec { len, elem })
             }
             _ => Err(ParseError {
                 line: sp.line,
                 col: sp.col,
-                message: format!("expected type (f32, f64, i32, u32, bool, vec2<T>, vec3<T>), got {:?}", sp.token),
+                message: format!("expected type (f32, f64, i32, u32, bool, vec2<T>, vec3<T>, vec4<T>), got {:?}", sp.token),
             }),
         }
     }
@@ -1045,36 +1050,31 @@ impl Parser {
                 self.check_types_match(ValType::U32, self.var_ty(b), "b", line, col)?;
                 Ok(Inst::PackArgb { r, g, b })
             }
-            Token::MakeVec2 => {
+            Token::MakeVec2 | Token::MakeVec3 | Token::MakeVec4 => {
+                let (count, label) = match sp.token {
+                    Token::MakeVec2 => (2u8, "make_vec2"),
+                    Token::MakeVec3 => (3u8, "make_vec3"),
+                    Token::MakeVec4 => (4u8, "make_vec4"),
+                    _ => unreachable!(),
+                };
                 self.advance();
-                let x = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(x), "x", line, col)?;
-                let y = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(y), "y", line, col)?;
-                if declared_ty != (ValType::Vec { len: 2, elem: ScalarType::F64 }) {
-                    return Err(ParseError { line, col, message: format!("make_vec2 result must be vec2<f64>, got {declared_ty}") });
+                let mut components = Vec::new();
+                for _ in 0..count {
+                    let v = self.resolve_var_ident()?;
+                    self.check_types_match(ValType::F64, self.var_ty(v), "component", line, col)?;
+                    components.push(v);
                 }
-                Ok(Inst::MakeVec2 { x, y })
-            }
-            Token::MakeVec3 => {
-                self.advance();
-                let x = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(x), "x", line, col)?;
-                let y = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(y), "y", line, col)?;
-                let z = self.resolve_var_ident()?;
-                self.check_types_match(ValType::F64, self.var_ty(z), "z", line, col)?;
-                if declared_ty != (ValType::Vec { len: 3, elem: ScalarType::F64 }) {
-                    return Err(ParseError { line, col, message: format!("make_vec3 result must be vec3<f64>, got {declared_ty}") });
+                if declared_ty != (ValType::Vec { len: count, elem: ScalarType::F64 }) {
+                    return Err(ParseError { line, col, message: format!("{label} result must be vec{count}<f64>, got {declared_ty}") });
                 }
-                Ok(Inst::MakeVec3 { x, y, z })
+                Ok(Inst::MakeVec(components))
             }
             Token::ExtractX => {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if !matches!(vec_ty, ValType::Vec { len: 2 | 3, .. }) {
-                    return Err(ParseError { line, col, message: format!("extract_x requires vec2 or vec3 argument, got {vec_ty}") });
+                if !matches!(vec_ty, ValType::Vec { len: 2 | 3 | 4, .. }) {
+                    return Err(ParseError { line, col, message: format!("extract_x requires vec2, vec3, or vec4 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
                     return Err(ParseError { line, col, message: format!("extract_x result must be f64, got {declared_ty}") });
@@ -1085,8 +1085,8 @@ impl Parser {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if !matches!(vec_ty, ValType::Vec { len: 2 | 3, .. }) {
-                    return Err(ParseError { line, col, message: format!("extract_y requires vec2 or vec3 argument, got {vec_ty}") });
+                if !matches!(vec_ty, ValType::Vec { len: 2 | 3 | 4, .. }) {
+                    return Err(ParseError { line, col, message: format!("extract_y requires vec2, vec3, or vec4 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
                     return Err(ParseError { line, col, message: format!("extract_y result must be f64, got {declared_ty}") });
@@ -1097,13 +1097,25 @@ impl Parser {
                 self.advance();
                 let vec = self.resolve_var_ident()?;
                 let vec_ty = self.var_ty(vec);
-                if !matches!(vec_ty, ValType::Vec { len: 3, .. }) {
-                    return Err(ParseError { line, col, message: format!("extract_z requires vec3 argument, got {vec_ty}") });
+                if !matches!(vec_ty, ValType::Vec { len: 3 | 4, .. }) {
+                    return Err(ParseError { line, col, message: format!("extract_z requires vec3 or vec4 argument, got {vec_ty}") });
                 }
                 if declared_ty != ValType::F64 {
                     return Err(ParseError { line, col, message: format!("extract_z result must be f64, got {declared_ty}") });
                 }
                 Ok(Inst::VecExtract { vec, index: 2 })
+            }
+            Token::ExtractW => {
+                self.advance();
+                let vec = self.resolve_var_ident()?;
+                let vec_ty = self.var_ty(vec);
+                if !matches!(vec_ty, ValType::Vec { len: 4, .. }) {
+                    return Err(ParseError { line, col, message: format!("extract_w requires vec4 argument, got {vec_ty}") });
+                }
+                if declared_ty != ValType::F64 {
+                    return Err(ParseError { line, col, message: format!("extract_w result must be f64, got {declared_ty}") });
+                }
+                Ok(Inst::VecExtract { vec, index: 3 })
             }
             Token::VecAdd | Token::VecSub | Token::VecMul | Token::VecDiv | Token::VecMin | Token::VecMax => {
                 let vec_op = match sp.token {
@@ -1744,8 +1756,7 @@ impl Parser {
                 else_val: remap(else_val),
             },
             Inst::PackArgb { r, g, b } => Inst::PackArgb { r: remap(r), g: remap(g), b: remap(b) },
-            Inst::MakeVec2 { x, y } => Inst::MakeVec2 { x: remap(x), y: remap(y) },
-            Inst::MakeVec3 { x, y, z } => Inst::MakeVec3 { x: remap(x), y: remap(y), z: remap(z) },
+            Inst::MakeVec(components) => Inst::MakeVec(components.iter().map(&remap).collect()),
             Inst::VecExtract { vec, index } => Inst::VecExtract { vec: remap(vec), index: *index },
             Inst::VecBinary { op, lhs, rhs } => Inst::VecBinary { op: *op, lhs: remap(lhs), rhs: remap(rhs) },
             Inst::VecScale { scalar, vec } => Inst::VecScale { scalar: remap(scalar), vec: remap(vec) },

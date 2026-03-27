@@ -226,12 +226,11 @@ pub enum Inst {
     Select { cond: Var, then_val: Var, else_val: Var },
     PackArgb { r: Var, g: Var, b: Var },
 
-    // Vector construction
-    MakeVec2 { x: Var, y: Var },
-    MakeVec3 { x: Var, y: Var, z: Var },
+    // Vector construction (length determines vec2/vec3/vec4)
+    MakeVec(Vec<Var>),
 
-    // Component extraction (vec -> f64)
-    VecExtract { vec: Var, index: u8 }, // 0=x, 1=y, 2=z
+    // Component extraction (vec -> scalar)
+    VecExtract { vec: Var, index: u8 }, // 0=x, 1=y, 2=z, 3=w
 
     // Component-wise binary (vec op vec -> vec)
     VecBinary { op: VecBinOp, lhs: Var, rhs: Var },

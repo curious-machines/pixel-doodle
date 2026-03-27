@@ -17,11 +17,10 @@ struct BufContext {
     v_buf_out_ptrs: Variable,
 }
 
-/// Decomposed vector values. Backends store vec vars as 2-3 scalar f64 values.
+/// Decomposed vector values. Backends store vec vars as N scalar values (2, 3, or 4 components).
 enum VarValues {
     Scalar(cranelift_codegen::ir::Value),
-    Vec2(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
-    Vec3(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+    Vec(Vec<cranelift_codegen::ir::Value>),  // 2, 3, or 4 components
 }
 
 fn get_scalar(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> cranelift_codegen::ir::Value {
@@ -31,17 +30,10 @@ fn get_scalar(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) ->
     }
 }
 
-fn get_vec2(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+fn get_vec<'a>(val_map: &'a std::collections::HashMap<Var, VarValues>, var: &Var) -> &'a [cranelift_codegen::ir::Value] {
     match &val_map[var] {
-        VarValues::Vec2(x, y) => (*x, *y),
-        _ => panic!("expected vec2 value for {:?}", var),
-    }
-}
-
-fn get_vec3(val_map: &std::collections::HashMap<Var, VarValues>, var: &Var) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
-    match &val_map[var] {
-        VarValues::Vec3(x, y, z) => (*x, *y, *z),
-        _ => panic!("expected vec3 value for {:?}", var),
+        VarValues::Vec(v) => v,
+        _ => panic!("expected vec value for {:?}", var),
     }
 }
 
@@ -409,23 +401,19 @@ fn lower_while(
     // Vec types expand to multiple Variables (one per component).
     let carry_vars: Vec<Vec<Variable>> = w.carry.iter().map(|cv| {
         match cv.binding.ty {
-            ValType::Vec { len: 2, .. } => {
-                let vx = builder.declare_var(F64);
-                let vy = builder.declare_var(F64);
-                let (ix, iy) = get_vec2(val_map, &cv.init);
-                builder.def_var(vx, ix);
-                builder.def_var(vy, iy);
-                vec![vx, vy]
-            }
-            ValType::Vec { len: 3, .. } => {
-                let vx = builder.declare_var(F64);
-                let vy = builder.declare_var(F64);
-                let vz = builder.declare_var(F64);
-                let (ix, iy, iz) = get_vec3(val_map, &cv.init);
-                builder.def_var(vx, ix);
-                builder.def_var(vy, iy);
-                builder.def_var(vz, iz);
-                vec![vx, vy, vz]
+            ValType::Vec { len, elem } => {
+                let cl_ty = match elem {
+                    ScalarType::F64 => F64,
+                    ScalarType::F32 => F32,
+                    _ => panic!("unsupported vec element type in carry var"),
+                };
+                let init_components = get_vec(val_map, &cv.init);
+                assert_eq!(init_components.len(), len as usize);
+                init_components.iter().map(|iv| {
+                    let v = builder.declare_var(cl_ty);
+                    builder.def_var(v, *iv);
+                    v
+                }).collect()
             }
             _ => {
                 let cl_ty = match cv.binding.ty {
@@ -451,22 +439,12 @@ fn lower_while(
 
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
-        match cv.binding.ty {
-            ValType::Vec { len: 2, .. } => {
-                let x = builder.use_var(carry_vars[i][0]);
-                let y = builder.use_var(carry_vars[i][1]);
-                val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
-            }
-            ValType::Vec { len: 3, .. } => {
-                let x = builder.use_var(carry_vars[i][0]);
-                let y = builder.use_var(carry_vars[i][1]);
-                let z = builder.use_var(carry_vars[i][2]);
-                val_map.insert(cv.binding.var, VarValues::Vec3(x, y, z));
-            }
-            _ => {
-                let val = builder.use_var(carry_vars[i][0]);
-                val_map.insert(cv.binding.var, VarValues::Scalar(val));
-            }
+        if carry_vars[i].len() > 1 {
+            let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
+            val_map.insert(cv.binding.var, VarValues::Vec(components));
+        } else {
+            let val = builder.use_var(carry_vars[i][0]);
+            val_map.insert(cv.binding.var, VarValues::Scalar(val));
         }
     }
 
@@ -489,14 +467,10 @@ fn lower_while(
             VarValues::Scalar(v) => {
                 builder.def_var(carry_vars[i][0], *v);
             }
-            VarValues::Vec2(x, y) => {
-                builder.def_var(carry_vars[i][0], *x);
-                builder.def_var(carry_vars[i][1], *y);
-            }
-            VarValues::Vec3(x, y, z) => {
-                builder.def_var(carry_vars[i][0], *x);
-                builder.def_var(carry_vars[i][1], *y);
-                builder.def_var(carry_vars[i][2], *z);
+            VarValues::Vec(components) => {
+                for (j, c) in components.iter().enumerate() {
+                    builder.def_var(carry_vars[i][j], *c);
+                }
             }
         }
     }
@@ -512,22 +486,12 @@ fn lower_while(
 
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
-        match cv.binding.ty {
-            ValType::Vec { len: 2, .. } => {
-                let x = builder.use_var(carry_vars[i][0]);
-                let y = builder.use_var(carry_vars[i][1]);
-                val_map.insert(cv.binding.var, VarValues::Vec2(x, y));
-            }
-            ValType::Vec { len: 3, .. } => {
-                let x = builder.use_var(carry_vars[i][0]);
-                let y = builder.use_var(carry_vars[i][1]);
-                let z = builder.use_var(carry_vars[i][2]);
-                val_map.insert(cv.binding.var, VarValues::Vec3(x, y, z));
-            }
-            _ => {
-                let val = builder.use_var(carry_vars[i][0]);
-                val_map.insert(cv.binding.var, VarValues::Scalar(val));
-            }
+        if carry_vars[i].len() > 1 {
+            let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
+            val_map.insert(cv.binding.var, VarValues::Vec(components));
+        } else {
+            let val = builder.use_var(carry_vars[i][0]);
+            val_map.insert(cv.binding.var, VarValues::Scalar(val));
         }
     }
 }
@@ -827,18 +791,12 @@ fn lower_inst(
                 (VarValues::Scalar(t), VarValues::Scalar(e)) => {
                     VarValues::Scalar(builder.ins().select(c, *t, *e))
                 }
-                (VarValues::Vec2(tx, ty), VarValues::Vec2(ex, ey)) => {
-                    VarValues::Vec2(
-                        builder.ins().select(c, *tx, *ex),
-                        builder.ins().select(c, *ty, *ey),
-                    )
-                }
-                (VarValues::Vec3(tx, ty, tz), VarValues::Vec3(ex, ey, ez)) => {
-                    VarValues::Vec3(
-                        builder.ins().select(c, *tx, *ex),
-                        builder.ins().select(c, *ty, *ey),
-                        builder.ins().select(c, *tz, *ez),
-                    )
+                (VarValues::Vec(tv), VarValues::Vec(ev)) => {
+                    assert_eq!(tv.len(), ev.len(), "select branches must have matching vec lengths");
+                    let components: Vec<_> = tv.iter().zip(ev.iter())
+                        .map(|(t, e)| builder.ins().select(c, *t, *e))
+                        .collect();
+                    VarValues::Vec(components)
                 }
                 _ => panic!("select branches must have matching types"),
             }
@@ -856,180 +814,94 @@ fn lower_inst(
             let color = builder.ins().bor(color, g_shifted);
             VarValues::Scalar(builder.ins().bor(color, bv))
         }
-        Inst::MakeVec2 { x, y } => {
-            let xv = get_scalar(val_map, x);
-            let yv = get_scalar(val_map, y);
-            VarValues::Vec2(xv, yv)
-        }
-        Inst::MakeVec3 { x, y, z } => {
-            let xv = get_scalar(val_map, x);
-            let yv = get_scalar(val_map, y);
-            let zv = get_scalar(val_map, z);
-            VarValues::Vec3(xv, yv, zv)
+        Inst::MakeVec(components) => {
+            let vals: Vec<_> = components.iter().map(|v| get_scalar(val_map, v)).collect();
+            VarValues::Vec(vals)
         }
         Inst::VecExtract { vec, index } => {
-            let val = match (&val_map[vec], index) {
-                (VarValues::Vec2(x, _), 0) => *x,
-                (VarValues::Vec2(_, y), 1) => *y,
-                (VarValues::Vec3(x, _, _), 0) => *x,
-                (VarValues::Vec3(_, y, _), 1) => *y,
-                (VarValues::Vec3(_, _, z), 2) => *z,
-                _ => panic!("invalid vec extract index"),
-            };
-            VarValues::Scalar(val)
+            let components = get_vec(val_map, vec);
+            assert!((*index as usize) < components.len(), "vec extract index {} out of bounds (len {})", index, components.len());
+            VarValues::Scalar(components[*index as usize])
         }
         Inst::VecBinary { op, lhs, rhs } => {
-            match binding.ty {
-                ValType::Vec { len: 2, .. } => {
-                    let (lx, ly) = get_vec2(val_map, lhs);
-                    let (rx, ry) = get_vec2(val_map, rhs);
-                    let apply = |builder: &mut FunctionBuilder, a, b| match op {
-                        VecBinOp::Add => builder.ins().fadd(a, b),
-                        VecBinOp::Sub => builder.ins().fsub(a, b),
-                        VecBinOp::Mul => builder.ins().fmul(a, b),
-                        VecBinOp::Div => builder.ins().fdiv(a, b),
-                        VecBinOp::Min => builder.ins().fmin(a, b),
-                        VecBinOp::Max => builder.ins().fmax(a, b),
-                    };
-                    VarValues::Vec2(apply(builder, lx, rx), apply(builder, ly, ry))
-                }
-                ValType::Vec { len: 3, .. } => {
-                    let (lx, ly, lz) = get_vec3(val_map, lhs);
-                    let (rx, ry, rz) = get_vec3(val_map, rhs);
-                    let apply = |builder: &mut FunctionBuilder, a, b| match op {
-                        VecBinOp::Add => builder.ins().fadd(a, b),
-                        VecBinOp::Sub => builder.ins().fsub(a, b),
-                        VecBinOp::Mul => builder.ins().fmul(a, b),
-                        VecBinOp::Div => builder.ins().fdiv(a, b),
-                        VecBinOp::Min => builder.ins().fmin(a, b),
-                        VecBinOp::Max => builder.ins().fmax(a, b),
-                    };
-                    VarValues::Vec3(apply(builder, lx, rx), apply(builder, ly, ry), apply(builder, lz, rz))
-                }
-                _ => unreachable!("VecBinary result must be vec type"),
-            }
+            let lv = get_vec(val_map, lhs);
+            let rv = get_vec(val_map, rhs);
+            assert_eq!(lv.len(), rv.len(), "VecBinary operands must have same length");
+            let apply = |builder: &mut FunctionBuilder, a, b| match op {
+                VecBinOp::Add => builder.ins().fadd(a, b),
+                VecBinOp::Sub => builder.ins().fsub(a, b),
+                VecBinOp::Mul => builder.ins().fmul(a, b),
+                VecBinOp::Div => builder.ins().fdiv(a, b),
+                VecBinOp::Min => builder.ins().fmin(a, b),
+                VecBinOp::Max => builder.ins().fmax(a, b),
+            };
+            // Copy slices to avoid borrow conflict with builder
+            let lv: Vec<_> = lv.to_vec();
+            let rv: Vec<_> = rv.to_vec();
+            let components: Vec<_> = lv.iter().zip(rv.iter())
+                .map(|(l, r)| apply(builder, *l, *r))
+                .collect();
+            VarValues::Vec(components)
         }
         Inst::VecScale { scalar, vec } => {
             let s = get_scalar(val_map, scalar);
-            match binding.ty {
-                ValType::Vec { len: 2, .. } => {
-                    let (vx, vy) = get_vec2(val_map, vec);
-                    VarValues::Vec2(builder.ins().fmul(s, vx), builder.ins().fmul(s, vy))
-                }
-                ValType::Vec { len: 3, .. } => {
-                    let (vx, vy, vz) = get_vec3(val_map, vec);
-                    VarValues::Vec3(
-                        builder.ins().fmul(s, vx),
-                        builder.ins().fmul(s, vy),
-                        builder.ins().fmul(s, vz),
-                    )
-                }
-                _ => unreachable!("VecScale result must be vec type"),
-            }
+            let v = get_vec(val_map, vec).to_vec();
+            let components: Vec<_> = v.iter()
+                .map(|c| builder.ins().fmul(s, *c))
+                .collect();
+            VarValues::Vec(components)
         }
         Inst::VecUnary { op: vec_op, arg } => {
-            match binding.ty {
-                ValType::Vec { len: 2, .. } => {
-                    let (ax, ay) = get_vec2(val_map, arg);
-                    match vec_op {
-                        VecUnaryOp::Neg => VarValues::Vec2(
-                            builder.ins().fneg(ax),
-                            builder.ins().fneg(ay),
-                        ),
-                        VecUnaryOp::Abs => VarValues::Vec2(
-                            builder.ins().fabs(ax),
-                            builder.ins().fabs(ay),
-                        ),
-                        VecUnaryOp::Normalize => {
-                            let xx = builder.ins().fmul(ax, ax);
-                            let yy = builder.ins().fmul(ay, ay);
-                            let sum = builder.ins().fadd(xx, yy);
-                            let len = builder.ins().sqrt(sum);
-                            VarValues::Vec2(
-                                builder.ins().fdiv(ax, len),
-                                builder.ins().fdiv(ay, len),
-                            )
-                        }
-                    }
+            let av = get_vec(val_map, arg).to_vec();
+            match vec_op {
+                VecUnaryOp::Neg => {
+                    let components: Vec<_> = av.iter().map(|c| builder.ins().fneg(*c)).collect();
+                    VarValues::Vec(components)
                 }
-                ValType::Vec { len: 3, .. } => {
-                    let (ax, ay, az) = get_vec3(val_map, arg);
-                    match vec_op {
-                        VecUnaryOp::Neg => VarValues::Vec3(
-                            builder.ins().fneg(ax),
-                            builder.ins().fneg(ay),
-                            builder.ins().fneg(az),
-                        ),
-                        VecUnaryOp::Abs => VarValues::Vec3(
-                            builder.ins().fabs(ax),
-                            builder.ins().fabs(ay),
-                            builder.ins().fabs(az),
-                        ),
-                        VecUnaryOp::Normalize => {
-                            let xx = builder.ins().fmul(ax, ax);
-                            let yy = builder.ins().fmul(ay, ay);
-                            let zz = builder.ins().fmul(az, az);
-                            let sum = builder.ins().fadd(xx, yy);
-                            let sum = builder.ins().fadd(sum, zz);
-                            let len = builder.ins().sqrt(sum);
-                            VarValues::Vec3(
-                                builder.ins().fdiv(ax, len),
-                                builder.ins().fdiv(ay, len),
-                                builder.ins().fdiv(az, len),
-                            )
-                        }
-                    }
+                VecUnaryOp::Abs => {
+                    let components: Vec<_> = av.iter().map(|c| builder.ins().fabs(*c)).collect();
+                    VarValues::Vec(components)
                 }
-                _ => unreachable!("VecUnary result must be vec type"),
+                VecUnaryOp::Normalize => {
+                    // dot(v, v)
+                    let mut sum = builder.ins().fmul(av[0], av[0]);
+                    for c in &av[1..] {
+                        let sq = builder.ins().fmul(*c, *c);
+                        sum = builder.ins().fadd(sum, sq);
+                    }
+                    let len = builder.ins().sqrt(sum);
+                    let components: Vec<_> = av.iter().map(|c| builder.ins().fdiv(*c, len)).collect();
+                    VarValues::Vec(components)
+                }
             }
         }
         Inst::VecDot { lhs, rhs } => {
-            let operand_ty = kernel.var_type(*lhs).unwrap();
-            VarValues::Scalar(match operand_ty {
-                ValType::Vec { len: 2, .. } => {
-                    let (lx, ly) = get_vec2(val_map, lhs);
-                    let (rx, ry) = get_vec2(val_map, rhs);
-                    let xx = builder.ins().fmul(lx, rx);
-                    let yy = builder.ins().fmul(ly, ry);
-                    builder.ins().fadd(xx, yy)
-                }
-                ValType::Vec { len: 3, .. } => {
-                    let (lx, ly, lz) = get_vec3(val_map, lhs);
-                    let (rx, ry, rz) = get_vec3(val_map, rhs);
-                    let xx = builder.ins().fmul(lx, rx);
-                    let yy = builder.ins().fmul(ly, ry);
-                    let zz = builder.ins().fmul(lz, rz);
-                    let sum = builder.ins().fadd(xx, yy);
-                    builder.ins().fadd(sum, zz)
-                }
-                _ => unreachable!("VecDot operands must be vec type"),
-            })
+            let lv = get_vec(val_map, lhs).to_vec();
+            let rv = get_vec(val_map, rhs).to_vec();
+            assert_eq!(lv.len(), rv.len(), "VecDot operands must have same length");
+            let mut sum = builder.ins().fmul(lv[0], rv[0]);
+            for i in 1..lv.len() {
+                let prod = builder.ins().fmul(lv[i], rv[i]);
+                sum = builder.ins().fadd(sum, prod);
+            }
+            VarValues::Scalar(sum)
         }
         Inst::VecLength { arg } => {
-            let operand_ty = kernel.var_type(*arg).unwrap();
-            VarValues::Scalar(match operand_ty {
-                ValType::Vec { len: 2, .. } => {
-                    let (ax, ay) = get_vec2(val_map, arg);
-                    let xx = builder.ins().fmul(ax, ax);
-                    let yy = builder.ins().fmul(ay, ay);
-                    let sum = builder.ins().fadd(xx, yy);
-                    builder.ins().sqrt(sum)
-                }
-                ValType::Vec { len: 3, .. } => {
-                    let (ax, ay, az) = get_vec3(val_map, arg);
-                    let xx = builder.ins().fmul(ax, ax);
-                    let yy = builder.ins().fmul(ay, ay);
-                    let zz = builder.ins().fmul(az, az);
-                    let sum = builder.ins().fadd(xx, yy);
-                    let sum = builder.ins().fadd(sum, zz);
-                    builder.ins().sqrt(sum)
-                }
-                _ => unreachable!("VecLength operand must be vec type"),
-            })
+            let av = get_vec(val_map, arg).to_vec();
+            let mut sum = builder.ins().fmul(av[0], av[0]);
+            for c in &av[1..] {
+                let sq = builder.ins().fmul(*c, *c);
+                sum = builder.ins().fadd(sum, sq);
+            }
+            VarValues::Scalar(builder.ins().sqrt(sum))
         }
         Inst::VecCross { lhs, rhs } => {
-            let (lx, ly, lz) = get_vec3(val_map, lhs);
-            let (rx, ry, rz) = get_vec3(val_map, rhs);
+            let lv = get_vec(val_map, lhs).to_vec();
+            let rv = get_vec(val_map, rhs).to_vec();
+            assert_eq!(lv.len(), 3, "VecCross requires vec3 operands");
+            assert_eq!(rv.len(), 3, "VecCross requires vec3 operands");
+            let (lx, ly, lz) = (lv[0], lv[1], lv[2]);
+            let (rx, ry, rz) = (rv[0], rv[1], rv[2]);
             // cross = (ly*rz - lz*ry, lz*rx - lx*rz, lx*ry - ly*rx)
             let a = builder.ins().fmul(ly, rz);
             let b = builder.ins().fmul(lz, ry);
@@ -1040,7 +912,7 @@ fn lower_inst(
             let a = builder.ins().fmul(lx, ry);
             let b = builder.ins().fmul(ly, rx);
             let cz = builder.ins().fsub(a, b);
-            VarValues::Vec3(cx, cy, cz)
+            VarValues::Vec(vec![cx, cy, cz])
         }
         Inst::BufLoad { buf, x, y } => {
             // Load f64 from buffer: buf_ptrs[buf][(y * width + x)]

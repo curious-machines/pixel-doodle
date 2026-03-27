@@ -273,15 +273,20 @@ impl Checker {
                 let inner_ty = inner.ty();
                 match (inner_ty, field.as_str()) {
                     (ValType::Vec { len: 2, .. }, "x") | (ValType::Vec { len: 2, .. }, "y") |
-                    (ValType::Vec { len: 3, .. }, "x") | (ValType::Vec { len: 3, .. }, "y") | (ValType::Vec { len: 3, .. }, "z") => {
+                    (ValType::Vec { len: 3, .. }, "x") | (ValType::Vec { len: 3, .. }, "y") | (ValType::Vec { len: 3, .. }, "z") |
+                    (ValType::Vec { len: 4, .. }, "x") | (ValType::Vec { len: 4, .. }, "y") | (ValType::Vec { len: 4, .. }, "z") | (ValType::Vec { len: 4, .. }, "w") => {
+                        let elem = inner_ty.element_scalar();
                         Ok(TExpr::FieldAccess {
                             expr: Box::new(inner),
                             field: field.clone(),
-                            ty: ValType::F64,
+                            ty: ValType::Scalar(elem),
                         })
                     }
-                    (ValType::Vec { len: 2, .. }, "z") => {
-                        Err(err(span, "vec2 has no 'z' component".into()))
+                    (ValType::Vec { len: 2, .. }, "z") | (ValType::Vec { len: 2, .. }, "w") => {
+                        Err(err(span, format!("vec2 has no '{}' component", field)))
+                    }
+                    (ValType::Vec { len: 3, .. }, "w") => {
+                        Err(err(span, "vec3 has no 'w' component".into()))
                     }
                     _ => {
                         Err(err(span, format!("type {} has no field '{}'", inner_ty, field)))
@@ -526,28 +531,33 @@ impl Checker {
                     _ => return Err(err(span, format!("'{}' not supported for {}", name, a.ty()))),
                 }
             }
-            "vec2" => {
-                if args.len() != 2 {
-                    return Err(err(span, "vec2 expects 2 arguments".into()));
+            "vec2" | "vec3" | "vec4" => {
+                let expected_len: usize = match name {
+                    "vec2" => 2, "vec3" => 3, "vec4" => 4, _ => unreachable!(),
+                };
+                if args.len() != expected_len {
+                    return Err(err(span, format!("{} expects {} arguments", name, expected_len)));
                 }
-                let x = self.check_expr(&args[0], Some(ValType::F64))?;
-                let y = self.check_expr(&args[1], Some(ValType::F64))?;
-                if x.ty() != ValType::F64 || y.ty() != ValType::F64 {
-                    return Err(err(span, "vec2 arguments must be f64".into()));
+                // Check first arg without type hint to infer element type
+                let first = self.check_expr(&args[0], None)?;
+                let elem = match first.ty() {
+                    ValType::Scalar(s) if s != ScalarType::Bool => s,
+                    other => return Err(err(span, format!("{} arguments must be numeric scalars, got {}", name, other))),
+                };
+                let expected_ty = ValType::Scalar(elem);
+                let mut checked = vec![first];
+                for arg in &args[1..] {
+                    let c = self.check_expr(arg, Some(expected_ty))?;
+                    if c.ty() != expected_ty {
+                        return Err(err(span, format!("{} arguments must all be {}, got {}", name, elem, c.ty())));
+                    }
+                    checked.push(c);
                 }
-                return Ok(Some(TExpr::Call { name: "vec2".into(), args: vec![x, y], ty: ValType::Vec { len: 2, elem: ScalarType::F64 } }));
-            }
-            "vec3" => {
-                if args.len() != 3 {
-                    return Err(err(span, "vec3 expects 3 arguments".into()));
-                }
-                let x = self.check_expr(&args[0], Some(ValType::F64))?;
-                let y = self.check_expr(&args[1], Some(ValType::F64))?;
-                let z = self.check_expr(&args[2], Some(ValType::F64))?;
-                if x.ty() != ValType::F64 || y.ty() != ValType::F64 || z.ty() != ValType::F64 {
-                    return Err(err(span, "vec3 arguments must be f64".into()));
-                }
-                return Ok(Some(TExpr::Call { name: "vec3".into(), args: vec![x, y, z], ty: ValType::Vec { len: 3, elem: ScalarType::F64 } }));
+                return Ok(Some(TExpr::Call {
+                    name: name.to_string(),
+                    args: checked,
+                    ty: ValType::Vec { len: expected_len as u8, elem },
+                }));
             }
             "dot" => {
                 if args.len() != 2 {

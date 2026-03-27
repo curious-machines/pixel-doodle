@@ -113,11 +113,13 @@ impl Lowerer {
                     "x" => 0u8,
                     "y" => 1,
                     "z" => 2,
+                    "w" => 3,
                     _ => unreachable!(),
                 };
-                let var = self.auto_var("tmp", ValType::F64);
+                let elem_ty = expr.ty().element_scalar();
+                let var = self.auto_var("tmp", ValType::Scalar(elem_ty));
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::Scalar(elem_ty),
                     Inst::VecExtract { vec: vec_var, index })));
                 var
             }
@@ -242,12 +244,8 @@ impl Lowerer {
                     }
                     let var = self.auto_var("sel", *ty);
                     let name = self.binding_name(var);
-                    let inst = if matches!(*ty, ValType::Vec { len: 2, .. }) {
-                        Inst::MakeVec2 { x: components[0], y: components[1] }
-                    } else {
-                        Inst::MakeVec3 { x: components[0], y: components[1], z: components[2] }
-                    };
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                        Inst::MakeVec(components))));
                     return var;
                 }
                 let var = self.auto_var("sel", *ty);
@@ -334,33 +332,20 @@ impl Lowerer {
     fn lower_builtin_call(&mut self, name: &str, args: &[TExpr], ret_ty: ValType, out: &mut Vec<BodyItem>) -> Option<Var> {
         // Vec-specific builtins (must come before scalar fallbacks)
         match name {
-            "vec2" => {
-                let x = self.lower_expr(&args[0], out);
-                let y = self.lower_expr(&args[1], out);
-                let ty = ValType::Vec { len: 2, elem: ScalarType::F64 };
-                let var = self.auto_var("tmp", ty);
+            "vec2" | "vec3" | "vec4" => {
+                let components: Vec<Var> = args.iter().map(|a| self.lower_expr(a, out)).collect();
+                let var = self.auto_var("tmp", ret_ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
-                    Inst::MakeVec2 { x, y })));
-                return Some(var);
-            }
-            "vec3" => {
-                let x = self.lower_expr(&args[0], out);
-                let y = self.lower_expr(&args[1], out);
-                let z = self.lower_expr(&args[2], out);
-                let ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
-                let var = self.auto_var("tmp", ty);
-                let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
-                    Inst::MakeVec3 { x, y, z })));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
+                    Inst::MakeVec(components))));
                 return Some(var);
             }
             "dot" => {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
-                let var = self.auto_var("tmp", ValType::F64);
+                let var = self.auto_var("tmp", ret_ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecDot { lhs: a, rhs: b })));
                 return Some(var);
             }
@@ -376,18 +361,17 @@ impl Lowerer {
             "cross" => {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
-                let ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
-                let var = self.auto_var("tmp", ty);
+                let var = self.auto_var("tmp", ret_ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecCross { lhs: a, rhs: b })));
                 return Some(var);
             }
             "length" if args.len() == 1 && args[0].ty().is_vec() => {
                 let a = self.lower_expr(&args[0], out);
-                let var = self.auto_var("tmp", ValType::F64);
+                let var = self.auto_var("tmp", ret_ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecLength { arg: a })));
                 return Some(var);
             }
@@ -399,9 +383,9 @@ impl Lowerer {
                 let diff_name = self.binding_name(diff);
                 out.push(BodyItem::Stmt(self.emit_stmt(diff, &diff_name, vec_ty,
                     Inst::VecBinary { op: VecBinOp::Sub, lhs: a, rhs: b })));
-                let var = self.auto_var("tmp", ValType::F64);
+                let var = self.auto_var("tmp", ret_ty);
                 let vname = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ValType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecLength { arg: diff })));
                 return Some(var);
             }
@@ -410,13 +394,19 @@ impl Lowerer {
                 let b = self.lower_expr(&args[1], out);
                 let t = self.lower_expr(&args[2], out);
                 let vec_ty = args[0].ty();
+                let elem_ty = ValType::Scalar(vec_ty.element_scalar());
+                let one_const = match vec_ty.element_scalar() {
+                    ScalarType::F32 => Const::F32(1.0),
+                    ScalarType::F64 => Const::F64(1.0),
+                    _ => Const::F64(1.0), // fallback
+                };
                 // mix(a, b, t) = a*(1-t) + b*t
-                let one = self.auto_var("lit", ValType::F64);
+                let one = self.auto_var("lit", elem_ty);
                 let one_name = self.binding_name(one);
-                out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, ValType::F64, Inst::Const(Const::F64(1.0)))));
-                let one_minus_t = self.auto_var("tmp", ValType::F64);
+                out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, elem_ty, Inst::Const(one_const))));
+                let one_minus_t = self.auto_var("tmp", elem_ty);
                 let omt_name = self.binding_name(one_minus_t);
-                out.push(BodyItem::Stmt(self.emit_stmt(one_minus_t, &omt_name, ValType::F64,
+                out.push(BodyItem::Stmt(self.emit_stmt(one_minus_t, &omt_name, elem_ty,
                     Inst::Binary { op: BinOp::Sub, lhs: one, rhs: t })));
                 let a_scaled = self.auto_var("tmp", vec_ty);
                 let as_name = self.binding_name(a_scaled);
