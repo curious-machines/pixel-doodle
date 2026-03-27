@@ -187,6 +187,7 @@ impl Parser {
     pub fn parse_config(&mut self) -> Result<Config, ParseError> {
         let mut config = Config {
             title: None,
+            builtins: Vec::new(),
             variables: Vec::new(),
             settings: Settings::default(),
             key_bindings: Vec::new(),
@@ -224,13 +225,22 @@ impl Parser {
                     if config.title.is_none() {
                         config.title = included.title;
                     }
+                    config.builtins.extend(included.builtins);
                     config.variables.extend(included.variables);
                     config.key_bindings.extend(included.key_bindings);
                     config.settings.entries.extend(included.settings.entries);
                 }
-                Token::Ident(_) => {
-                    // Could be a variable declaration: `name = value` or `name: range(...) = value`
+                Token::Builtin => {
+                    config.builtins.push(self.parse_builtin_decl()?);
+                }
+                Token::Var | Token::Const => {
                     config.variables.push(self.parse_var_decl()?);
+                }
+                Token::Ident(name) => {
+                    return Err(self.error(format!(
+                        "unexpected identifier '{name}' at top level. \
+                         Use 'var {name} ...' or 'const {name} ...' for variable declarations"
+                    )));
                 }
                 other => {
                     return Err(self.error(format!(
@@ -351,56 +361,125 @@ impl Parser {
         }
     }
 
+    // ── Builtin declarations ──
+
+    /// Parse `builtin const name: type` or `builtin var name: type`.
+    fn parse_builtin_decl(&mut self) -> Result<BuiltinDecl, ParseError> {
+        let span = self.span();
+        self.expect(&Token::Builtin)?;
+        let mutable = match self.peek() {
+            Token::Const => {
+                self.advance();
+                false
+            }
+            Token::Var => {
+                self.advance();
+                true
+            }
+            other => {
+                return Err(
+                    self.error(format!("expected 'const' or 'var' after 'builtin', got '{other}'"))
+                )
+            }
+        };
+        let name = self.expect_ident()?;
+        self.expect(&Token::Colon)?;
+        let ty = self.parse_builtin_type()?;
+        Ok(BuiltinDecl {
+            name,
+            ty,
+            mutable,
+            span,
+        })
+    }
+
+    /// Parse a builtin type annotation: `u32`, `u64`, `f64`, `bool`.
+    fn parse_builtin_type(&mut self) -> Result<BuiltinType, ParseError> {
+        let name = self.expect_ident()?;
+        match name.as_str() {
+            "u32" => Ok(BuiltinType::U32),
+            "u64" => Ok(BuiltinType::U64),
+            "f64" => Ok(BuiltinType::F64),
+            "bool" => Ok(BuiltinType::Bool),
+            other => Err(self.error(format!(
+                "unknown builtin type '{other}', expected u32, u64, f64, or bool"
+            ))),
+        }
+    }
+
     // ── Variable declarations ──
 
+    /// Parse `var name [: type | range(...)] = value` or `const name [: type] = value`.
     fn parse_var_decl(&mut self) -> Result<VarDecl, ParseError> {
         let span = self.span();
+        let mutability = match self.peek() {
+            Token::Var => {
+                self.advance();
+                Mutability::Var
+            }
+            Token::Const => {
+                self.advance();
+                Mutability::Const
+            }
+            other => {
+                return Err(self.error(format!(
+                    "expected 'var' or 'const', got '{other}'"
+                )))
+            }
+        };
         let name = self.expect_ident()?;
 
-        // Optional range annotation: `: range(min..max)` or `: range(min..max, wrap: true)`
-        let range = if self.at(&Token::Colon) {
+        // Optional annotation: `: type`, `: range(min..max)`, or `: range(min..max, wrap: true)`
+        let mut ty = None;
+        let mut range = None;
+        if self.at(&Token::Colon) {
             self.advance();
-            self.expect(&Token::Range)?;
-            self.expect(&Token::LParen)?;
-            let min = self.parse_number_literal()?;
-            self.expect(&Token::DotDot)?;
-            let max = self.parse_number_literal()?;
-            let mut wrap = false;
-            if self.at(&Token::Comma) {
+            if self.at(&Token::Range) {
+                // `: range(min..max[, wrap: true|false])`
                 self.advance();
-                // expect "wrap: true" or "wrap: false"
-                let key = self.expect_ident()?;
-                if key != "wrap" {
-                    return Err(self.error(format!("expected 'wrap', got '{key}'")));
+                self.expect(&Token::LParen)?;
+                let min = self.parse_number_literal()?;
+                self.expect(&Token::DotDot)?;
+                let max = self.parse_number_literal()?;
+                let mut wrap = false;
+                if self.at(&Token::Comma) {
+                    self.advance();
+                    let key = self.expect_ident()?;
+                    if key != "wrap" {
+                        return Err(self.error(format!("expected 'wrap', got '{key}'")));
+                    }
+                    self.expect(&Token::Colon)?;
+                    wrap = match self.peek() {
+                        Token::True => {
+                            self.advance();
+                            true
+                        }
+                        Token::False => {
+                            self.advance();
+                            false
+                        }
+                        other => {
+                            return Err(
+                                self.error(format!("expected 'true' or 'false', got '{other}'"))
+                            )
+                        }
+                    };
                 }
-                self.expect(&Token::Colon)?;
-                wrap = match self.peek() {
-                    Token::True => {
-                        self.advance();
-                        true
-                    }
-                    Token::False => {
-                        self.advance();
-                        false
-                    }
-                    other => {
-                        return Err(
-                            self.error(format!("expected 'true' or 'false', got '{other}'"))
-                        )
-                    }
-                };
+                self.expect(&Token::RParen)?;
+                range = Some(RangeSpec { min, max, wrap });
+            } else {
+                // `: type` (plain type annotation)
+                ty = Some(self.parse_builtin_type()?);
             }
-            self.expect(&Token::RParen)?;
-            Some(RangeSpec { min, max, wrap })
-        } else {
-            None
-        };
+        }
 
         self.expect(&Token::Eq)?;
         let default = self.parse_literal()?;
 
         Ok(VarDecl {
             name,
+            mutability,
+            ty,
             range,
             default,
             span,
@@ -597,6 +676,7 @@ impl Parser {
         if !self.included.borrow_mut().insert(canonical.clone()) {
             return Ok(Config {
                 title: None,
+                builtins: Vec::new(),
                 variables: Vec::new(),
                 settings: Settings::default(),
                 key_bindings: Vec::new(),
@@ -622,6 +702,7 @@ impl Parser {
     fn parse_include_file(&mut self, path_str: &str) -> Result<Config, ParseError> {
         let mut config = Config {
             title: None,
+            builtins: Vec::new(),
             variables: Vec::new(),
             settings: Settings::default(),
             key_bindings: Vec::new(),
@@ -661,12 +742,22 @@ impl Parser {
                     if config.title.is_none() {
                         config.title = included.title;
                     }
+                    config.builtins.extend(included.builtins);
                     config.variables.extend(included.variables);
                     config.key_bindings.extend(included.key_bindings);
                     config.settings.entries.extend(included.settings.entries);
                 }
-                Token::Ident(_) => {
+                Token::Builtin => {
+                    config.builtins.push(self.parse_builtin_decl()?);
+                }
+                Token::Var | Token::Const => {
                     config.variables.push(self.parse_var_decl()?);
+                }
+                Token::Ident(name) => {
+                    return Err(self.error(format!(
+                        "unexpected identifier '{name}' in included file '{path_str}'. \
+                         Use 'var {name} ...' or 'const {name} ...' for variable declarations"
+                    )));
                 }
                 other => {
                     return Err(self.error(format!(
@@ -701,13 +792,17 @@ impl Parser {
 
         self.expect(&Token::LBrace)?;
 
-        // Pipeline body can contain kernel/buffer declarations AND pipeline steps
+        // Pipeline body can contain builtin/kernel/buffer declarations AND pipeline steps
+        let mut builtins = Vec::new();
         let mut kernels = Vec::new();
         let mut buffers = Vec::new();
         let mut steps = Vec::new();
 
         while !self.at(&Token::RBrace) && !self.at(&Token::Eof) {
             match self.peek().clone() {
+                Token::Builtin => {
+                    builtins.push(self.parse_builtin_decl()?);
+                }
                 Token::Pixel | Token::Kernel => {
                     kernels.push(self.parse_kernel_decl()?);
                 }
@@ -723,6 +818,7 @@ impl Parser {
         self.expect(&Token::RBrace)?;
         Ok(Pipeline {
             name,
+            builtins,
             kernels,
             buffers,
             steps,
@@ -1190,7 +1286,7 @@ mod tests {
     fn parse_game_of_life() {
         let config = parse_str(
             r#"
-            iterations: range(1..10) = 1
+            var iterations: range(1..10) = 1
 
             on key(space) paused = !paused
             on key(period) frame += 1
@@ -1264,7 +1360,7 @@ mod tests {
     fn parse_var_with_wrap() {
         let config = parse_str(
             r#"
-            mode: range(0..3, wrap: true) = 0
+            var mode: range(0..3, wrap: true) = 0
             pipeline {
               pixel kernel "test.pd"
               run test
@@ -1276,6 +1372,35 @@ mod tests {
 
         let var = &config.variables[0];
         assert!(var.range.as_ref().unwrap().wrap);
+    }
+
+    #[test]
+    fn parse_var_with_type_annotation() {
+        let config = parse_str(
+            r#"
+            var speed: f64 = 1.0
+            const max_iter: u32 = 256
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.variables.len(), 2);
+        let speed = &config.variables[0];
+        assert_eq!(speed.name, "speed");
+        assert_eq!(speed.mutability, Mutability::Var);
+        assert_eq!(speed.ty, Some(BuiltinType::F64));
+        assert!(speed.range.is_none());
+
+        let max_iter = &config.variables[1];
+        assert_eq!(max_iter.name, "max_iter");
+        assert_eq!(max_iter.mutability, Mutability::Const);
+        assert_eq!(max_iter.ty, Some(BuiltinType::U32));
+        assert!(max_iter.range.is_none());
     }
 
     #[test]

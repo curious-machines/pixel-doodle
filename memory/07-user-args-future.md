@@ -13,11 +13,11 @@ Possible directions:
 - Require all params to be passed from pdp (including built-ins via special keywords)
 - Keep implicit but improve documentation/error messages
 
-## 2. Leaking abstraction in JitBackend trait
+## 2. ~~Leaking abstraction in JitBackend trait~~ (Resolved)
 
-The runtime computes user arg layout (filtering out built-in names) and passes `&[UserArgSlot]` to the JIT backend. This means the runtime must know the built-in name set, which is conceptually a backend concern. Currently centralized as `PIXEL_BUILTINS` and `SIM_BUILTINS` constants in `jit/mod.rs`.
+~~The runtime computes user arg layout (filtering out built-in names) and passes `&[UserArgSlot]` to the JIT backend. This means the runtime must know the built-in name set, which is conceptually a backend concern. Currently centralized as `PIXEL_BUILTINS` and `SIM_BUILTINS` constants in `jit/mod.rs`.~~
 
-The user acknowledged this as a leaking abstraction worth revisiting.
+**Resolved:** Tile-loop builtin names are now defined by `KernelKind::tile_loop_params()` in `src/pdp/ast.rs`. The kernel kind (Pixel vs Standard) determines which parameters the tile loop injects — this is an execution model concern, not a backend concern. The runtime calls `decl.kind.tile_loop_params()` to compute the user arg layout, and the `JitBackend` trait has no knowledge of builtin names. The old `PIXEL_BUILTINS`/`SIM_BUILTINS` constants in `jit/mod.rs` have been removed.
 
 ## 3. GPU (WGSL) user-defined parameters
 

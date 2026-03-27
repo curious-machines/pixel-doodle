@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
 
@@ -15,26 +15,65 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-/// Known intrinsic global names that don't need to be declared.
-const INTRINSICS: &[&str] = &[
-    "width",
-    "height",
-    "center_x",
-    "center_y",
-    "zoom",
-    "mouse_x",
-    "mouse_y",
-    "time",
-    "paused",
-    "frame",
+// ── Intrinsic registry ──
+
+struct IntrinsicDef {
+    name: &'static str,
+    ty: BuiltinType,
+    mutable: bool,
+}
+
+const INTRINSIC_DEFS: &[IntrinsicDef] = &[
+    IntrinsicDef { name: "width",    ty: BuiltinType::U32,  mutable: false },
+    IntrinsicDef { name: "height",   ty: BuiltinType::U32,  mutable: false },
+    IntrinsicDef { name: "time",     ty: BuiltinType::F64,  mutable: false },
+    IntrinsicDef { name: "mouse_x",  ty: BuiltinType::F64,  mutable: false },
+    IntrinsicDef { name: "mouse_y",  ty: BuiltinType::F64,  mutable: false },
+    IntrinsicDef { name: "center_x", ty: BuiltinType::F64,  mutable: true },
+    IntrinsicDef { name: "center_y", ty: BuiltinType::F64,  mutable: true },
+    IntrinsicDef { name: "zoom",     ty: BuiltinType::F64,  mutable: true },
+    IntrinsicDef { name: "paused",   ty: BuiltinType::Bool, mutable: true },
+    IntrinsicDef { name: "frame",    ty: BuiltinType::U64,  mutable: true },
 ];
+
+fn find_intrinsic(name: &str) -> Option<&'static IntrinsicDef> {
+    INTRINSIC_DEFS.iter().find(|d| d.name == name)
+}
+
+fn intrinsic_names_list() -> String {
+    INTRINSIC_DEFS
+        .iter()
+        .map(|d| format!("{} ({})", d.name, d.ty))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Merged builtin info: type and effective mutability (most permissive wins).
+#[derive(Clone)]
+struct ResolvedBuiltin {
+    ty: BuiltinType,
+    mutable: bool,
+}
 
 pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
-    let mut var_names: HashSet<String> = INTRINSICS.iter().map(|s| (*s).to_string()).collect();
+    // ── Validate and merge builtin declarations ──
+    let mut resolved_builtins: HashMap<String, ResolvedBuiltin> = HashMap::new();
+    validate_builtin_decls(&config.builtins, &mut resolved_builtins, &mut errors);
 
-    // Check variable declarations for duplicates
+    // ── Build effective variable namespace ──
+    let mut var_names: HashSet<String> = HashSet::new();
+    let mut const_names: HashSet<String> = HashSet::new();
+
+    for (name, rb) in &resolved_builtins {
+        var_names.insert(name.clone());
+        if !rb.mutable {
+            const_names.insert(name.clone());
+        }
+    }
+
+    // Check user variable declarations for duplicates
     for v in &config.variables {
         if var_names.contains(&v.name) {
             errors.push(ValidationError {
@@ -44,9 +83,12 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
             });
         }
         var_names.insert(v.name.clone());
+        if v.mutability == Mutability::Const {
+            const_names.insert(v.name.clone());
+        }
     }
 
-    // Check key bindings reference valid variables
+    // ── Check key bindings reference valid variables and respect const-ness ──
     for kb in &config.key_bindings {
         for action in &kb.actions {
             let target = match action {
@@ -57,19 +99,63 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
                 Action::Quit => continue,
             };
             if !var_names.contains(target) {
+                // Check if it's a known intrinsic that wasn't declared
+                if let Some(def) = find_intrinsic(target) {
+                    let constness = if def.mutable { "var" } else { "const" };
+                    errors.push(ValidationError {
+                        line: kb.span.line,
+                        col: kb.span.col,
+                        message: format!(
+                            "use of undeclared builtin '{target}'. \
+                             Add 'builtin {constness} {target}: {}' to your file",
+                            def.ty
+                        ),
+                    });
+                } else {
+                    errors.push(ValidationError {
+                        line: kb.span.line,
+                        col: kb.span.col,
+                        message: format!(
+                            "key binding references undeclared variable '{target}'"
+                        ),
+                    });
+                }
+            } else if const_names.contains(target) {
+                let kind = if resolved_builtins.contains_key(target) {
+                    "builtin const"
+                } else {
+                    "const"
+                };
                 errors.push(ValidationError {
                     line: kb.span.line,
                     col: kb.span.col,
                     message: format!(
-                        "key binding references undeclared variable '{target}'"
+                        "cannot assign to '{target}': it is declared as '{kind}'"
                     ),
                 });
             }
         }
     }
 
-    // Validate each pipeline
+    // ── Validate each pipeline ──
     for pipeline in &config.pipelines {
+        // Merge pipeline-scoped builtins with top-level
+        let mut pipe_var_names = var_names.clone();
+        let mut pipe_const_names = const_names.clone();
+        let mut pipe_resolved = resolved_builtins.clone();
+
+        validate_builtin_decls(&pipeline.builtins, &mut pipe_resolved, &mut errors);
+        for (name, rb) in &pipe_resolved {
+            pipe_var_names.insert(name.clone());
+            if !rb.mutable {
+                pipe_const_names.insert(name.clone());
+            } else {
+                // If a pipeline-scoped builtin is var, remove from const set
+                // (most permissive wins)
+                pipe_const_names.remove(name);
+            }
+        }
+
         let mut pipe_kernels = HashSet::new();
         let mut pipe_buffers = HashSet::new();
 
@@ -97,7 +183,8 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
             &pipeline.steps,
             &pipe_kernels,
             &pipe_buffers,
-            &var_names,
+            &pipe_var_names,
+            &pipe_resolved,
             &mut has_display,
             &mut errors,
         );
@@ -120,11 +207,88 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
     }
 }
 
+/// Validate a list of builtin declarations and merge into the resolved map.
+/// Duplicates with matching type are allowed (most permissive mutability wins).
+/// Type mismatches are errors.
+fn validate_builtin_decls(
+    decls: &[BuiltinDecl],
+    resolved: &mut HashMap<String, ResolvedBuiltin>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for decl in decls {
+        // Check name is a known intrinsic
+        let Some(def) = find_intrinsic(&decl.name) else {
+            errors.push(ValidationError {
+                line: decl.span.line,
+                col: decl.span.col,
+                message: format!(
+                    "unknown builtin '{}'. Known builtins: {}",
+                    decl.name,
+                    intrinsic_names_list()
+                ),
+            });
+            continue;
+        };
+
+        // Check declared type matches the intrinsic's actual type
+        if decl.ty != def.ty {
+            errors.push(ValidationError {
+                line: decl.span.line,
+                col: decl.span.col,
+                message: format!(
+                    "builtin '{}' has type {}, but was declared as {}",
+                    decl.name, def.ty, decl.ty
+                ),
+            });
+            continue;
+        }
+
+        // Check mutability: can't declare builtin var on a const-only intrinsic
+        if decl.mutable && !def.mutable {
+            errors.push(ValidationError {
+                line: decl.span.line,
+                col: decl.span.col,
+                message: format!(
+                    "builtin '{}' is read-only and cannot be declared as 'var'",
+                    decl.name
+                ),
+            });
+            continue;
+        }
+
+        // Merge: if already declared, check for type conflict (most permissive mutability wins)
+        if let Some(existing) = resolved.get_mut(&decl.name) {
+            if existing.ty != decl.ty {
+                errors.push(ValidationError {
+                    line: decl.span.line,
+                    col: decl.span.col,
+                    message: format!(
+                        "conflicting builtin declarations for '{}': declared as {} and {}",
+                        decl.name, existing.ty, decl.ty
+                    ),
+                });
+            } else {
+                // Most permissive wins
+                existing.mutable = existing.mutable || decl.mutable;
+            }
+        } else {
+            resolved.insert(
+                decl.name.clone(),
+                ResolvedBuiltin {
+                    ty: decl.ty,
+                    mutable: decl.mutable,
+                },
+            );
+        }
+    }
+}
+
 fn validate_steps(
     steps: &[PipelineStep],
     kernels: &HashSet<String>,
     buffers: &HashSet<String>,
     vars: &HashSet<String>,
+    resolved_builtins: &HashMap<String, ResolvedBuiltin>,
     has_display: &mut bool,
     errors: &mut Vec<ValidationError>,
 ) {
@@ -146,14 +310,8 @@ fn validate_steps(
                 // Validate variable references in run args
                 for arg in args {
                     if let Literal::VarRef(ref name) = arg.value {
-                        if !vars.contains(name) && !INTRINSICS.contains(&name.as_str()) {
-                            errors.push(ValidationError {
-                                line: arg.span.line,
-                                col: arg.span.col,
-                                message: format!(
-                                    "run argument references undeclared variable '{name}'"
-                                ),
-                            });
+                        if !vars.contains(name) {
+                            check_undeclared_var(name, arg.span, errors);
                         }
                     }
                 }
@@ -172,7 +330,7 @@ fn validate_steps(
                 }
             }
             PipelineStep::Init { body, .. } => {
-                validate_steps(body, kernels, buffers, vars, has_display, errors);
+                validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
             PipelineStep::Swap { pairs, span } => {
                 for (a, b) in pairs {
@@ -199,24 +357,41 @@ fn validate_steps(
             } => {
                 if let IterCount::Variable(name) = iterations {
                     if !vars.contains(name) {
-                        errors.push(ValidationError {
-                            line: span.line,
-                            col: span.col,
-                            message: format!(
-                                "loop iterations references undeclared variable '{name}'"
-                            ),
-                        });
+                        check_undeclared_var(name, *span, errors);
                     }
                 }
-                validate_steps(body, kernels, buffers, vars, has_display, errors);
+                validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
             PipelineStep::Accumulate { body, .. } => {
-                validate_steps(body, kernels, buffers, vars, has_display, errors);
+                validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
             PipelineStep::OnClick { body, .. } => {
-                validate_steps(body, kernels, buffers, vars, has_display, errors);
+                validate_steps(body, kernels, buffers, vars, resolved_builtins, has_display, errors);
             }
         }
+    }
+}
+
+/// When a variable reference is undeclared, check if it's a known intrinsic
+/// and produce a targeted error message.
+fn check_undeclared_var(name: &str, span: Span, errors: &mut Vec<ValidationError>) {
+    if let Some(def) = find_intrinsic(name) {
+        let constness = if def.mutable { "var" } else { "const" };
+        errors.push(ValidationError {
+            line: span.line,
+            col: span.col,
+            message: format!(
+                "use of undeclared builtin '{name}'. \
+                 Add 'builtin {constness} {name}: {}' to your file",
+                def.ty
+            ),
+        });
+    } else {
+        errors.push(ValidationError {
+            line: span.line,
+            col: span.col,
+            message: format!("undeclared variable '{name}'"),
+        });
     }
 }
 
@@ -334,9 +509,9 @@ mod tests {
 
     #[test]
     fn intrinsic_var_in_key_binding() {
-        // Also uses new kernel syntax
         parse_and_validate(
             r#"
+            builtin var paused: bool
             on key(space) paused = !paused
             pipeline {
               pixel kernel "test.pd"
@@ -346,6 +521,206 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn undeclared_intrinsic_in_key_binding() {
+        let result = parse_and_validate(
+            r#"
+            on key(space) paused = !paused
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("undeclared builtin 'paused'"));
+        assert!(errors[0].message.contains("builtin var paused: bool"));
+    }
+
+    #[test]
+    fn builtin_wrong_type() {
+        let result = parse_and_validate(
+            r#"
+            builtin const width: f64
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("has type u32, but was declared as f64"));
+    }
+
+    #[test]
+    fn builtin_unknown_name() {
+        let result = parse_and_validate(
+            r#"
+            builtin const foo: f64
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("unknown builtin 'foo'"));
+    }
+
+    #[test]
+    fn builtin_var_on_const_intrinsic() {
+        let result = parse_and_validate(
+            r#"
+            builtin var time: f64
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("read-only and cannot be declared as 'var'"));
+    }
+
+    #[test]
+    fn assign_to_const_in_key_binding() {
+        let result = parse_and_validate(
+            r#"
+            const max_iter = 256
+            on key(space) max_iter += 1
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("cannot assign to 'max_iter'"));
+        assert!(errors[0].message.contains("'const'"));
+    }
+
+    #[test]
+    fn assign_to_builtin_const_in_key_binding() {
+        let result = parse_and_validate(
+            r#"
+            builtin const time: f64
+            on key(space) time += 1.0
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("cannot assign to 'time'"));
+        assert!(errors[0].message.contains("'builtin const'"));
+    }
+
+    #[test]
+    fn duplicate_builtin_same_type_ok() {
+        parse_and_validate(
+            r#"
+            builtin var zoom: f64
+            builtin var zoom: f64
+            on key(plus) zoom *= 1.1
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn duplicate_builtin_var_const_mismatch_ok() {
+        // Most permissive wins: var + const = var
+        parse_and_validate(
+            r#"
+            builtin const zoom: f64
+            builtin var zoom: f64
+            on key(plus) zoom *= 1.1
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn duplicate_builtin_type_mismatch_error() {
+        // zoom is f64, so declaring it as u32 hits "wrong type" before duplicate check.
+        // Use two intrinsics that could conflict: declare width as u32 then u64.
+        // But width's actual type is u32, so u64 hits "wrong type" too.
+        // The "conflicting" error only fires when both declarations pass individual
+        // validation but disagree. Since all intrinsics have fixed types, a true
+        // type conflict between two declarations of the same intrinsic can't happen
+        // (the second would fail type check against the registry first).
+        // So we test that the wrong-type error fires on the second declaration.
+        let result = parse_and_validate(
+            r#"
+            builtin var zoom: f64
+            builtin var zoom: u32
+            pipeline {
+              pixel kernel "test.pd"
+              run test
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        // The second declaration fails because zoom's intrinsic type is f64, not u32
+        assert!(errors[0].message.contains("has type f64, but was declared as u32"));
+    }
+
+    #[test]
+    fn pipeline_scoped_builtin() {
+        parse_and_validate(
+            r#"
+            pipeline {
+              builtin const time: f64
+              pixel kernel "test.pd"
+              run test(t: time)
+              display
+            }
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn undeclared_intrinsic_in_run_arg() {
+        let result = parse_and_validate(
+            r#"
+            pipeline {
+              pixel kernel "test.pd"
+              run test(t: time)
+              display
+            }
+            "#,
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("undeclared builtin 'time'"));
     }
 
     #[test]

@@ -1,12 +1,5 @@
 use crate::kernel_ir::{Kernel, ValType};
 
-// ── Built-in parameter names ────────────────────────────────────────────
-// These are provided automatically by the tile loop; everything else in a
-// kernel's param list is a user-defined argument.
-
-pub const PIXEL_BUILTINS: &[&str] = &["x", "y", "px", "py", "sample_index", "time"];
-pub const SIM_BUILTINS: &[&str] = &["px", "py", "width", "height"];
-
 // ── User-argument layout ────────────────────────────────────────────────
 
 /// Describes one user-defined kernel argument and its position in the

@@ -9,6 +9,10 @@ pub enum Token {
     // Buffer
     Buffer,
     Constant,
+    // Declaration keywords
+    Builtin,
+    Var,
+    Const,
     // Pipeline
     Pipeline,
     Run,
@@ -72,6 +76,9 @@ impl fmt::Display for Token {
             Token::Kernel => write!(f, "kernel"),
             Token::Buffer => write!(f, "buffer"),
             Token::Constant => write!(f, "constant"),
+            Token::Builtin => write!(f, "builtin"),
+            Token::Var => write!(f, "var"),
+            Token::Const => write!(f, "const"),
             Token::Pipeline => write!(f, "pipeline"),
             Token::Run => write!(f, "run"),
             Token::Display => write!(f, "display"),

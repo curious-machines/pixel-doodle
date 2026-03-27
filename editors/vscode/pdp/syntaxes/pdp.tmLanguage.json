@@ -8,6 +8,7 @@
     { "include": "#title" },
     { "include": "#event-handler" },
     { "include": "#include-directive" },
+    { "include": "#builtin-declaration" },
     { "include": "#variable-declaration" },
     { "include": "#string" },
     { "include": "#number" },
@@ -37,6 +38,7 @@
         { "include": "#comment" },
         { "include": "#init-block" },
         { "include": "#loop-block" },
+        { "include": "#builtin-declaration" },
         { "include": "#kernel-declaration" },
         { "include": "#buffer-declaration" },
         { "include": "#swap-statement" },
@@ -230,12 +232,41 @@
         "2": { "name": "string.quoted.double.pdp" }
       }
     },
-    "variable-declaration": {
-      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(range)\\s*\\(",
+    "builtin-declaration": {
+      "match": "\\b(builtin)\\s+(const|var)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(u32|u64|f64|bool)\\b",
       "captures": {
-        "1": { "name": "variable.other.pdp" },
-        "2": { "name": "support.function.range.pdp" }
+        "1": { "name": "keyword.declaration.builtin.pdp" },
+        "2": { "name": "storage.modifier.pdp" },
+        "3": { "name": "variable.other.builtin.pdp" },
+        "4": { "name": "storage.type.pdp" }
       }
+    },
+    "variable-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(var|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(range)\\s*\\(",
+          "captures": {
+            "1": { "name": "storage.modifier.pdp" },
+            "2": { "name": "variable.other.pdp" },
+            "3": { "name": "support.function.range.pdp" }
+          }
+        },
+        {
+          "match": "\\b(var|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(u32|u64|f64|bool)\\b",
+          "captures": {
+            "1": { "name": "storage.modifier.pdp" },
+            "2": { "name": "variable.other.pdp" },
+            "3": { "name": "storage.type.pdp" }
+          }
+        },
+        {
+          "match": "\\b(var|const)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=",
+          "captures": {
+            "1": { "name": "storage.modifier.pdp" },
+            "2": { "name": "variable.other.pdp" }
+          }
+        }
+      ]
     },
     "gpu-type": {
       "patterns": [

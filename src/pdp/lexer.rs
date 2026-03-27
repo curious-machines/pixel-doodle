@@ -92,6 +92,9 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
                 "kernel" => Token::Kernel,
                 "buffer" => Token::Buffer,
                 "constant" => Token::Constant,
+                "builtin" => Token::Builtin,
+                "var" => Token::Var,
+                "const" => Token::Const,
                 "pipeline" => Token::Pipeline,
                 "run" => Token::Run,
                 "display" => Token::Display,
@@ -294,6 +297,29 @@ mod tests {
         let tokens = lex(r#"include "shared/pan_zoom.pdp""#).unwrap();
         assert!(matches!(tokens[0].token, Token::Include));
         assert!(matches!(tokens[1].token, Token::StringLit(_)));
+    }
+
+    #[test]
+    fn lex_builtin_var_const() {
+        let tokens = lex("builtin const width: u32").unwrap();
+        assert!(matches!(tokens[0].token, Token::Builtin));
+        assert!(matches!(tokens[1].token, Token::Const));
+        assert!(matches!(tokens[2].token, Token::Ident(ref s) if s == "width"));
+        assert!(matches!(tokens[3].token, Token::Colon));
+        assert!(matches!(tokens[4].token, Token::Ident(ref s) if s == "u32"));
+
+        let tokens = lex("builtin var zoom: f64").unwrap();
+        assert!(matches!(tokens[0].token, Token::Builtin));
+        assert!(matches!(tokens[1].token, Token::Var));
+
+        let tokens = lex("var iterations: range(1..10) = 1").unwrap();
+        assert!(matches!(tokens[0].token, Token::Var));
+        assert!(matches!(tokens[1].token, Token::Ident(ref s) if s == "iterations"));
+
+        // "constant" (8 chars) and "const" (5 chars) are distinct tokens
+        let tokens = lex("const x = constant(1.0)").unwrap();
+        assert!(matches!(tokens[0].token, Token::Const));
+        assert!(matches!(tokens[3].token, Token::Constant));
     }
 
     #[test]

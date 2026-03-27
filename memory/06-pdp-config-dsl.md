@@ -78,36 +78,49 @@ buffer state = init_random(density: 0.3, seed: 42)
 - `init_name(params...)` — calls a declared init kernel with named parameters
 - Init kernels have signature: `init_name(px: u32, py: u32, width: u32, height: u32) -> f64` plus any user-defined parameters
 
+### Builtin Declarations
+
+Runtime-provided variables must be explicitly declared before use:
+
+```
+# Read-only builtins
+builtin const width: u32
+builtin const height: u32
+builtin const time: f64
+builtin const mouse_x: f64
+builtin const mouse_y: f64
+
+# Mutable builtins (modifiable by key handlers)
+builtin var center_x: f64
+builtin var center_y: f64
+builtin var zoom: f64
+builtin var paused: bool
+builtin var frame: u64
+```
+
+Using an undeclared builtin is a hard error. Types must match the intrinsic registry. Declaring a const intrinsic as `var` is an error; declaring a var intrinsic as `const` is allowed (opts into less power). Duplicate declarations across includes are allowed if types match; var/const can differ (most permissive wins).
+
+A shared `builtins.pdp` file declares all builtins — include it to get everything at once.
+
 ### Variables
 
-Mutable values that can be modified by key bindings and flow into pipeline constructs and kernel parameters:
+Mutable or immutable values declared with `var` or `const`:
 
 ```
-# Simple variable (no clamping)
-gravity = 9.8
+# Mutable variable (no clamping)
+var gravity = 9.8
 
-# Variable with range (clamped on modification)
-iterations: range(1..10) = 8
+# Mutable variable with range (clamped on modification)
+var iterations: range(1..10) = 8
 
-# Variable with wrapping range
-color_mode: range(0..3, wrap: true) = 0
+# Mutable variable with wrapping range
+var color_mode: range(0..3, wrap: true) = 0
 
-# Boolean
-paused = false
+# Immutable constant
+const max_detail = 256
 ```
 
-### Intrinsic Globals
-
-Runtime-provided variables, always available, modifiable by both the controller and the PDP:
-
-- `width`, `height` — canvas dimensions
-- `center_x`, `center_y`, `zoom` — viewport state
-- `mouse_x`, `mouse_y` — mouse position
-- `time` — elapsed seconds
-- `paused` — whether `frame` auto-increments
-- `frame` — current frame number, controller-maintained; auto-increments each display refresh when not paused; PDP can modify (e.g., `frame += 1` for single-step)
-
-These exist without declaration. The config can set initial values and modify them via key bindings.
+Assigning to a `const` in a key handler is a hard error.
 
 ### Title
 
@@ -264,113 +277,44 @@ height = 1080
 
 ## Complete Examples
 
+> **Note:** These examples reflect the original design vision. The implementation evolved:
+> kernel and buffer declarations moved inside pipeline blocks, `init_kernel()` buffer
+> initializers became `constant()`, and `sim kernel` became plain `kernel`. See the
+> actual `.pdp` files in `examples/` for current syntax.
+
 ### 1. Gradient (simplest pixel kernel)
 ```
-pixel kernel "gradient.pd"
-
 pipeline {
-  display gradient
+  pixel kernel "gradient.pd"
+  run gradient
+  display
 }
 ```
 
 ### 2. Mandelbrot (progressive sampling with pan/zoom)
 ```
-pixel kernel "mandelbrot.pd"
-
-on key(left) center_x -= 0.1
-on key(right) center_x += 0.1
-on key(up) center_y -= 0.1
-on key(down) center_y += 0.1
-on key(plus) zoom *= 1.1
-on key(minus) zoom /= 1.1
+include "shared/builtins.pdp"
+include "shared/pan_zoom.pdp"
 
 pipeline {
+  pixel kernel "mandelbrot.pd"
   accumulate(samples: 256) {
-    display mandelbrot
+    run mandelbrot
+    display
   }
 }
 ```
 
-### 3. Gray-Scott (simple simulation)
-```
-title = "Gray-Scott Reaction Diffusion"
-
-sim kernel "gray_scott.pd"
-init kernel init_u = "init/gray_scott_u.pd"
-init kernel init_v = "init/gray_scott_v.pd"
-
-buffer u = init_u()
-buffer v = init_v()
-buffer u_next = constant(0.0)
-buffer v_next = constant(0.0)
-
-on key(space) paused = !paused
-on key(period) frame += 1
-
-pipeline {
-  on click(continuous: true) {
-    v = run inject(value: 0.5, radius: 5)
-  }
-  loop(iterations: 8) {
-    u_next, v_next = display gray_scott { u_in: u, v_in: v }
-    swap u <-> u_next
-    swap v <-> v_next
-  }
-}
-```
-
-### 4. Smoke (complex multi-kernel pipeline)
-```
-title = "Smoke Simulation"
-
-sim kernel advect = "smoke/advect.pd"
-sim kernel divergence = "smoke/divergence.pd"
-sim kernel jacobi = "smoke/jacobi.pd"
-sim kernel project = "smoke/project.pd"
-
-buffer vx = constant(0.0)
-buffer vy = constant(0.0)
-buffer density = constant(0.0)
-buffer vx0 = constant(0.0)
-buffer vy0 = constant(0.0)
-buffer density0 = constant(0.0)
-buffer pressure = constant(0.0)
-buffer pressure_tmp = constant(0.0)
-buffer divergence = constant(0.0)
-
-on key(space) paused = !paused
-on key(period) frame += 1
-
-pipeline {
-  on click(continuous: true) {
-    vy = run inject(value: -3.0, radius: 15, falloff: quadratic)
-    density = run inject(value: 0.5, radius: 15, falloff: quadratic)
-  }
-  swap vx <-> vx0, vy <-> vy0, density <-> density0
-  vx, vy, density = run advect { vx_in: vx0, vy_in: vy0, den_in: density0 }
-  divergence = run divergence { vx_in: vx, vy_in: vy }
-  loop(iterations: 40) {
-    pressure_tmp = run jacobi { div_in: divergence, p_in: pressure }
-    swap pressure <-> pressure_tmp
-  }
-  vx0, vy0 = display project { p_in: pressure, vx_in: vx, vy_in: vy, den_in: density }
-  swap vx <-> vx0, vy <-> vy0
-}
-```
-
-### 5. Game of Life
+### 3. Game of Life (simulation with variables)
 ```
 title = "Game of Life"
 
-sim kernel "game_of_life.pd"
-init kernel init_state = "init/random_binary.pd"
+builtin var paused: bool
+builtin var frame: u64
+builtin const mouse_x: f64
+builtin const mouse_y: f64
 
-buffer state = init_state(density: 0.3, seed: 42)
-buffer age = constant(0.0)
-buffer state_next = constant(0.0)
-buffer age_next = constant(0.0)
-
-iterations: range(1..10) = 1
+var iterations: range(1..10) = 1
 
 on key(space) paused = !paused
 on key(period) frame += 1
@@ -378,32 +322,27 @@ on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
 pipeline {
+  kernel "game_of_life.pd"
+  kernel init_state = "init/random_binary.pd"
+  kernel inject = "shared/inject.pd"
+
+  buffer state = constant(0.0)
+  buffer age = constant(0.0)
+  buffer state_next = constant(0.0)
+  buffer age_next = constant(0.0)
+
+  init {
+    run init_state { out: out state }
+  }
   on click(continuous: true) {
-    state = run inject(value: 1.0, radius: 3)
-    age = run inject(value: 0.0, radius: 3)
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { target: state, target_out: out state }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0) { target: age, target_out: out age }
   }
   loop(iterations: iterations) {
-    state_next, age_next = display game_of_life { state_in: state, age_in: age }
+    run game_of_life { state_in: state, age_in: age, state_out: out state_next, age_out: out age_next }
+    display
     swap state <-> state_next
     swap age <-> age_next
-  }
-}
-```
-
-### 6. GPU Mandelbrot
-```
-pixel kernel "mandelbrot.wgsl"
-
-on key(left) center_x -= 0.1
-on key(right) center_x += 0.1
-on key(up) center_y -= 0.1
-on key(down) center_y += 0.1
-on key(plus) zoom *= 1.1
-on key(minus) zoom /= 1.1
-
-pipeline {
-  accumulate(samples: 256) {
-    display mandelbrot
   }
 }
 ```

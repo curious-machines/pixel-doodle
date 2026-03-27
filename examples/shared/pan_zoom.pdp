@@ -1,4 +1,8 @@
 # Standard pan/zoom key bindings with reset
+builtin var center_x: f64
+builtin var center_y: f64
+builtin var zoom: f64
+
 on key(left) center_x -= 0.02 / zoom
 on key(right) center_x += 0.02 / zoom
 on key(up) center_y -= 0.02 / zoom

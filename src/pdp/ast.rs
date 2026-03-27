@@ -32,6 +32,17 @@ pub enum KernelKind {
     Standard,
 }
 
+impl KernelKind {
+    /// Parameter names provided by the tile loop for this kernel kind.
+    /// These are not supplied by the user — the runtime injects them.
+    pub fn tile_loop_params(&self) -> &'static [&'static str] {
+        match self {
+            KernelKind::Pixel => &["x", "y", "px", "py", "sample_index", "time"],
+            KernelKind::Standard => &["px", "py", "width", "height"],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KernelDecl {
     pub kind: KernelKind,
@@ -83,7 +94,46 @@ pub struct BufferDecl {
     pub span: Span,
 }
 
+// ── Builtin declarations ──
+
+/// Type annotation on a `builtin` declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinType {
+    U32,
+    U64,
+    F64,
+    Bool,
+}
+
+impl std::fmt::Display for BuiltinType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuiltinType::U32 => write!(f, "u32"),
+            BuiltinType::U64 => write!(f, "u64"),
+            BuiltinType::F64 => write!(f, "f64"),
+            BuiltinType::Bool => write!(f, "bool"),
+        }
+    }
+}
+
+/// `builtin const name: type` or `builtin var name: type`.
+#[derive(Debug, Clone)]
+pub struct BuiltinDecl {
+    pub name: String,
+    pub ty: BuiltinType,
+    /// `true` for `builtin var`, `false` for `builtin const`.
+    pub mutable: bool,
+    pub span: Span,
+}
+
 // ── Variables ──
+
+/// Whether a user-declared variable is mutable or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mutability {
+    Var,
+    Const,
+}
 
 #[derive(Debug, Clone)]
 pub struct RangeSpec {
@@ -95,6 +145,9 @@ pub struct RangeSpec {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
+    pub mutability: Mutability,
+    /// Optional type annotation (e.g., `var speed: f64 = 1.0`).
+    pub ty: Option<BuiltinType>,
     pub range: Option<RangeSpec>,
     pub default: Literal,
     pub span: Span,
@@ -238,6 +291,8 @@ pub enum PipelineStep {
 pub struct Pipeline {
     /// Pipeline name: None for unnamed, Some("pd"), Some("pdir"), Some("gpu"), etc.
     pub name: Option<String>,
+    /// Builtin declarations scoped to this pipeline.
+    pub builtins: Vec<BuiltinDecl>,
     /// Kernels scoped to this pipeline.
     pub kernels: Vec<KernelDecl>,
     /// Buffers scoped to this pipeline.
@@ -252,6 +307,8 @@ pub struct Pipeline {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub title: Option<String>,
+    /// Top-level builtin declarations (shared across all pipelines).
+    pub builtins: Vec<BuiltinDecl>,
     pub variables: Vec<VarDecl>,
     pub settings: Settings,
     pub key_bindings: Vec<KeyBinding>,

@@ -64,7 +64,10 @@ mod tests {
             r#"
             title = "Game of Life"
 
-            iterations: range(1..10) = 1
+            builtin var paused: bool
+            builtin var frame: u64
+
+            var iterations: range(1..10) = 1
 
             on key(space) paused = !paused
             on key(period) frame += 1
@@ -111,6 +114,9 @@ mod tests {
         let config = parse_pdp(
             r#"
             title = "Smoke Simulation"
+
+            builtin var paused: bool
+            builtin var frame: u64
 
             on key(space) paused = !paused
             on key(period) frame += 1
@@ -195,7 +201,7 @@ mod tests {
         let dir = make_test_dir("include_kb");
         std::fs::write(
             dir.join("pan_zoom.pdp"),
-            "on key(left) center_x -= 0.1\non key(right) center_x += 0.1\n",
+            "builtin var center_x: f64\non key(left) center_x -= 0.1\non key(right) center_x += 0.1\n",
         )
         .unwrap();
 
@@ -238,12 +244,12 @@ mod tests {
         let dir = make_test_dir("include_circular");
         std::fs::write(
             dir.join("a.pdp"),
-            "include \"b.pdp\"\non key(left) center_x -= 0.1\n",
+            "builtin var center_x: f64\ninclude \"b.pdp\"\non key(left) center_x -= 0.1\n",
         )
         .unwrap();
         std::fs::write(
             dir.join("b.pdp"),
-            "include \"a.pdp\"\non key(right) center_x += 0.1\n",
+            "builtin var center_x: f64\ninclude \"a.pdp\"\non key(right) center_x += 0.1\n",
         )
         .unwrap();
 

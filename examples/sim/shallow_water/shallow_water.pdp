@@ -1,5 +1,10 @@
 title = "Shallow Water Simulation"
 
+builtin var paused: bool
+builtin var frame: u64
+builtin const mouse_x: f64
+builtin const mouse_y: f64
+
 on key(space) paused = !paused
 on key(period) frame += 1
 

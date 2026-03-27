@@ -7,7 +7,6 @@ use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
 use crate::jit::{self, SimTileKernelFn, TileKernelFn, UserArgSlot};
-use crate::kernel_ir::Kernel;
 use crate::progressive::AccumulationBuffer;
 use crate::render;
 
@@ -284,10 +283,10 @@ impl Runtime {
                 self.animated = true;
             }
 
+            let (user_arg_slots, _) =
+                jit::compute_user_arg_layout(&ir, decl.kind.tile_loop_params());
             match decl.kind {
                 KernelKind::Pixel => {
-                    let (user_arg_slots, _) =
-                        jit::compute_user_arg_layout(&ir, jit::PIXEL_BUILTINS);
                     let compiled = compile_pixel_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
                     self.kernels.insert(
@@ -312,8 +311,6 @@ impl Runtime {
                         .filter(|b| b.is_output)
                         .map(|b| b.name.clone())
                         .collect();
-                    let (user_arg_slots, _) =
-                        jit::compute_user_arg_layout(&ir, jit::SIM_BUILTINS);
                     let compiled = compile_sim_kernel(&backend_name, &ir, &user_arg_slots)?;
                     let func = compiled.function_ptr();
                     self.kernels.insert(
@@ -1124,7 +1121,7 @@ fn find_accumulate_samples(steps: &[PipelineStep]) -> u32 {
 
 fn compile_pixel_kernel(
     backend_name: &str,
-    kernel: &Kernel,
+    kernel: &crate::kernel_ir::Kernel,
     user_args: &[UserArgSlot],
 ) -> Result<Box<dyn jit::CompiledKernel>, String> {
     match backend_name {
@@ -1144,7 +1141,7 @@ fn compile_pixel_kernel(
 
 fn compile_sim_kernel(
     backend_name: &str,
-    kernel: &Kernel,
+    kernel: &crate::kernel_ir::Kernel,
     user_args: &[UserArgSlot],
 ) -> Result<Box<dyn jit::CompiledSimKernel>, String> {
     match backend_name {
