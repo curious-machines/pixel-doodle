@@ -883,7 +883,16 @@ fn lower_inst(
             } else if from.is_float() && to.is_signed() {
                 builder.ins().fcvt_to_sint(to_cl, a)
             } else if from.is_float() && to.is_unsigned() {
-                builder.ins().fcvt_to_uint(to_cl, a)
+                // Convert via signed to avoid trapping on negative values.
+                // fcvt_to_uint traps on negatives; fcvt_to_sint + bitcast wraps.
+                let signed_cl = match to {
+                    ScalarType::U8 => I8,
+                    ScalarType::U16 => I16,
+                    ScalarType::U32 => I32,
+                    ScalarType::U64 => I64,
+                    _ => unreachable!(),
+                };
+                builder.ins().fcvt_to_sint(signed_cl, a)
             } else if from.is_signed() && to.is_float() {
                 builder.ins().fcvt_from_sint(to_cl, a)
             } else if from.is_unsigned() && to.is_float() {

@@ -760,8 +760,10 @@ fn lower_inst(
                 let int_ty = scalar_to_llvm_int_type(context, to);
                 builder.build_float_to_signed_int(a.into_float_value(), int_ty, "conv").unwrap().into()
             } else if from.is_float() && to.is_unsigned() {
+                // Convert via signed to avoid UB on negative values.
+                // fptoui is undefined for negatives; fptosi + bitcast wraps.
                 let int_ty = scalar_to_llvm_int_type(context, to);
-                builder.build_float_to_unsigned_int(a.into_float_value(), int_ty, "conv").unwrap().into()
+                builder.build_float_to_signed_int(a.into_float_value(), int_ty, "conv").unwrap().into()
             } else if from.is_signed() && to.is_float() {
                 let float_ty = if to == ScalarType::F64 { context.f64_type() } else { context.f32_type() };
                 builder.build_signed_int_to_float(a.into_int_value(), float_ty, "conv").unwrap().into()
