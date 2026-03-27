@@ -262,6 +262,27 @@ fn print_inst(out: &mut String, inst: &Inst, kernel: &Kernel) {
             out.push(' ');
             print_operand(out, *val, kernel);
         }
+        Inst::ArrayNew(elems) => {
+            out.push_str("array_new");
+            for e in elems {
+                out.push(' ');
+                print_operand(out, *e, kernel);
+            }
+        }
+        Inst::ArrayGet { array, index } => {
+            out.push_str("array_get ");
+            print_operand(out, *array, kernel);
+            out.push(' ');
+            print_operand(out, *index, kernel);
+        }
+        Inst::ArraySet { array, index, val } => {
+            out.push_str("array_set ");
+            print_operand(out, *array, kernel);
+            out.push(' ');
+            print_operand(out, *index, kernel);
+            out.push(' ');
+            print_operand(out, *val, kernel);
+        }
     }
 }
 

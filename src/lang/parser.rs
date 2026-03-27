@@ -35,6 +35,7 @@ enum Token {
     TyMat2,
     TyMat3,
     TyMat4,
+    TyArray,
     // Angle brackets (for parameterized types like vec2<f64>)
     LAngle,
     RAngle,
@@ -135,6 +136,10 @@ enum Token {
     U32ToF32,
     // Hash op (binary u32 -> u32)
     Hash,
+    // Array ops
+    ArrayNew_,
+    ArrayGet_,
+    ArraySet_,
     // Buffer ops
     BufLoad,
     BufStore,
@@ -154,6 +159,7 @@ enum Token {
     RParen,
     Comma,
     Colon,
+    Semicolon,
     Equals,
     // Identifier (anything not a keyword)
     Ident(String),
@@ -217,6 +223,7 @@ fn keyword_lookup(word: &str) -> Token {
         "mat2" => Token::TyMat2,
         "mat3" => Token::TyMat3,
         "mat4" => Token::TyMat4,
+        "array" => Token::TyArray,
         "make_vec2" => Token::MakeVec2,
         "make_vec3" => Token::MakeVec3,
         "make_vec4" => Token::MakeVec4,
@@ -302,6 +309,9 @@ fn keyword_lookup(word: &str) -> Token {
         "f32_to_i32" => Token::F32ToI32,
         "f32_to_u32" => Token::F32ToU32,
         "u32_to_f32" => Token::U32ToF32,
+        "array_new" => Token::ArrayNew_,
+        "array_get" => Token::ArrayGet_,
+        "array_set" => Token::ArraySet_,
         "hash" => Token::Hash,
         "buf_load" => Token::BufLoad,
         "buf_store" => Token::BufStore,
@@ -363,6 +373,10 @@ fn lex(input: &str) -> Result<Vec<Spanned>, ParseError> {
             }
             ':' => {
                 tokens.push(Spanned { token: Token::Colon, line, col });
+                chars.next();
+            }
+            ';' => {
+                tokens.push(Spanned { token: Token::Semicolon, line, col });
                 chars.next();
             }
             '=' => {
@@ -667,7 +681,7 @@ impl Parser {
         self.next_var += 1;
         let name = format!("__lit_{}", var.0);
         self.vars.insert(name.clone(), var);
-        self.var_types.insert(var, ty);
+        self.var_types.insert(var, ty.clone());
         self.implicit_stmts.push(Statement {
             binding: Binding { var, name, ty },
             inst: Inst::Const(const_val),
@@ -676,7 +690,7 @@ impl Parser {
     }
 
     fn var_ty(&self, var: Var) -> ValType {
-        self.var_types[&var]
+        self.var_types[&var].clone()
     }
 
     fn parse_scalar_type(&mut self) -> Result<ScalarType, ParseError> {
@@ -740,6 +754,26 @@ impl Parser {
                 let elem = self.parse_scalar_type()?;
                 self.expect_tok(&Token::RAngle)?;
                 Ok(ValType::Mat { size, elem })
+            }
+            Token::TyArray => {
+                self.advance();
+                self.expect_tok(&Token::LAngle)?;
+                let elem = self.parse_type()?;
+                self.expect_tok(&Token::Semicolon)?;
+                let size_sp = self.peek().clone();
+                let size = match size_sp.token {
+                    Token::IntLit(v) => {
+                        self.advance();
+                        v as u32
+                    }
+                    _ => return Err(ParseError {
+                        line: size_sp.line,
+                        col: size_sp.col,
+                        message: format!("expected integer literal for array size, got {:?}", size_sp.token),
+                    }),
+                };
+                self.expect_tok(&Token::RAngle)?;
+                Ok(ValType::Array { elem: Box::new(elem), size })
             }
             _ => Err(ParseError {
                 line: sp.line,
@@ -878,9 +912,9 @@ impl Parser {
                 if !matches!(declared_ty, ValType::Scalar(s) if s.is_float() || s.is_integer()) {
                     return Err(ParseError { line, col, message: format!("arithmetic ops require numeric type, got {declared_ty}") });
                 }
-                let lhs = self.parse_operand(declared_ty)?;
-                self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
-                let rhs = self.parse_operand(declared_ty)?;
+                let lhs = self.parse_operand(declared_ty.clone())?;
+                self.check_types_match(declared_ty.clone(), self.var_ty(lhs), "lhs", line, col)?;
+                let rhs = self.parse_operand(declared_ty.clone())?;
                 self.check_types_match(declared_ty, self.var_ty(rhs), "rhs", line, col)?;
                 Ok(Inst::Binary { op, lhs, rhs })
             }
@@ -897,9 +931,9 @@ impl Parser {
                 if !matches!(declared_ty, ValType::Scalar(s) if s.is_integer()) {
                     return Err(ParseError { line, col, message: format!("bitwise ops require integer type, got {declared_ty}") });
                 }
-                let lhs = self.parse_operand(declared_ty)?;
-                self.check_types_match(declared_ty, self.var_ty(lhs), "lhs", line, col)?;
-                let rhs = self.parse_operand(declared_ty)?;
+                let lhs = self.parse_operand(declared_ty.clone())?;
+                self.check_types_match(declared_ty.clone(), self.var_ty(lhs), "lhs", line, col)?;
+                let rhs = self.parse_operand(declared_ty.clone())?;
                 self.check_types_match(declared_ty, self.var_ty(rhs), "rhs", line, col)?;
                 Ok(Inst::Binary { op, lhs, rhs })
             }
@@ -935,7 +969,7 @@ impl Parser {
                 if operand_ty == ValType::BOOL {
                     return Err(ParseError { line, col, message: "cannot compare bools".to_string() });
                 }
-                let rhs = self.parse_operand(operand_ty)?;
+                let rhs = self.parse_operand(operand_ty.clone())?;
                 self.check_types_match(operand_ty, self.var_ty(rhs), "rhs", line, col)?;
                 Ok(Inst::Cmp { op, lhs, rhs })
             }
@@ -1326,7 +1360,7 @@ impl Parser {
                 let mut cols = Vec::new();
                 for _ in 0..count {
                     let v = self.resolve_var_ident()?;
-                    self.check_types_match(col_ty, self.var_ty(v), "column", line, col)?;
+                    self.check_types_match(col_ty.clone(), self.var_ty(v), "column", line, col)?;
                     cols.push(v);
                 }
                 Ok(Inst::MakeMat(cols))
@@ -1400,6 +1434,50 @@ impl Parser {
                 }
                 Ok(Inst::MatCol { mat, index })
             }
+            Token::ArrayNew_ => {
+                self.advance();
+                let (elem_ty, size) = match &declared_ty {
+                    ValType::Array { elem, size } => (elem.as_ref().clone(), *size),
+                    _ => return Err(ParseError { line, col, message: format!("array_new result must be array type, got {declared_ty}") }),
+                };
+                let mut elems = Vec::new();
+                for _ in 0..size {
+                    let v = self.parse_operand(elem_ty.clone())?;
+                    self.check_types_match(elem_ty.clone(), self.var_ty(v), "array_new element", line, col)?;
+                    elems.push(v);
+                }
+                Ok(Inst::ArrayNew(elems))
+            }
+            Token::ArrayGet_ => {
+                self.advance();
+                let array = self.resolve_var_ident()?;
+                let array_ty = self.var_ty(array);
+                let elem_ty = match &array_ty {
+                    ValType::Array { elem, .. } => elem.as_ref().clone(),
+                    _ => return Err(ParseError { line, col, message: format!("array_get requires array operand, got {array_ty}") }),
+                };
+                if declared_ty != elem_ty {
+                    return Err(ParseError { line, col, message: format!("array_get result type must be {elem_ty}, got {declared_ty}") });
+                }
+                let index = self.resolve_var_ident()?;
+                Ok(Inst::ArrayGet { array, index })
+            }
+            Token::ArraySet_ => {
+                self.advance();
+                let array = self.resolve_var_ident()?;
+                let array_ty = self.var_ty(array);
+                let elem_ty = match &array_ty {
+                    ValType::Array { elem, .. } => elem.as_ref().clone(),
+                    _ => return Err(ParseError { line, col, message: format!("array_set requires array operand, got {array_ty}") }),
+                };
+                if declared_ty != array_ty {
+                    return Err(ParseError { line, col, message: format!("array_set result must match array type {array_ty}, got {declared_ty}") });
+                }
+                let index = self.resolve_var_ident()?;
+                let val = self.parse_operand(elem_ty.clone())?;
+                self.check_types_match(elem_ty, self.var_ty(val), "array_set val", line, col)?;
+                Ok(Inst::ArraySet { array, index, val })
+            }
             Token::BufLoad => {
                 self.advance();
                 if declared_ty != ValType::F64 {
@@ -1449,7 +1527,7 @@ impl Parser {
 
     fn parse_const_literal(&mut self, declared_ty: ValType) -> Result<Inst, ParseError> {
         let sp = self.peek().clone();
-        match (&sp.token, declared_ty) {
+        match (&sp.token, &declared_ty) {
             (Token::FloatLit(v), ValType::Scalar(ScalarType::F64)) => {
                 let v = *v;
                 self.advance();
@@ -1613,11 +1691,11 @@ impl Parser {
 
         self.implicit_stmts.clear();
         self.expanded_body_items.clear();
-        let inst = self.parse_instruction(ty, line, col)?;
+        let inst = self.parse_instruction(ty.clone(), line, col)?;
 
         let implicits = std::mem::take(&mut self.implicit_stmts);
         let expanded = std::mem::take(&mut self.expanded_body_items);
-        let var = self.alloc_var(var_name.clone(), ty, line, col)?;
+        let var = self.alloc_var(var_name.clone(), ty.clone(), line, col)?;
         let stmt = Statement {
             binding: Binding { var, name: var_name, ty },
             inst,
@@ -1650,9 +1728,9 @@ impl Parser {
             let ty = self.parse_type()?;
             self.expect_tok(&Token::Equals)?;
             let init = self.resolve_var_ident()?;
-            self.check_types_match(ty, self.var_ty(init), &format!("carry var '{name}' init"), line, col)?;
+            self.check_types_match(ty.clone(), self.var_ty(init), &format!("carry var '{name}' init"), line, col)?;
 
-            let var = self.alloc_var(name.clone(), ty, line, col)?;
+            let var = self.alloc_var(name.clone(), ty.clone(), line, col)?;
             carry.push(CarryVar {
                 binding: Binding { var, name, ty },
                 init,
@@ -1737,7 +1815,7 @@ impl Parser {
         for (i, cv) in carry.iter().enumerate() {
             let (name, line, col) = self.expect_ident()?;
             let var = self.resolve_var(&name, line, col)?;
-            self.check_types_match(cv.binding.ty, self.var_ty(var),
+            self.check_types_match(cv.binding.ty.clone(), self.var_ty(var),
                 &format!("yield[{}] for carry var '{}'", i, cv.binding.name), line, col)?;
             yields.push(var);
         }
@@ -1754,7 +1832,7 @@ impl Parser {
 
         // Restore outer scope but keep carry vars visible
         let carry_entries: Vec<(String, Var, ValType)> = carry.iter()
-            .map(|cv| (cv.binding.name.clone(), cv.binding.var, cv.binding.ty))
+            .map(|cv| (cv.binding.name.clone(), cv.binding.var, cv.binding.ty.clone()))
             .collect();
         self.vars = outer_vars;
         for (name, var, ty) in carry_entries {
@@ -1788,7 +1866,7 @@ impl Parser {
         let raw_params = self.parse_params()?;
         let params: Vec<(String, Var, ValType)> = raw_params
             .iter()
-            .map(|b| (b.name.clone(), b.var, b.ty))
+            .map(|b| (b.name.clone(), b.var, b.ty.clone()))
             .collect();
 
         self.expect_tok(&Token::Arrow)?;
@@ -1919,7 +1997,7 @@ impl Parser {
         // Parse arguments and build var remap: inline param Var -> caller Var
         let mut var_map: HashMap<Var, Var> = HashMap::new();
         for (param_name, param_var, param_ty) in &def.params {
-            let arg = self.parse_operand(*param_ty)?;
+            let arg = self.parse_operand(param_ty.clone())?;
             let arg_ty = self.var_ty(arg);
             if arg_ty != *param_ty {
                 return Err(ParseError {
@@ -1943,12 +2021,12 @@ impl Parser {
                     let new_var = Var(self.next_var);
                     self.next_var += 1;
                     self.vars.insert(new_name.clone(), new_var);
-                    self.var_types.insert(new_var, *ty);
+                    self.var_types.insert(new_var, ty.clone());
                     var_map.insert(*var, new_var);
 
                     let new_inst = Self::remap_inst(inst, &var_map);
                     self.implicit_stmts.push(Statement {
-                        binding: Binding { var: new_var, name: new_name, ty: *ty },
+                        binding: Binding { var: new_var, name: new_name, ty: ty.clone() },
                         inst: new_inst,
                     });
                 }
@@ -2017,7 +2095,7 @@ impl Parser {
                     let zero_vec = Var(self.next_var);
                     self.next_var += 1;
                     self.vars.insert(zero_vec_name.clone(), zero_vec);
-                    self.var_types.insert(zero_vec, def.return_ty);
+                    self.var_types.insert(zero_vec, def.return_ty.clone());
                     self.implicit_stmts.push(Statement {
                         binding: Binding { var: zero_vec, name: zero_vec_name, ty: def.return_ty },
                         inst: Inst::VecScale { scalar: zero, vec: remapped },
@@ -2032,12 +2110,15 @@ impl Parser {
                     let transposed = Var(self.next_var);
                     self.next_var += 1;
                     self.vars.insert(transposed_name.clone(), transposed);
-                    self.var_types.insert(transposed, def.return_ty);
+                    self.var_types.insert(transposed, def.return_ty.clone());
                     self.implicit_stmts.push(Statement {
                         binding: Binding { var: transposed, name: transposed_name, ty: def.return_ty },
                         inst: Inst::MatTranspose { arg: remapped },
                     });
                     Ok(Inst::MatTranspose { arg: transposed })
+                }
+                ValType::Array { .. } => {
+                    panic!("identity copy for Array types not yet supported in inline expansion")
                 }
             }
         }
@@ -2072,6 +2153,9 @@ impl Parser {
             Inst::MatCol { mat, index } => Inst::MatCol { mat: remap(mat), index: *index },
             Inst::BufLoad { buf, x, y } => Inst::BufLoad { buf: *buf, x: remap(x), y: remap(y) },
             Inst::BufStore { buf, x, y, val } => Inst::BufStore { buf: *buf, x: remap(x), y: remap(y), val: remap(val) },
+            Inst::ArrayNew(elems) => Inst::ArrayNew(elems.iter().map(&remap).collect()),
+            Inst::ArrayGet { array, index } => Inst::ArrayGet { array: remap(array), index: remap(index) },
+            Inst::ArraySet { array, index, val } => Inst::ArraySet { array: remap(array), index: remap(index), val: remap(val) },
         }
     }
 
@@ -2092,10 +2176,10 @@ impl Parser {
             let new_var = Var(self.next_var);
             self.next_var += 1;
             self.vars.insert(new_name.clone(), new_var);
-            self.var_types.insert(new_var, cv.binding.ty);
+            self.var_types.insert(new_var, cv.binding.ty.clone());
             var_map.insert(cv.binding.var, new_var);
             new_carry.push(CarryVar {
-                binding: Binding { var: new_var, name: new_name, ty: cv.binding.ty },
+                binding: Binding { var: new_var, name: new_name, ty: cv.binding.ty.clone() },
                 init: var_map.get(&cv.init).copied().unwrap_or(cv.init),
             });
         }
@@ -2140,10 +2224,10 @@ impl Parser {
                     let new_var = Var(self.next_var);
                     self.next_var += 1;
                     self.vars.insert(new_name.clone(), new_var);
-                    self.var_types.insert(new_var, stmt.binding.ty);
+                    self.var_types.insert(new_var, stmt.binding.ty.clone());
                     var_map.insert(stmt.binding.var, new_var);
                     result.push(BodyItem::Stmt(Statement {
-                        binding: Binding { var: new_var, name: new_name, ty: stmt.binding.ty },
+                        binding: Binding { var: new_var, name: new_name, ty: stmt.binding.ty.clone() },
                         inst: Self::remap_inst(&stmt.inst, var_map),
                     }));
                 }
@@ -2184,7 +2268,7 @@ impl Parser {
             let (name, line, col) = self.expect_ident()?;
             self.expect_tok(&Token::Colon)?;
             let ty = self.parse_type()?;
-            let var = self.alloc_var(name.clone(), ty, line, col)?;
+            let var = self.alloc_var(name.clone(), ty.clone(), line, col)?;
             params.push(Binding { var, name, ty });
         }
         Ok(params)

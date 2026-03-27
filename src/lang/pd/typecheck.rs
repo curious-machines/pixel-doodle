@@ -76,7 +76,7 @@ impl TExpr {
         match self {
             TExpr::FloatLit(_) => ValType::F64,
             TExpr::F32Lit(_) => ValType::F32,
-            TExpr::IntLit(_, ty) => *ty,
+            TExpr::IntLit(_, ty) => ty.clone(),
             TExpr::I8Lit(_) => ValType::I8,
             TExpr::U8Lit(_) => ValType::U8,
             TExpr::I16Lit(_) => ValType::I16,
@@ -86,13 +86,13 @@ impl TExpr {
             TExpr::I64Lit(_) => ValType::I64,
             TExpr::U64Lit(_) => ValType::U64,
             TExpr::BoolLit(_) => ValType::BOOL,
-            TExpr::Ident(_, ty) => *ty,
-            TExpr::BinOp { ty, .. } => *ty,
-            TExpr::UnaryOp { ty, .. } => *ty,
-            TExpr::Call { ty, .. } => *ty,
-            TExpr::Cast { to, .. } => *to,
-            TExpr::IfElse { ty, .. } => *ty,
-            TExpr::FieldAccess { ty, .. } => *ty,
+            TExpr::Ident(_, ty) => ty.clone(),
+            TExpr::BinOp { ty, .. } => ty.clone(),
+            TExpr::UnaryOp { ty, .. } => ty.clone(),
+            TExpr::Call { ty, .. } => ty.clone(),
+            TExpr::Cast { to, .. } => to.clone(),
+            TExpr::IfElse { ty, .. } => ty.clone(),
+            TExpr::FieldAccess { ty, .. } => ty.clone(),
         }
     }
 }
@@ -193,7 +193,7 @@ impl Checker {
     fn lookup(&self, name: &str) -> Option<ValType> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
-                return Some(*ty);
+                return Some(ty.clone());
             }
         }
         None
@@ -270,6 +270,7 @@ impl Checker {
                     ValType::Scalar(ScalarType::Bool) => Err(err(span, "cannot use integer literal as bool".into())),
                     ValType::Vec { .. } => Err(err(span, "cannot use integer literal as vec type".into())),
                     ValType::Mat { .. } => Err(err(span, "cannot use integer literal as mat type".into())),
+                    ValType::Array { .. } => Err(err(span, "cannot use integer literal as array type".into())),
                 }
             }
 
@@ -288,10 +289,10 @@ impl Checker {
                     UnaryOpKind::Neg => {
                         let inner = self.check_expr(inner, Some(ValType::F64))?;
                         let ty = inner.ty();
-                        let negatable = match ty {
+                        let negatable = match &ty {
                             ValType::Scalar(s) => s.is_float() || s.is_integer(),
                             ValType::Vec { .. } => true,
-                            ValType::Mat { .. } => false,
+                            ValType::Mat { .. } | ValType::Array { .. } => false,
                         };
                         if !negatable {
                             return Err(err(span, format!("cannot negate {}", ty)));
@@ -322,13 +323,13 @@ impl Checker {
                         if *f != ScalarType::Bool && *t != ScalarType::Bool && f != t => {}
                     _ => return Err(err(span, format!("cannot cast {} to {}", from, ty))),
                 }
-                Ok(TExpr::Cast { expr: Box::new(inner), from, to: *ty })
+                Ok(TExpr::Cast { expr: Box::new(inner), from, to: ty.clone() })
             }
 
             Expr::FieldAccess { expr: inner, field, span } => {
                 let inner = self.check_expr(inner, None)?;
                 let inner_ty = inner.ty();
-                match (inner_ty, field.as_str()) {
+                match (&inner_ty, field.as_str()) {
                     (ValType::Vec { len: 2, .. }, "x") | (ValType::Vec { len: 2, .. }, "y") |
                     (ValType::Vec { len: 3, .. }, "x") | (ValType::Vec { len: 3, .. }, "y") | (ValType::Vec { len: 3, .. }, "z") |
                     (ValType::Vec { len: 4, .. }, "x") | (ValType::Vec { len: 4, .. }, "y") | (ValType::Vec { len: 4, .. }, "z") | (ValType::Vec { len: 4, .. }, "w") => {
@@ -521,6 +522,8 @@ impl Checker {
         // User-defined function
         let (params, ret_ty) = self.fn_sigs.get(name)
             .ok_or_else(|| err(span, format!("undefined function '{}'", name)))?;
+        let params = params.clone();
+        let ret_ty = ret_ty.clone();
 
         if args.len() != params.len() {
             return Err(err(span, format!(
@@ -531,7 +534,7 @@ impl Checker {
 
         let mut targs = Vec::new();
         for (arg, param) in args.iter().zip(params.iter()) {
-            let ta = self.check_expr(arg, Some(param.ty))?;
+            let ta = self.check_expr(arg, Some(param.ty.clone()))?;
             if ta.ty() != param.ty {
                 return Err(err(arg.span(), format!(
                     "argument type mismatch for '{}': expected {}, got {}",
@@ -541,7 +544,7 @@ impl Checker {
             targs.push(ta);
         }
 
-        Ok(TExpr::Call { name: name.to_string(), args: targs, ty: *ret_ty })
+        Ok(TExpr::Call { name: name.to_string(), args: targs, ty: ret_ty })
     }
 
     fn check_builtin_call(&self, name: &str, args: &[Expr], span: &Span) -> TypeResult<Option<TExpr>> {
@@ -596,13 +599,13 @@ impl Checker {
                     return Err(err(span, "abs expects 1 argument".into()));
                 }
                 let arg = self.check_expr(&args[0], None)?;
-                match arg.ty() {
+                let arg_ty = arg.ty();
+                match &arg_ty {
                     ValType::Scalar(ScalarType::F64) => return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty: ValType::F64 })),
                     ValType::Vec { .. } => {
-                        let ty = arg.ty();
-                        return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty }));
+                        return Ok(Some(TExpr::Call { name: "abs".into(), args: vec![arg], ty: arg_ty }));
                     }
-                    _ => return Err(err(span, format!("abs requires f64 or vec argument, got {}", arg.ty()))),
+                    _ => return Err(err(span, format!("abs requires f64 or vec argument, got {}", arg_ty))),
                 }
             }
             "min" | "max" => {
@@ -614,12 +617,12 @@ impl Checker {
                 if a.ty() != b.ty() {
                     return Err(err(span, format!("'{}' arguments must match: {} vs {}", name, a.ty(), b.ty())));
                 }
-                match a.ty() {
+                let a_ty = a.ty();
+                match &a_ty {
                     ValType::Scalar(ScalarType::F64) | ValType::Scalar(ScalarType::F32) | ValType::Scalar(ScalarType::U32) | ValType::Scalar(ScalarType::I32) | ValType::Vec { .. } => {
-                        let ty = a.ty();
-                        return Ok(Some(TExpr::Call { name: name.to_string(), args: vec![a, b], ty }));
+                        return Ok(Some(TExpr::Call { name: name.to_string(), args: vec![a, b], ty: a_ty }));
                     }
-                    _ => return Err(err(span, format!("'{}' not supported for {}", name, a.ty()))),
+                    _ => return Err(err(span, format!("'{}' not supported for {}", name, a_ty))),
                 }
             }
             "vec2" | "vec3" | "vec4" => {
@@ -638,7 +641,7 @@ impl Checker {
                 let expected_ty = ValType::Scalar(elem);
                 let mut checked = vec![first];
                 for arg in &args[1..] {
-                    let c = self.check_expr(arg, Some(expected_ty))?;
+                    let c = self.check_expr(arg, Some(expected_ty.clone()))?;
                     if c.ty() != expected_ty {
                         return Err(err(span, format!("{} arguments must all be {}, got {}", name, elem, c.ty())));
                     }
@@ -668,7 +671,7 @@ impl Checker {
                 let col_ty = ValType::Vec { len: expected_cols as u8, elem };
                 let mut checked = vec![first];
                 for arg in &args[1..] {
-                    let c = self.check_expr(arg, Some(col_ty))?;
+                    let c = self.check_expr(arg, Some(col_ty.clone()))?;
                     if c.ty() != col_ty {
                         return Err(err(span, format!(
                             "{} arguments must all be {}, got {}", name, col_ty, c.ty()
@@ -749,8 +752,8 @@ impl Checker {
                     return Err(err(span, "cross expects 2 arguments".into()));
                 }
                 let vec3_ty = ValType::Vec { len: 3, elem: ScalarType::F64 };
-                let a = self.check_expr(&args[0], Some(vec3_ty))?;
-                let b = self.check_expr(&args[1], Some(vec3_ty))?;
+                let a = self.check_expr(&args[0], Some(vec3_ty.clone()))?;
+                let b = self.check_expr(&args[1], Some(vec3_ty.clone()))?;
                 if !matches!(a.ty(), ValType::Vec { len: 3, .. }) || !matches!(b.ty(), ValType::Vec { len: 3, .. }) {
                     return Err(err(span, format!("cross requires vec3 arguments, got {} and {}", a.ty(), b.ty())));
                 }
@@ -947,7 +950,7 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &Stmt) -> TypeResult<TStmt> {
         match stmt {
             Stmt::Let { name, ty, expr, span } => {
-                let texpr = self.check_expr(expr, *ty)?;
+                let texpr = self.check_expr(expr, ty.clone())?;
                 let resolved_ty = if let Some(ann) = ty {
                     if texpr.ty() != *ann {
                         return Err(err(span, format!(
@@ -955,11 +958,11 @@ impl Checker {
                             ann, texpr.ty()
                         )));
                     }
-                    *ann
+                    ann.clone()
                 } else {
                     texpr.ty()
                 };
-                self.define(name, resolved_ty, span)?;
+                self.define(name, resolved_ty.clone(), span)?;
                 Ok(TStmt::Let { name: name.clone(), ty: resolved_ty, expr: texpr })
             }
 
@@ -967,15 +970,15 @@ impl Checker {
                 // Type-check carry init expressions in outer scope
                 let mut tcarry = Vec::new();
                 for c in carry {
-                    let init = self.check_expr(&c.init, c.ty)?;
-                    let ty = if let Some(ann) = c.ty {
-                        if init.ty() != ann {
+                    let init = self.check_expr(&c.init, c.ty.clone())?;
+                    let ty = if let Some(ann) = &c.ty {
+                        if init.ty() != *ann {
                             return Err(err(&c.span, format!(
                                 "carry var '{}': annotation {} doesn't match init type {}",
                                 c.name, ann, init.ty()
                             )));
                         }
-                        ann
+                        ann.clone()
                     } else {
                         init.ty()
                     };
@@ -985,7 +988,7 @@ impl Checker {
                 // Push scope for loop body, define carry vars
                 self.push_scope();
                 for c in &tcarry {
-                    self.define(&c.name, c.ty, span)?;
+                    self.define(&c.name, c.ty.clone(), span)?;
                 }
 
                 let tbody = self.check_stmts(body)?;
@@ -993,7 +996,7 @@ impl Checker {
 
                 // Carry vars are live after the loop — define in outer scope
                 for c in &tcarry {
-                    self.define(&c.name, c.ty, span)?;
+                    self.define(&c.name, c.ty.clone(), span)?;
                 }
 
                 Ok(TStmt::While { carry: tcarry, body: tbody })
@@ -1063,7 +1066,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
 
     // Register fn signatures
     for f in &program.fns {
-        checker.fn_sigs.insert(f.name.clone(), (f.params.clone(), f.return_ty));
+        checker.fn_sigs.insert(f.name.clone(), (f.params.clone(), f.return_ty.clone()));
     }
 
     // Type-check fn bodies
@@ -1071,14 +1074,14 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     for f in &program.fns {
         checker.push_scope();
         for p in &f.params {
-            checker.define(&p.name, p.ty, &f.span)?;
+            checker.define(&p.name, p.ty.clone(), &f.span)?;
         }
         let tbody = checker.check_stmts(&f.body)?;
         checker.pop_scope();
         tfns.push(TFnDef {
             name: f.name.clone(),
             params: f.params.clone(),
-            return_ty: f.return_ty,
+            return_ty: f.return_ty.clone(),
             body: tbody,
         });
     }
@@ -1086,7 +1089,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
     // Type-check kernel
     checker.scopes = vec![HashMap::new()];
     for p in &program.kernel.params {
-        checker.define(&p.name, p.ty, &program.kernel.span)?;
+        checker.define(&p.name, p.ty.clone(), &program.kernel.span)?;
     }
     // Register buffers
     checker.buffers.clear();
@@ -1100,7 +1103,7 @@ pub fn typecheck(program: &Program) -> TypeResult<TProgram> {
         kernel: TKernelDef {
             name: program.kernel.name.clone(),
             params: program.kernel.params.clone(),
-            return_ty: program.kernel.return_ty,
+            return_ty: program.kernel.return_ty.clone(),
             buffers: program.kernel.buffers.clone(),
             body: tbody,
         },

@@ -27,7 +27,7 @@ pub fn compute_user_arg_layout(kernel: &Kernel, builtins: &[&str]) -> (Vec<UserA
         if builtins.contains(&param.name.as_str()) {
             continue;
         }
-        let size = match param.ty {
+        let size = match &param.ty {
             ValType::Scalar(s) => s.byte_size(),
             _ => panic!("unsupported user-arg type {:?} for param '{}'", param.ty, param.name),
         };
@@ -37,7 +37,7 @@ pub fn compute_user_arg_layout(kernel: &Kernel, builtins: &[&str]) -> (Vec<UserA
         slots.push(UserArgSlot {
             name: param.name.clone(),
             offset,
-            ty: param.ty,
+            ty: param.ty.clone(),
         });
         offset += size;
     }

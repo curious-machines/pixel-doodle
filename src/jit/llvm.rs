@@ -356,6 +356,9 @@ fn lower_kernel_body(
                 if slot.ty.is_mat() {
                     panic!("LLVM backend does not support Mat user args (param '{name}')");
                 }
+                if slot.ty.is_array() {
+                    panic!("LLVM backend does not support Array user args (param '{name}')");
+                }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {
                     builder.build_gep(context.i8_type(), user_args_ptr, &[offset], &format!("arg_{name}_ptr")).unwrap()
@@ -445,10 +448,11 @@ fn lower_while(
 
         // Map carry var to phi values
         let components: Vec<_> = phis.iter().map(|p| p.as_basic_value()).collect();
-        let vv = match cv.binding.ty {
+        let vv = match &cv.binding.ty {
             ValType::Mat { .. } => VarValues::Mat(components),
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
+            ValType::Array { .. } => panic!("LLVM backend does not support Array carry vars"),
         };
         val_map.insert(cv.binding.var, vv);
         carry_phis.push(phis);
@@ -736,7 +740,7 @@ fn lower_inst(
         }
         Inst::Select { cond, then_val, else_val } => {
             let c = get_scalar(val_map, cond).into_int_value();
-            match binding.ty {
+            match &binding.ty {
                 ValType::Mat { .. } => {
                     let t_comps = get_mat(val_map, then_val);
                     let e_comps = get_mat(val_map, else_val);
@@ -774,6 +778,7 @@ fn lower_inst(
                     let e = get_scalar(val_map, else_val);
                     VarValues::Scalar(builder.build_select(c, t.into_int_value(), e.into_int_value(), "sel").unwrap())
                 }
+                ValType::Array { .. } => panic!("LLVM backend does not support Array in Select"),
             }
         }
         Inst::PackArgb { r, g, b } => {
@@ -931,8 +936,8 @@ fn lower_inst(
         // -- Column extraction --
         Inst::MatCol { mat, index } => {
             let m = get_mat(val_map, mat);
-            let size = match binding.ty {
-                ValType::Vec { len, .. } => len as usize,
+            let size = match &binding.ty {
+                ValType::Vec { len, .. } => *len as usize,
                 _ => panic!("MatCol result must be a vec type"),
             };
             let start = (*index as usize) * size;
@@ -942,8 +947,8 @@ fn lower_inst(
         // -- Matrix transpose --
         Inst::MatTranspose { arg } => {
             let m = get_mat(val_map, arg).to_vec();
-            let size = match binding.ty {
-                ValType::Mat { size, .. } => size as usize,
+            let size = match &binding.ty {
+                ValType::Mat { size, .. } => *size as usize,
                 _ => panic!("MatTranspose result must be a mat type"),
             };
             let mut result = Vec::with_capacity(size * size);
@@ -978,8 +983,8 @@ fn lower_inst(
         Inst::MatMul { lhs, rhs } => {
             let lhs_m = get_mat(val_map, lhs).to_vec();
             let rhs_m = get_mat(val_map, rhs).to_vec();
-            let size = match binding.ty {
-                ValType::Mat { size, .. } => size as usize,
+            let size = match &binding.ty {
+                ValType::Mat { size, .. } => *size as usize,
                 _ => panic!("MatMul result must be a mat type"),
             };
             let elem = binding.ty.element_scalar();
@@ -1057,6 +1062,10 @@ fn lower_inst(
 
             // Return dummy u32 0
             VarValues::Scalar(i32_type.const_zero().into())
+        }
+
+        Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
+            panic!("LLVM backend does not yet support Array instructions");
         }
     }
 }
@@ -1344,6 +1353,9 @@ fn build_sim_tile_loop(
                     .unwrap_or_else(|| panic!("unknown sim kernel parameter: '{name}'"));
                 if slot.ty.is_mat() {
                     panic!("LLVM backend does not support Mat user args (param '{name}')");
+                }
+                if slot.ty.is_array() {
+                    panic!("LLVM backend does not support Array user args (param '{name}')");
                 }
                 let offset = i64_type.const_int(slot.offset as u64, false);
                 let addr = unsafe {

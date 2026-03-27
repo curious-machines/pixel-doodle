@@ -75,7 +75,7 @@ mod tests {
     fn gradient_pd_produces_valid_ir() {
         let kernel = parse_file("examples/basic/gradient/gradient.pd");
         let emit_ty = kernel.var_type(kernel.emit);
-        assert_eq!(emit_ty, Some(ValType::U32));
+        assert_eq!(emit_ty, Some(&ValType::U32));
     }
 
     #[test]

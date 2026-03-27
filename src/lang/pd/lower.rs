@@ -74,7 +74,7 @@ impl Lowerer {
                 var
             }
             TExpr::IntLit(v, ty) => {
-                let var = self.auto_var("lit", *ty);
+                let var = self.auto_var("lit", ty.clone());
                 let name = self.binding_name(var);
                 let c = match ty {
                     ValType::Scalar(ScalarType::F64) => Const::F64(*v as f64),
@@ -87,9 +87,9 @@ impl Lowerer {
                     ValType::Scalar(ScalarType::I32) => Const::I32(*v as i32),
                     ValType::Scalar(ScalarType::I64) => Const::I64(*v as i64),
                     ValType::Scalar(ScalarType::U64) => Const::U64(*v),
-                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } | ValType::Mat { .. } => unreachable!(),
+                    ValType::Scalar(ScalarType::Bool) | ValType::Vec { .. } | ValType::Mat { .. } | ValType::Array { .. } => unreachable!(),
                 };
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, Inst::Const(c))));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(), Inst::Const(c))));
                 var
             }
             TExpr::I8Lit(v) => {
@@ -168,19 +168,19 @@ impl Lowerer {
             TExpr::BinOp { op, lhs, rhs, ty } => {
                 let l = self.lower_expr(lhs, out);
                 let r = self.lower_expr(rhs, out);
-                let var = self.auto_var("tmp", *ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let name = self.binding_name(var);
 
                 // Handle matrix operations
                 if *op == BinOpKind::Mul && lhs.ty().is_mat() && rhs.ty().is_vec() {
                     // mat * vec -> vec (MatMulVec)
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(),
                         Inst::MatMulVec { mat: l, vec: r })));
                     return var;
                 }
                 if *op == BinOpKind::Mul && lhs.ty().is_mat() && rhs.ty().is_mat() {
                     // mat * mat -> mat (MatMul)
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(),
                         Inst::MatMul { lhs: l, rhs: r })));
                     return var;
                 }
@@ -213,7 +213,7 @@ impl Lowerer {
                         };
                         Inst::VecBinary { op: vec_op, lhs: l, rhs: r }
                     };
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(), inst)));
                     return var;
                 }
 
@@ -240,15 +240,15 @@ impl Lowerer {
                     BinOpKind::Shl => Inst::Binary { op: BinOp::Shl, lhs: l, rhs: r },
                     BinOpKind::Shr => Inst::Binary { op: BinOp::Shr, lhs: l, rhs: r },
                 };
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(), inst)));
                 var
             }
             TExpr::UnaryOp { op, expr, ty } => {
                 let arg = self.lower_expr(expr, out);
-                let var = self.auto_var("tmp", *ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let name = self.binding_name(var);
                 if ty.is_vec() && *op == UnaryOpKind::Neg {
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(),
                         Inst::VecUnary { op: VecUnaryOp::Neg, arg })));
                     return var;
                 }
@@ -256,15 +256,15 @@ impl Lowerer {
                     UnaryOpKind::Neg => Inst::Unary { op: UnaryOp::Neg, arg },
                     UnaryOpKind::Not => Inst::Unary { op: UnaryOp::Not, arg },
                 };
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty, inst)));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(), inst)));
                 var
             }
             TExpr::Call { name, args, ty } => {
-                self.lower_call(name, args, *ty, out)
+                self.lower_call(name, args, ty.clone(), out)
             }
             TExpr::Cast { expr, from: _, to } => {
                 let arg = self.lower_expr(expr, out);
-                let var = self.auto_var("conv", *to);
+                let var = self.auto_var("conv", to.clone());
                 let vname = self.binding_name(var);
                 let conv_op = match (expr.ty(), to) {
                     (ValType::Scalar(from_s), ValType::Scalar(to_s)) => {
@@ -272,7 +272,7 @@ impl Lowerer {
                     }
                     _ => unreachable!(),
                 };
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, *to, Inst::Conv { op: conv_op, arg })));
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, to.clone(), Inst::Conv { op: conv_op, arg })));
                 var
             }
             TExpr::IfElse { cond, then_expr, else_expr, ty } => {
@@ -298,15 +298,15 @@ impl Lowerer {
                             Inst::Select { cond: c, then_val: t_comp, else_val: e_comp })));
                         components.push(selected);
                     }
-                    let var = self.auto_var("sel", *ty);
+                    let var = self.auto_var("sel", ty.clone());
                     let name = self.binding_name(var);
-                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                    out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(),
                         Inst::MakeVec(components))));
                     return var;
                 }
-                let var = self.auto_var("sel", *ty);
+                let var = self.auto_var("sel", ty.clone());
                 let name = self.binding_name(var);
-                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, *ty,
+                out.push(BodyItem::Stmt(self.emit_stmt(var, &name, ty.clone(),
                     Inst::Select { cond: c, then_val: t, else_val: e })));
                 var
             }
@@ -352,7 +352,7 @@ impl Lowerer {
                 TStmt::Let { name: vname, ty, expr } => {
                     let v = self.lower_expr_prefixed(expr, out, &prefix);
                     let aliased = format!("{prefix}_{vname}");
-                    let new_var = self.fresh_var(&aliased, *ty);
+                    let new_var = self.fresh_var(&aliased, ty.clone());
                     // Create a copy (identity) by const or just alias
                     // Actually we can just map the name
                     self.names.insert(vname.clone(), v);
@@ -390,7 +390,7 @@ impl Lowerer {
         match name {
             "mat2" | "mat3" | "mat4" => {
                 let columns: Vec<Var> = args.iter().map(|a| self.lower_expr(a, out)).collect();
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::MakeMat(columns))));
@@ -398,7 +398,7 @@ impl Lowerer {
             }
             "transpose" => {
                 let a = self.lower_expr(&args[0], out);
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::MatTranspose { arg: a })));
@@ -411,7 +411,7 @@ impl Lowerer {
                     TExpr::IntLit(i, _) => *i as u8,
                     _ => unreachable!("col index must be integer literal"),
                 };
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::MatCol { mat, index })));
@@ -419,7 +419,7 @@ impl Lowerer {
             }
             "vec2" | "vec3" | "vec4" => {
                 let components: Vec<Var> = args.iter().map(|a| self.lower_expr(a, out)).collect();
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::MakeVec(components))));
@@ -428,7 +428,7 @@ impl Lowerer {
             "dot" => {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecDot { lhs: a, rhs: b })));
@@ -437,7 +437,7 @@ impl Lowerer {
             "normalize" => {
                 let a = self.lower_expr(&args[0], out);
                 let ty = args[0].ty();
-                let var = self.auto_var("tmp", ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::VecUnary { op: VecUnaryOp::Normalize, arg: a })));
@@ -446,7 +446,7 @@ impl Lowerer {
             "cross" => {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecCross { lhs: a, rhs: b })));
@@ -454,7 +454,7 @@ impl Lowerer {
             }
             "length" if args.len() == 1 && args[0].ty().is_vec() => {
                 let a = self.lower_expr(&args[0], out);
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecLength { arg: a })));
@@ -464,11 +464,11 @@ impl Lowerer {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
                 let vec_ty = args[0].ty();
-                let diff = self.auto_var("tmp", vec_ty);
+                let diff = self.auto_var("tmp", vec_ty.clone());
                 let diff_name = self.binding_name(diff);
                 out.push(BodyItem::Stmt(self.emit_stmt(diff, &diff_name, vec_ty,
                     Inst::VecBinary { op: VecBinOp::Sub, lhs: a, rhs: b })));
-                let var = self.auto_var("tmp", ret_ty);
+                let var = self.auto_var("tmp", ret_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                     Inst::VecLength { arg: diff })));
@@ -486,22 +486,22 @@ impl Lowerer {
                     _ => Const::F64(1.0), // fallback
                 };
                 // mix(a, b, t) = a*(1-t) + b*t
-                let one = self.auto_var("lit", elem_ty);
+                let one = self.auto_var("lit", elem_ty.clone());
                 let one_name = self.binding_name(one);
-                out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, elem_ty, Inst::Const(one_const))));
-                let one_minus_t = self.auto_var("tmp", elem_ty);
+                out.push(BodyItem::Stmt(self.emit_stmt(one, &one_name, elem_ty.clone(), Inst::Const(one_const))));
+                let one_minus_t = self.auto_var("tmp", elem_ty.clone());
                 let omt_name = self.binding_name(one_minus_t);
                 out.push(BodyItem::Stmt(self.emit_stmt(one_minus_t, &omt_name, elem_ty,
                     Inst::Binary { op: BinOp::Sub, lhs: one, rhs: t })));
-                let a_scaled = self.auto_var("tmp", vec_ty);
+                let a_scaled = self.auto_var("tmp", vec_ty.clone());
                 let as_name = self.binding_name(a_scaled);
-                out.push(BodyItem::Stmt(self.emit_stmt(a_scaled, &as_name, vec_ty,
+                out.push(BodyItem::Stmt(self.emit_stmt(a_scaled, &as_name, vec_ty.clone(),
                     Inst::VecScale { scalar: one_minus_t, vec: a })));
-                let b_scaled = self.auto_var("tmp", vec_ty);
+                let b_scaled = self.auto_var("tmp", vec_ty.clone());
                 let bs_name = self.binding_name(b_scaled);
-                out.push(BodyItem::Stmt(self.emit_stmt(b_scaled, &bs_name, vec_ty,
+                out.push(BodyItem::Stmt(self.emit_stmt(b_scaled, &bs_name, vec_ty.clone(),
                     Inst::VecScale { scalar: t, vec: b })));
-                let var = self.auto_var("tmp", vec_ty);
+                let var = self.auto_var("tmp", vec_ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, vec_ty,
                     Inst::VecBinary { op: VecBinOp::Add, lhs: a_scaled, rhs: b_scaled })));
@@ -510,7 +510,7 @@ impl Lowerer {
             "abs" if args.len() == 1 && args[0].ty().is_vec() => {
                 let a = self.lower_expr(&args[0], out);
                 let ty = args[0].ty();
-                let var = self.auto_var("tmp", ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::VecUnary { op: VecUnaryOp::Abs, arg: a })));
@@ -520,7 +520,7 @@ impl Lowerer {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
                 let ty = args[0].ty();
-                let var = self.auto_var("tmp", ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::VecBinary { op: VecBinOp::Min, lhs: a, rhs: b })));
@@ -530,7 +530,7 @@ impl Lowerer {
                 let a = self.lower_expr(&args[0], out);
                 let b = self.lower_expr(&args[1], out);
                 let ty = args[0].ty();
-                let var = self.auto_var("tmp", ty);
+                let var = self.auto_var("tmp", ty.clone());
                 let vname = self.binding_name(var);
                 out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ty,
                     Inst::VecBinary { op: VecBinOp::Max, lhs: a, rhs: b })));
@@ -563,7 +563,7 @@ impl Lowerer {
         };
         if let Some(uop) = unary_op {
             let arg = self.lower_expr(&args[0], out);
-            let var = self.auto_var("tmp", ret_ty);
+            let var = self.auto_var("tmp", ret_ty.clone());
             let vname = self.binding_name(var);
             out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                 Inst::Unary { op: uop, arg })));
@@ -582,7 +582,7 @@ impl Lowerer {
         if let Some(bop) = bin_op {
             let l = self.lower_expr(&args[0], out);
             let r = self.lower_expr(&args[1], out);
-            let var = self.auto_var("tmp", ret_ty);
+            let var = self.auto_var("tmp", ret_ty.clone());
             let vname = self.binding_name(var);
             out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                 Inst::Binary { op: bop, lhs: l, rhs: r })));
@@ -623,7 +623,7 @@ impl Lowerer {
             let c = self.lower_expr(&args[0], out);
             let t = self.lower_expr(&args[1], out);
             let e = self.lower_expr(&args[2], out);
-            let var = self.auto_var("sel", ret_ty);
+            let var = self.auto_var("sel", ret_ty.clone());
             let vname = self.binding_name(var);
             out.push(BodyItem::Stmt(self.emit_stmt(var, &vname, ret_ty,
                 Inst::Select { cond: c, then_val: t, else_val: e })));
@@ -950,7 +950,7 @@ impl Lowerer {
                     // Register the name to point to the computed var
                     self.names.insert(name.clone(), v);
                     // Also update var_types
-                    self.var_types.insert(v, *ty);
+                    self.var_types.insert(v, ty.clone());
                     // Rename the last emitted statement to use this name
                     if let Some(BodyItem::Stmt(last)) = out.last_mut() {
                         if last.binding.var == v {
@@ -992,12 +992,12 @@ impl Lowerer {
         let mut carry_vars = Vec::new();
         for c in carry {
             let init = self.lower_expr(&c.init, out);
-            let var = self.fresh_var(&c.name, c.ty);
+            let var = self.fresh_var(&c.name, c.ty.clone());
             carry_vars.push(CarryVar {
                 binding: Binding {
                     var,
                     name: c.name.clone(),
-                    ty: c.ty,
+                    ty: c.ty.clone(),
                 },
                 init,
             });
@@ -1062,7 +1062,7 @@ impl Lowerer {
             TStmt::Let { name, ty, expr } => {
                 let v = self.lower_expr(expr, out);
                 self.names.insert(name.clone(), v);
-                self.var_types.insert(v, *ty);
+                self.var_types.insert(v, ty.clone());
                 if let Some(BodyItem::Stmt(last)) = out.last_mut() {
                     if last.binding.var == v {
                         last.binding.name = name.clone();
@@ -1088,11 +1088,11 @@ pub fn lower(program: &TProgram) -> Kernel {
     // Create kernel params
     let mut params = Vec::new();
     for p in &program.kernel.params {
-        let var = lowerer.fresh_var(&p.name, p.ty);
+        let var = lowerer.fresh_var(&p.name, p.ty.clone());
         params.push(Binding {
             var,
             name: p.name.clone(),
-            ty: p.ty,
+            ty: p.ty.clone(),
         });
     }
 
@@ -1113,7 +1113,7 @@ pub fn lower(program: &TProgram) -> Kernel {
     Kernel {
         name: program.kernel.name.clone(),
         params,
-        return_ty: program.kernel.return_ty,
+        return_ty: program.kernel.return_ty.clone(),
         body,
         emit,
         buffers: buf_decls,

@@ -418,11 +418,11 @@ fn lower_while(
     // Vec types expand to multiple Variables (one per component).
     // Mat types expand to N*N Variables.
     let carry_vars: Vec<Vec<Variable>> = w.carry.iter().map(|cv| {
-        match cv.binding.ty {
+        match &cv.binding.ty {
             ValType::Vec { len, elem } => {
-                let cl_ty = scalar_to_cl(elem);
+                let cl_ty = scalar_to_cl(*elem);
                 let init_components = get_vec(val_map, &cv.init);
-                assert_eq!(init_components.len(), len as usize);
+                assert_eq!(init_components.len(), *len as usize);
                 init_components.iter().map(|iv| {
                     let v = builder.declare_var(cl_ty);
                     builder.def_var(v, *iv);
@@ -430,9 +430,9 @@ fn lower_while(
                 }).collect()
             }
             ValType::Mat { size, elem } => {
-                let cl_ty = scalar_to_cl(elem);
+                let cl_ty = scalar_to_cl(*elem);
                 let init_components = get_mat(val_map, &cv.init);
-                let n = size as usize;
+                let n = *size as usize;
                 assert_eq!(init_components.len(), n * n);
                 init_components.iter().map(|iv| {
                     let v = builder.declare_var(cl_ty);
@@ -441,12 +441,13 @@ fn lower_while(
                 }).collect()
             }
             ValType::Scalar(s) => {
-                let cl_ty = scalar_to_cl(s);
+                let cl_ty = scalar_to_cl(*s);
                 let cl_var = builder.declare_var(cl_ty);
                 let init_val = get_scalar(val_map, &cv.init);
                 builder.def_var(cl_var, init_val);
                 vec![cl_var]
             }
+            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
         }
     }).collect();
 
@@ -458,10 +459,11 @@ fn lower_while(
     // Map carry vars from Cranelift Variables
     for (i, cv) in w.carry.iter().enumerate() {
         let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-        let vv = match cv.binding.ty {
+        let vv = match &cv.binding.ty {
             ValType::Mat { .. } => VarValues::Mat(components),
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
+            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
         };
         val_map.insert(cv.binding.var, vv);
     }
@@ -505,10 +507,11 @@ fn lower_while(
     // Re-read carry vars for use after the loop
     for (i, cv) in w.carry.iter().enumerate() {
         let components: Vec<_> = carry_vars[i].iter().map(|v| builder.use_var(*v)).collect();
-        let vv = match cv.binding.ty {
+        let vv = match &cv.binding.ty {
             ValType::Mat { .. } => VarValues::Mat(components),
             ValType::Vec { .. } => VarValues::Vec(components),
             ValType::Scalar(_) => VarValues::Scalar(components[0]),
+            ValType::Array { .. } => todo!("array carry vars not yet supported in Cranelift JIT"),
         };
         val_map.insert(cv.binding.var, vv);
     }
@@ -632,7 +635,7 @@ fn lower_inst(
         Inst::Binary { op, lhs, rhs } => {
             let l = get_scalar(val_map, lhs);
             let r = get_scalar(val_map, rhs);
-            VarValues::Scalar(match (op, binding.ty) {
+            VarValues::Scalar(match (op, &binding.ty) {
                 // Float arithmetic
                 (BinOp::Add, ValType::Scalar(s)) if s.is_float() => builder.ins().fadd(l, r),
                 (BinOp::Sub, ValType::Scalar(s)) if s.is_float() => builder.ins().fsub(l, r),
@@ -694,11 +697,11 @@ fn lower_inst(
         }
         Inst::Unary { op, arg } => {
             let a = get_scalar(val_map, arg);
-            VarValues::Scalar(match (op, binding.ty) {
+            VarValues::Scalar(match (op, &binding.ty) {
                 (UnaryOp::Neg, ValType::Scalar(s)) if s.is_float() => builder.ins().fneg(a),
                 (UnaryOp::Neg, ValType::Scalar(s)) if s.is_signed() => builder.ins().ineg(a),
                 (UnaryOp::Neg, ValType::Scalar(s)) if s.is_unsigned() => {
-                    let zero = builder.ins().iconst(scalar_to_cl(s), 0);
+                    let zero = builder.ins().iconst(scalar_to_cl(*s), 0);
                     builder.ins().isub(zero, a)
                 }
                 (UnaryOp::Not, _) => {
@@ -708,7 +711,7 @@ fn lower_inst(
                 (UnaryOp::Abs, ValType::Scalar(s)) if s.is_float() => builder.ins().fabs(a),
                 (UnaryOp::Abs, ValType::Scalar(s)) if s.is_signed() => {
                     // abs(x) = select(x < 0, -x, x)
-                    let cl_ty = scalar_to_cl(s);
+                    let cl_ty = scalar_to_cl(*s);
                     let zero = builder.ins().iconst(cl_ty, 0);
                     let neg = builder.ins().ineg(a);
                     let is_neg = builder.ins().icmp(IntCC::SignedLessThan, a, zero);
@@ -1006,8 +1009,8 @@ fn lower_inst(
         }
         Inst::MatCol { mat, index } => {
             let m = get_mat(val_map, mat);
-            let size = match binding.ty {
-                ValType::Vec { len, .. } => len as usize,
+            let size = match &binding.ty {
+                ValType::Vec { len, .. } => *len as usize,
                 _ => panic!("MatCol result must be a vec type"),
             };
             let start = (*index as usize) * size;
@@ -1015,8 +1018,8 @@ fn lower_inst(
         }
         Inst::MatTranspose { arg } => {
             let m = get_mat(val_map, arg).to_vec();
-            let size = match binding.ty {
-                ValType::Mat { size, .. } => size as usize,
+            let size = match &binding.ty {
+                ValType::Mat { size, .. } => *size as usize,
                 _ => panic!("MatTranspose result must be a mat type"),
             };
             let mut result = Vec::with_capacity(size * size);
@@ -1046,8 +1049,8 @@ fn lower_inst(
         Inst::MatMul { lhs, rhs } => {
             let lhs_m = get_mat(val_map, lhs).to_vec();
             let rhs_m = get_mat(val_map, rhs).to_vec();
-            let size = match binding.ty {
-                ValType::Mat { size, .. } => size as usize,
+            let size = match &binding.ty {
+                ValType::Mat { size, .. } => *size as usize,
                 _ => panic!("MatMul result must be a mat type"),
             };
             let elem = binding.ty.element_scalar();
@@ -1126,6 +1129,9 @@ fn lower_inst(
 
             // Return dummy u32 0
             VarValues::Scalar(builder.ins().iconst(I32, 0))
+        }
+        Inst::ArrayNew(_) | Inst::ArrayGet { .. } | Inst::ArraySet { .. } => {
+            todo!("array operations not yet supported in Cranelift JIT")
         }
     }
 }

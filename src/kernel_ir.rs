@@ -73,11 +73,12 @@ impl std::fmt::Display for ScalarType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValType {
     Scalar(ScalarType),
     Vec { len: u8, elem: ScalarType },  // len in {2, 3, 4}
     Mat { size: u8, elem: ScalarType }, // square matrix, size in {2, 3, 4}; column-major
+    Array { elem: Box<ValType>, size: u32 }, // fixed-size array
 }
 
 impl ValType {
@@ -95,47 +96,70 @@ impl ValType {
     pub const BOOL: ValType = ValType::Scalar(ScalarType::Bool);
 
     /// Returns true if this is a vector type.
-    pub fn is_vec(self) -> bool {
+    pub fn is_vec(&self) -> bool {
         matches!(self, ValType::Vec { .. })
     }
 
     /// Returns true if this is a matrix type.
-    pub fn is_mat(self) -> bool {
+    pub fn is_mat(&self) -> bool {
         matches!(self, ValType::Mat { .. })
     }
 
+    /// Returns true if this is an array type.
+    pub fn is_array(&self) -> bool {
+        matches!(self, ValType::Array { .. })
+    }
+
     /// Number of scalar components (1 for scalars, 2..4 for vectors, N*N for matrices).
-    pub fn component_count(self) -> usize {
+    pub fn component_count(&self) -> usize {
         match self {
-            ValType::Vec { len, .. } => len as usize,
-            ValType::Mat { size, .. } => (size as usize) * (size as usize),
+            ValType::Vec { len, .. } => *len as usize,
+            ValType::Mat { size, .. } => (*size as usize) * (*size as usize),
+            ValType::Array { size, .. } => *size as usize,
             ValType::Scalar(_) => 1,
         }
     }
 
     /// The element type of a vector/matrix, or the scalar type itself.
-    pub fn element_scalar(self) -> ScalarType {
+    pub fn element_scalar(&self) -> ScalarType {
         match self {
-            ValType::Vec { elem, .. } | ValType::Mat { elem, .. } => elem,
-            ValType::Scalar(s) => s,
+            ValType::Vec { elem, .. } | ValType::Mat { elem, .. } => *elem,
+            ValType::Scalar(s) => *s,
+            ValType::Array { elem, .. } => elem.element_scalar(),
         }
     }
 
     /// For a matrix, the column vector type. Panics if not a matrix.
-    pub fn mat_col_type(self) -> ValType {
+    pub fn mat_col_type(&self) -> ValType {
         match self {
-            ValType::Mat { size, elem } => ValType::Vec { len: size, elem },
+            ValType::Mat { size, elem } => ValType::Vec { len: *size, elem: *elem },
             _ => panic!("mat_col_type called on non-matrix type"),
         }
     }
 
+    /// For an array, the element type. Panics if not an array.
+    pub fn array_elem_type(&self) -> &ValType {
+        match self {
+            ValType::Array { elem, .. } => elem,
+            _ => panic!("array_elem_type called on non-array type"),
+        }
+    }
+
+    /// For an array, the size. Panics if not an array.
+    pub fn array_size(&self) -> u32 {
+        match self {
+            ValType::Array { size, .. } => *size,
+            _ => panic!("array_size called on non-array type"),
+        }
+    }
+
     /// Returns true if this is a scalar type (not a compound type).
-    pub fn is_scalar(self) -> bool {
+    pub fn is_scalar(&self) -> bool {
         matches!(self, ValType::Scalar(_))
     }
 
     /// Returns true if this is a float type (f64 scalar or vec of f64).
-    pub fn is_float(self) -> bool {
+    pub fn is_float(&self) -> bool {
         self.element_scalar() == ScalarType::F64
     }
 }
@@ -146,6 +170,7 @@ impl std::fmt::Display for ValType {
             ValType::Scalar(s) => write!(f, "{}", s),
             ValType::Vec { len, elem } => write!(f, "vec{}<{}>", len, elem),
             ValType::Mat { size, elem } => write!(f, "mat{}<{}>", size, elem),
+            ValType::Array { elem, size } => write!(f, "array<{}; {}>", elem, size),
         }
     }
 }
@@ -319,6 +344,14 @@ pub enum Inst {
     // Column extraction (matN -> vecN, by column index)
     MatCol { mat: Var, index: u8 },
 
+    // Array operations
+    /// Create a fixed-size array from elements.
+    ArrayNew(Vec<Var>),
+    /// Get element at index from array. Index is a Var of integer type.
+    ArrayGet { array: Var, index: Var },
+    /// Set element at index in array, producing a new array.
+    ArraySet { array: Var, index: Var, val: Var },
+
     // Buffer operations (for simulation kernels)
     /// Load f64 from buffer `buf` at position (x, y). Width/height for wrapping
     /// come from the kernel's implicit width/height parameters.
@@ -388,8 +421,8 @@ impl Kernel {
     }
 
     /// Get the type of a Var.
-    pub fn var_type(&self, var: Var) -> Option<ValType> {
-        self.binding(var).map(|b| b.ty)
+    pub fn var_type(&self, var: Var) -> Option<&ValType> {
+        self.binding(var).map(|b| &b.ty)
     }
 
     /// Get the name of a Var.
