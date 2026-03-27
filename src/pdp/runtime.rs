@@ -87,6 +87,8 @@ pub struct Runtime {
     gpu_rendered_this_frame: bool,
     /// Name of the GPU pixel buffer for sim display steps.
     gpu_pixel_buffer_name: Option<String>,
+    /// User args for GPU pixel kernels, resolved at execute_run time.
+    gpu_user_args: Vec<f32>,
     /// The config file path, used in window title when no explicit title is set.
     config_path: Option<String>,
 }
@@ -142,6 +144,7 @@ impl Runtime {
             has_gpu_kernels: false,
             gpu_rendered_this_frame: false,
             gpu_pixel_buffer_name: None,
+            gpu_user_args: Vec::new(),
             config_path: None,
         }
     }
@@ -733,6 +736,17 @@ impl Runtime {
             }
             Some(CompiledKernelEntry::Gpu { .. }) => {
                 // GPU pixel kernels render directly to the display texture.
+                // Resolve user args to f32 values for GPU uniform buffer.
+                self.gpu_user_args = args.iter().map(|a| {
+                    let val = match &a.value {
+                        Literal::Float(f) => *f,
+                        Literal::Int(i) => *i as f64,
+                        Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
+                        Literal::Str(_) => 0.0,
+                        Literal::VarRef(name) => self.get_variable(name),
+                    };
+                    val as f32
+                }).collect();
                 self.gpu_rendered_this_frame = true;
             }
             Some(CompiledKernelEntry::GpuSim { .. }) => {
@@ -987,6 +1001,7 @@ impl Runtime {
                 0xFFFFFFFF,
                 0,
                 self.time,
+                &self.gpu_user_args,
             );
             return true;
         }
@@ -1021,6 +1036,7 @@ impl Runtime {
                 &device, &queue,
                 self.center_x, self.center_y, self.zoom,
                 0xFFFFFFFF, 0, self.time,
+                &self.gpu_user_args,
             );
             self.pixel_buffer = gpu.readback_pixels(&device, &queue);
         }

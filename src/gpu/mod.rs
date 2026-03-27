@@ -106,9 +106,10 @@ impl GpuBackend {
             cache: None,
         });
 
+        // 256 bytes: 48 for Params + 208 for user args (up to 52 f32 values)
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("params"),
-            size: std::mem::size_of::<Params>() as u64,
+            size: 256,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -198,12 +199,25 @@ impl GpuBackend {
         sample_index: u32,
         sample_count: u32,
         time: f64,
+        user_args: &[f32],
     ) {
         let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
 
         display
             .queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&params));
+
+        // Write user args after Params (offset 48)
+        if !user_args.is_empty() {
+            let arg_bytes: Vec<u8> = user_args.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            display.queue.write_buffer(
+                &self.uniform_buffer,
+                std::mem::size_of::<Params>() as u64,
+                &arg_bytes,
+            );
+        }
 
         let bind_group = display
             .device
@@ -313,9 +327,22 @@ impl GpuBackend {
         sample_index: u32,
         sample_count: u32,
         time: f64,
+        user_args: &[f32],
     ) {
         let params = self.view_params(center_x, center_y, zoom, sample_index, sample_count, time);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&params));
+
+        // Write user args after Params (offset 48)
+        if !user_args.is_empty() {
+            let arg_bytes: Vec<u8> = user_args.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            queue.write_buffer(
+                &self.uniform_buffer,
+                std::mem::size_of::<Params>() as u64,
+                &arg_bytes,
+            );
+        }
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu compute"),
