@@ -15,10 +15,10 @@ struct Params {
     inject_y: f32,
     radius: f32,
     value: f32,
-    falloff_quadratic: u32,
-    _pad2: u32,
-    _pad3: u32,
-    _pad4: u32,
+    falloff_quadratic: f32,
+    _pad2: f32,
+    _pad3: f32,
+    _pad4: f32,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -46,7 +46,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var result = current;
     if d2 <= r2 {
-        if params.falloff_quadratic >= 1u {
+        if params.falloff_quadratic >= 0.5 {
             result = current + params.value * (1.0 - d2 / r2);
         } else {
             result = params.value;
