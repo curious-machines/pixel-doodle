@@ -752,7 +752,18 @@ impl Runtime {
                         .iter()
                         .map(|b| (b.param_name.as_str(), b.buffer_name.as_str()))
                         .collect();
-                    runner.dispatch(kernel_name, &bindings);
+                    // Resolve user args to f32 values for GPU uniform buffer
+                    let user_args: Vec<f32> = args.iter().map(|a| {
+                        let val = match &a.value {
+                            Literal::Float(f) => *f,
+                            Literal::Int(i) => *i as f64,
+                            Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
+                            Literal::Str(_) => 0.0,
+                            Literal::VarRef(name) => self.get_variable(name),
+                        };
+                        val as f32
+                    }).collect();
+                    runner.dispatch(kernel_name, &bindings, &user_args);
                 }
             }
             None => {

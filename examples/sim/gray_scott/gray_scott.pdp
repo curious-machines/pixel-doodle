@@ -59,6 +59,7 @@ pipeline gpu {
   kernel step = "gray_scott_step.wgsl"
   kernel vis = "gray_scott_vis.wgsl"
   kernel init_field = "gray_scott_init.wgsl"
+  kernel inject = "../../shared/inject_vec2.wgsl"
 
   buffer field: gpu(vec2<f32>) = constant(0.0)
   buffer field_next: gpu(vec2<f32>) = constant(0.0)
@@ -68,7 +69,7 @@ pipeline gpu {
     run init_field { field_out: out field }
   }
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 5) { target: out field }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) { target: field, target_out: out field }
   }
   loop(iterations: 8) {
     run step { field_in: field, field_out: out field_next }

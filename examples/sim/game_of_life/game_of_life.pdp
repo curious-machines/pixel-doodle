@@ -36,6 +36,7 @@ pipeline gpu {
   kernel step = "game_of_life_step.wgsl"
   kernel vis = "game_of_life_vis.wgsl"
   kernel init_grid = "game_of_life_init.wgsl"
+  kernel inject = "../../shared/inject_i32.wgsl"
 
   buffer grid: gpu(i32) = constant(0.0)
   buffer grid_next: gpu(i32) = constant(0.0)
@@ -45,7 +46,7 @@ pipeline gpu {
     run init_grid { grid: out grid }
   }
   on click(continuous: true) {
-    run inject(value: 1.0, radius: 3) { target: out grid }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) { target: grid, target_out: out grid }
   }
   loop(iterations: iterations) {
     run step { grid_in: grid, grid_out: out grid_next }

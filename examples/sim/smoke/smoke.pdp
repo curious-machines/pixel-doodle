@@ -75,6 +75,7 @@ pipeline gpu {
   kernel jacobi = "smoke_jacobi.wgsl"
   kernel project = "smoke_project.wgsl"
   kernel vis = "smoke_vis.wgsl"
+  kernel inject = "../../shared/inject_vec.wgsl"
 
   buffer field: gpu(vec4<f32>) = constant(0.0)
   buffer field_next: gpu(vec4<f32>) = constant(0.0)
@@ -84,7 +85,7 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on click(continuous: true) {
-    run inject(value: 0.5, radius: 15) { target: out field }
+    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 0, component: 3) { target: field, target_out: out field }
   }
   run advect { field_in: field, field_out: out field_next }
   swap field <-> field_next

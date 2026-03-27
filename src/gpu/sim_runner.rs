@@ -53,9 +53,10 @@ impl GpuSimRunner {
     pub fn new(display: &Display, width: u32, height: u32) -> Self {
         let stride = aligned_bytes_per_row(width) / 4;
 
+        // 256 bytes: 16 for SimParams + 240 for user args (up to 60 f32 values)
         let uniform_buffer = display.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim params"),
-            size: std::mem::size_of::<SimParams>() as u64,
+            size: 256,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -193,15 +194,26 @@ impl GpuSimRunner {
         Ok(())
     }
 
-    /// Dispatch a compute shader with named buffer bindings.
+    /// Dispatch a compute shader with named buffer bindings and optional user args.
     ///
     /// `bindings` maps WGSL variable names to PDP buffer names.
+    /// `user_args` are f32 values written to the uniform buffer after SimParams (offset 16),
+    /// in the order they appear. The WGSL kernel's Params struct must match this layout.
     /// The uniform buffer (binding 0) is always bound automatically.
     pub fn dispatch(
         &self,
         pipeline_name: &str,
         bindings: &[(&str, &str)],
+        user_args: &[f32],
     ) {
+        // Write user args to uniform buffer after SimParams (16 bytes)
+        if !user_args.is_empty() {
+            let arg_bytes: Vec<u8> = user_args.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            self.queue.write_buffer(&self.uniform_buffer, 16, &arg_bytes);
+        }
+
         let gpu_pipeline = match self.pipelines.get(pipeline_name) {
             Some(p) => p,
             None => {
@@ -317,132 +329,6 @@ impl GpuSimRunner {
 
         display.present_with_commands(encoder.finish());
     }
-
-    /// Write injection data to a GPU buffer around a position.
-    /// `value` is the raw bytes for one element.
-    pub fn inject_raw(
-        &self,
-        buffer_name: &str,
-        px: u32,
-        py: u32,
-        radius: u32,
-        value: &[u8],
-    ) {
-        let gpu_buf = match self.buffers.get(buffer_name) {
-            Some(b) => b,
-            None => return,
-        };
-        let elem_size = gpu_buf.element_size as usize;
-        let w = self.width as i32;
-        let h = self.height as i32;
-        let r = radius as i32;
-
-        for dy in -r..=r {
-            for dx in -r..=r {
-                let x = px as i32 + dx;
-                let y = py as i32 + dy;
-                if x >= 0 && x < w && y >= 0 && y < h {
-                    let d2 = (dx * dx + dy * dy) as f32;
-                    let r2 = (r * r) as f32;
-                    if d2 <= r2 {
-                        let offset =
-                            (y as u64 * self.width as u64 + x as u64) * elem_size as u64;
-                        self.queue.write_buffer(&gpu_buf.buffer, offset, value);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Write a single component within each element around a position.
-    /// `component_bytes` is the raw bytes for one component (e.g. 4 bytes for f32).
-    /// `component_offset` is the byte offset of that component within the element.
-    fn inject_raw_component(
-        &self,
-        buffer_name: &str,
-        px: u32,
-        py: u32,
-        radius: u32,
-        component_bytes: &[u8],
-        component_offset: u64,
-    ) {
-        let gpu_buf = match self.buffers.get(buffer_name) {
-            Some(b) => b,
-            None => return,
-        };
-        let elem_size = gpu_buf.element_size as u64;
-        let w = self.width as i32;
-        let h = self.height as i32;
-        let r = radius as i32;
-
-        for dy in -r..=r {
-            for dx in -r..=r {
-                let x = px as i32 + dx;
-                let y = py as i32 + dy;
-                if x >= 0 && x < w && y >= 0 && y < h {
-                    let d2 = (dx * dx + dy * dy) as f32;
-                    let r2 = (r * r) as f32;
-                    if d2 <= r2 {
-                        let elem_offset =
-                            (y as u64 * self.width as u64 + x as u64) * elem_size;
-                        self.queue.write_buffer(
-                            &gpu_buf.buffer,
-                            elem_offset + component_offset,
-                            component_bytes,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Inject a f64 value into a GPU buffer, converting to the buffer's element type.
-    /// For vec types, only the target component is written; other components are preserved.
-    pub fn inject_value(
-        &self,
-        buffer_name: &str,
-        px: u32,
-        py: u32,
-        radius: u32,
-        value: f64,
-    ) {
-        let gpu_buf = match self.buffers.get(buffer_name) {
-            Some(b) => b,
-            None => return,
-        };
-        let elem_size = gpu_buf.element_size as usize;
-        let mut bytes = vec![0u8; elem_size];
-
-        match gpu_buf.element_type {
-            GpuElementType::I32 => {
-                bytes.copy_from_slice(&(value as i32).to_le_bytes());
-            }
-            GpuElementType::U32 => {
-                bytes.copy_from_slice(&(value as u32).to_le_bytes());
-            }
-            GpuElementType::F32 => {
-                bytes.copy_from_slice(&(value as f32).to_le_bytes());
-            }
-            GpuElementType::Vec2F32 => {
-                // Write only the second component (V channel) at byte offset 4
-                self.inject_raw_component(buffer_name, px, py, radius,
-                    &(value as f32).to_le_bytes(), 4);
-                return;
-            }
-            GpuElementType::Vec4F32 => {
-                // Write only the fourth component (density) at byte offset 12
-                self.inject_raw_component(buffer_name, px, py, radius,
-                    &(value as f32).to_le_bytes(), 12);
-                return;
-            }
-            _ => {
-                bytes[0..4].copy_from_slice(&(value as f32).to_le_bytes());
-            }
-        }
-
-        self.inject_raw(buffer_name, px, py, radius, &bytes);
-    }
-
 
     /// Initialize a buffer with constant data (zero-fill or value-fill).
     pub fn init_buffer_constant(
