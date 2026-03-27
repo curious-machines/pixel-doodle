@@ -262,6 +262,11 @@ impl GpuSimRunner {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    /// Wait for all submitted GPU work to complete.
+    pub fn poll_wait(&self) {
+        self.device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
+    }
+
     /// Swap two named buffer entries (O(1) pointer swap).
     pub fn swap_buffers(&mut self, a: &str, b: &str) {
         if let (Some(buf_a), Some(buf_b)) = (self.buffers.remove(a), self.buffers.remove(b)) {
