@@ -3,13 +3,8 @@ mod bench;
 mod display;
 mod gpu;
 mod jit;
-#[allow(dead_code)]
-mod kernel_ir;
-#[allow(dead_code)]
-mod lang;
 mod pdp;
 mod progressive;
-mod render;
 pub mod texture;
 
 use display::Display;
@@ -27,11 +22,6 @@ const HEIGHT: u32 = 900;
 
 enum ConfigSource {
     File(String),
-    Synthesized {
-        content: String,
-        base_dir: String,
-        display_name: String,
-    },
 }
 
 struct CliArgs {
@@ -42,33 +32,6 @@ struct CliArgs {
     output: Option<String>,
     set_overrides: Vec<(String, String)>,
     settings_file: Option<String>,
-}
-
-fn synthesize_pdp_for_kernel(kernel_path: &str) -> ConfigSource {
-    let path = Path::new(kernel_path);
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(kernel_path);
-    let stem = path
-        .file_stem()
-        .and_then(|n| n.to_str())
-        .unwrap_or(kernel_path);
-    let base_dir = path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_string_lossy()
-        .into_owned();
-
-    let content = format!(
-        "pipeline default {{\n  pixel kernel \"{filename}\"\n  run {stem}\n  display\n}}\n"
-    );
-
-    ConfigSource::Synthesized {
-        content,
-        base_dir,
-        display_name: kernel_path.to_string(),
-    }
 }
 
 /// Find a file with the given extension in `dir_path`: first by convention
@@ -101,13 +64,6 @@ fn resolve_dir(dir: &str) -> ConfigSource {
     if let Some(path) = find_by_ext(dir_path, dir_name, "pdp") {
         return ConfigSource::File(path);
     }
-    if let Some(path) = find_by_ext(dir_path, dir_name, "pd") {
-        return synthesize_pdp_for_kernel(&path);
-    }
-    if let Some(path) = find_by_ext(dir_path, dir_name, "pdir") {
-        return synthesize_pdp_for_kernel(&path);
-    }
-
     // Collect all candidate files for the error message
     let candidates: Vec<_> = std::fs::read_dir(dir_path)
         .unwrap_or_else(|e| {
@@ -117,15 +73,15 @@ fn resolve_dir(dir: &str) -> ConfigSource {
         .filter_map(|e| e.ok())
         .filter(|e| {
             let ext = e.path().extension().and_then(|x| x.to_str()).map(String::from);
-            matches!(ext.as_deref(), Some("pdp" | "pd" | "pdir")) && e.path().is_file()
+            matches!(ext.as_deref(), Some("pdp")) && e.path().is_file()
         })
         .collect();
 
     if candidates.is_empty() {
-        eprintln!("No .pdp, .pd, or .pdir file found in '{}'", dir);
+        eprintln!("No .pdp file found in '{}'", dir);
     } else {
         eprintln!(
-            "Multiple kernel files in '{}', specify one:",
+            "Multiple .pdp files in '{}', specify one:",
             dir
         );
         for f in &candidates {
@@ -195,7 +151,7 @@ fn parse_args() -> CliArgs {
                 }
             }
             "--help" | "-h" => {
-                eprintln!("Usage: pixel-doodle <config.pdp | kernel.pd | kernel.pdir | directory> [options]");
+                eprintln!("Usage: pixel-doodle <config.pdp | directory> [options]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --output <file.ppm>    Render one frame and save (no window)");
@@ -209,9 +165,6 @@ fn parse_args() -> CliArgs {
             }
             arg if arg.ends_with(".pdp") => {
                 config_source = Some(ConfigSource::File(args[i].clone()));
-            }
-            arg if arg.ends_with(".pdir") || arg.ends_with(".pd") => {
-                config_source = Some(synthesize_pdp_for_kernel(&args[i]));
             }
             arg if Path::new(arg).is_dir() => {
                 config_source = Some(resolve_dir(arg));
@@ -238,28 +191,16 @@ fn parse_args() -> CliArgs {
 // ── PDP config runner ──
 
 fn run_pdp(source: &ConfigSource, args: &CliArgs) {
-    let (src, base_dir, display_name) = match source {
-        ConfigSource::File(path) => {
-            let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-                eprintln!("Failed to read config file '{}': {}", path, e);
-                std::process::exit(1);
-            });
-            let bd = std::path::Path::new(path.as_str())
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .to_path_buf();
-            (content, bd, path.clone())
-        }
-        ConfigSource::Synthesized {
-            content,
-            base_dir,
-            display_name,
-        } => (
-            content.clone(),
-            std::path::PathBuf::from(base_dir),
-            display_name.clone(),
-        ),
-    };
+    let ConfigSource::File(path) = source;
+    let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("Failed to read config file '{}': {}", path, e);
+        std::process::exit(1);
+    });
+    let base_dir = std::path::Path::new(path.as_str())
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let display_name = path.clone();
 
     let config = pdp::parse(&src, &base_dir).unwrap_or_else(|e| {
         eprintln!("Config error in '{}':\n{}", display_name, e);
@@ -582,7 +523,7 @@ fn main() {
     match &args.config_source {
         Some(source) => run_pdp(source, &args),
         None => {
-            eprintln!("Usage: pixel-doodle <config.pdp | kernel.pd | kernel.pdir | directory> [options]");
+            eprintln!("Usage: pixel-doodle <config.pdp | directory> [options]");
             eprintln!();
             eprintln!("Run with --help for details.");
             std::process::exit(1);

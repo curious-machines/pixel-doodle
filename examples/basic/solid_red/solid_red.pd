@@ -1,3 +1,0 @@
-kernel solid_red(x: f64, y: f64) -> u32 {
-    emit pack_argb(255, 0, 0);
-}

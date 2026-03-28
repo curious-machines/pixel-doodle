@@ -432,7 +432,7 @@ mod tests {
         parse_and_validate(
             r#"
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               run gradient
               display
             }
@@ -446,7 +446,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               run nonexistent
               display
             }
@@ -462,7 +462,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               buffer a = constant(0.0)
               run test
               display
@@ -480,7 +480,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              kernel "test.pd"
+              kernel "test.wgsl"
               buffer a = constant(0.0)
               run test
             }
@@ -497,7 +497,7 @@ mod tests {
             r#"
             on keypress(space) nonexistent = !nonexistent
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               display test
             }
             "#,
@@ -512,7 +512,7 @@ mod tests {
             builtin var paused: bool
             on keypress(space) paused = !paused
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -527,7 +527,7 @@ mod tests {
             r#"
             on keypress(space) paused = !paused
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -545,7 +545,7 @@ mod tests {
             r#"
             builtin const width: f64
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -562,7 +562,7 @@ mod tests {
             r#"
             builtin const foo: f64
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -579,7 +579,7 @@ mod tests {
             r#"
             builtin var time: f64
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -597,7 +597,7 @@ mod tests {
             const max_iter = 256
             on keypress(space) max_iter += 1
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -616,7 +616,7 @@ mod tests {
             builtin const time: f64
             on keypress(space) time += 1.0
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -636,7 +636,7 @@ mod tests {
             builtin var zoom: f64
             on keydown(plus) zoom *= 1.1
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -654,7 +654,7 @@ mod tests {
             builtin var zoom: f64
             on keydown(plus) zoom *= 1.1
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -678,7 +678,7 @@ mod tests {
             builtin var zoom: f64
             builtin var zoom: u32
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -696,7 +696,7 @@ mod tests {
             r#"
             pipeline {
               builtin const time: f64
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test(t: time)
               display
             }
@@ -710,7 +710,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test(t: time)
               display
             }
@@ -727,7 +727,7 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              kernel "test.pd"
+              kernel "test.wgsl"
               buffer state = constant(0.0)
               on mousedown {
                 run inject(value: 1.0, radius: 3) with(target: out state)
@@ -745,8 +745,8 @@ mod tests {
         let result = parse_and_validate(
             r#"
             pipeline {
-              pixel kernel "a.pd"
-              pixel kernel a = "b.pd"
+              pixel kernel "a.wgsl"
+              pixel kernel a = "b.wgsl"
               run a
               display
             }

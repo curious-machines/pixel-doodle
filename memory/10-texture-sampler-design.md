@@ -42,7 +42,7 @@ texture img_pixel  = file("photo.png"), filter: nearest, address: repeat
 - Follows WGSL model: sampler is a host-side concern, not a shader concern
 - Kernel code stays simple — just `tex_sample` and `tex_load`
 - PDP owns configuration, consistent with how buffers/settings work
-- No new syntax needed in PD or PDIR languages
+- No new kernel syntax needed
 - If same image needs different modes, declare it twice (the image data can be shared internally)
 
 ### Filter modes

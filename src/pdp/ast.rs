@@ -323,7 +323,7 @@ pub enum PipelineStep {
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
-    /// Pipeline name: None for unnamed, Some("pd"), Some("pdir"), Some("gpu"), etc.
+    /// Pipeline name: None for unnamed, Some("gpu"), Some("cpu"), etc.
     pub name: Option<String>,
     /// Builtin declarations scoped to this pipeline.
     pub builtins: Vec<BuiltinDecl>,

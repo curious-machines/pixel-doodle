@@ -1,17 +1,5 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "checkerboard.pd"
-  run checkerboard
-  display
-}
-
-pipeline pdir {
-  pixel kernel "checkerboard.pdir"
-  run checkerboard
-  display
-}
-
 pipeline gpu {
   pixel kernel "checkerboard.wgsl"
   run checkerboard

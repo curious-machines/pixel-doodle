@@ -1,5 +1,3 @@
-use crate::kernel_ir::{Kernel, ValType};
-
 // ── Texture ABI ─────────────────────────────────────────────────────────
 
 /// Per-texture descriptor passed to JIT'd kernels.
@@ -17,8 +15,25 @@ pub struct TextureSlot {
 unsafe impl Send for TextureSlot {}
 unsafe impl Sync for TextureSlot {}
 
-/// Helper called from JIT'd code: load RGBA at integer coords with repeat wrapping.
-/// Writes 4 f32 values (r, g, b, a) into `out`.
+/// Read a single pixel from texture data, writing 4 f32 components to `out`.
+#[inline]
+unsafe fn read_pixel(slot: &TextureSlot, x: u32, y: u32, out: *mut f32) {
+    unsafe {
+        let idx = (y * slot.width + x) as usize * 4;
+        let data = slot.data;
+        *out = *data.add(idx) as f32 / 255.0;
+        *out.add(1) = *data.add(idx + 1) as f32 / 255.0;
+        *out.add(2) = *data.add(idx + 2) as f32 / 255.0;
+        *out.add(3) = *data.add(idx + 3) as f32 / 255.0;
+    }
+}
+
+// ── Texture sampling helpers (called from WGSL CPU backends) ────────────
+// These are registered as symbols with the JIT and called from generated code,
+// so they appear unused to the compiler when backends are feature-gated.
+
+/// Load RGBA at integer coords with repeat wrapping.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_load_repeat(
     slots: *const TextureSlot, tex: u32, x: i32, y: i32, out: *mut f32,
 ) {
@@ -32,7 +47,8 @@ pub extern "C" fn pd_tex_load_repeat(
     }
 }
 
-/// Helper called from JIT'd code: load RGBA at integer coords with clamp-to-edge.
+/// Load RGBA at integer coords with clamp-to-edge.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_load_clamp(
     slots: *const TextureSlot, tex: u32, x: i32, y: i32, out: *mut f32,
 ) {
@@ -44,7 +60,8 @@ pub extern "C" fn pd_tex_load_clamp(
     }
 }
 
-/// Helper: nearest-neighbor sample at normalized UV with repeat wrapping.
+/// Nearest-neighbor sample at normalized UV with repeat wrapping.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_sample_nearest_repeat(
     slots: *const TextureSlot, tex: u32, u: f64, v: f64, out: *mut f32,
 ) {
@@ -60,7 +77,8 @@ pub extern "C" fn pd_tex_sample_nearest_repeat(
     }
 }
 
-/// Helper: nearest-neighbor sample at normalized UV with clamp.
+/// Nearest-neighbor sample at normalized UV with clamp.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_sample_nearest_clamp(
     slots: *const TextureSlot, tex: u32, u: f64, v: f64, out: *mut f32,
 ) {
@@ -74,7 +92,8 @@ pub extern "C" fn pd_tex_sample_nearest_clamp(
     }
 }
 
-/// Helper: bilinear sample at normalized UV with repeat wrapping.
+/// Bilinear sample at normalized UV with repeat wrapping.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_sample_bilinear_repeat(
     slots: *const TextureSlot, tex: u32, u: f64, v: f64, out: *mut f32,
 ) {
@@ -104,7 +123,8 @@ pub extern "C" fn pd_tex_sample_bilinear_repeat(
     }
 }
 
-/// Helper: bilinear sample at normalized UV with clamp.
+/// Bilinear sample at normalized UV with clamp.
+#[allow(dead_code)]
 pub extern "C" fn pd_tex_sample_bilinear_clamp(
     slots: *const TextureSlot, tex: u32, u: f64, v: f64, out: *mut f32,
 ) {
@@ -132,126 +152,6 @@ pub extern "C" fn pd_tex_sample_bilinear_clamp(
             *out.add(i) = top + (bot - top) * frac_y;
         }
     }
-}
-
-/// Read a single pixel from texture data, writing 4 f32 components to `out`.
-#[inline]
-unsafe fn read_pixel(slot: &TextureSlot, x: u32, y: u32, out: *mut f32) {
-    unsafe {
-        let idx = (y * slot.width + x) as usize * 4;
-        let data = slot.data;
-        *out = *data.add(idx) as f32 / 255.0;
-        *out.add(1) = *data.add(idx + 1) as f32 / 255.0;
-        *out.add(2) = *data.add(idx + 2) as f32 / 255.0;
-        *out.add(3) = *data.add(idx + 3) as f32 / 255.0;
-    }
-}
-
-// ── User-argument layout ────────────────────────────────────────────────
-
-/// Describes one user-defined kernel argument and its position in the
-/// packed `user_args` byte buffer.
-#[derive(Debug, Clone)]
-pub struct UserArgSlot {
-    pub name: String,
-    pub offset: usize, // byte offset into the buffer
-    pub ty: ValType,
-}
-
-/// Compute the user-arg layout for a kernel given a set of built-in names.
-/// Returns the slots and the total buffer size in bytes.
-pub fn compute_user_arg_layout(kernel: &Kernel, builtins: &[&str]) -> (Vec<UserArgSlot>, usize) {
-    let mut offset: usize = 0;
-    let mut slots = Vec::new();
-    for param in &kernel.params {
-        if builtins.contains(&param.name.as_str()) {
-            continue;
-        }
-        let size = match &param.ty {
-            ValType::Scalar(s) => s.byte_size(),
-            _ => panic!("unsupported user-arg type {:?} for param '{}'", param.ty, param.name),
-        };
-        // Natural alignment
-        let align = size;
-        offset = (offset + align - 1) & !(align - 1);
-        slots.push(UserArgSlot {
-            name: param.name.clone(),
-            offset,
-            ty: param.ty.clone(),
-        });
-        offset += size;
-    }
-    // Align total size to 8 bytes for safety
-    let total = (offset + 7) & !7;
-    (slots, total)
-}
-
-// ── Kernel function signatures ──────────────────────────────────────────
-
-/// JIT'd function: writes ARGB pixels for rows [row_start, row_end).
-/// `output` points to the start of this tile's chunk, not the full buffer.
-///
-/// `sample_index`: which sample pass this is (0, 1, 2, ...).
-/// When `0xFFFFFFFF`, no jitter is applied (non-progressive mode).
-///
-/// `time`: elapsed time in seconds since the window opened. Kernels that
-/// declare a `time: f64` parameter receive this value for animation.
-///
-/// `user_args`: pointer to a packed byte buffer of user-defined argument
-/// values. May be null when the kernel has no user args.
-pub type TileKernelFn = unsafe extern "C" fn(
-    output: *mut u32,
-    width: u32,
-    height: u32,
-    x_min: f64,
-    y_min: f64,
-    x_step: f64,
-    y_step: f64,
-    row_start: u32,
-    row_end: u32,
-    sample_index: u32,
-    time: f64,
-    user_args: *const u8,
-    tex_slots: *const TextureSlot,
-);
-
-pub trait JitBackend {
-    fn compile(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledKernel>;
-    fn compile_sim(&self, kernel: &Kernel, user_args: &[UserArgSlot]) -> Box<dyn CompiledSimKernel>;
-}
-
-/// A compiled kernel that can be called from multiple threads.
-/// The implementor must ensure the function pointer remains valid
-/// for the lifetime of this object.
-pub trait CompiledKernel: Send + Sync {
-    fn function_ptr(&self) -> TileKernelFn;
-}
-
-/// JIT'd simulation kernel: iterates over a tile of rows, reads/writes
-/// f64 buffer arrays, and produces ARGB pixels.
-///
-/// Buffer layout: each buffer is a contiguous `f64` array of `width * height`
-/// elements in row-major order. The kernel computes wrapping indices internally.
-///
-/// `buf_ptrs[0..num_read]` are read-only input buffers.
-/// `buf_out_ptrs[0..num_write]` are write-only output buffers.
-///
-/// `user_args`: pointer to a packed byte buffer of user-defined argument
-/// values. May be null when the kernel has no user args.
-pub type SimTileKernelFn = unsafe extern "C" fn(
-    output: *mut u32,
-    width: u32,
-    height: u32,
-    row_start: u32,
-    row_end: u32,
-    buf_ptrs: *const *const f64,
-    buf_out_ptrs: *const *mut f64,
-    user_args: *const u8,
-    tex_slots: *const TextureSlot,
-);
-
-pub trait CompiledSimKernel: Send + Sync {
-    fn function_ptr(&self) -> SimTileKernelFn;
 }
 
 // ── WGSL GPU-on-CPU shared types ────────────────────────────────────────
@@ -311,13 +211,7 @@ unsafe impl Send for CompiledWgslKernel {}
 unsafe impl Sync for CompiledWgslKernel {}
 
 #[cfg(feature = "cranelift-backend")]
-pub mod cranelift;
-
-#[cfg(feature = "cranelift-backend")]
 pub mod wgsl_cranelift;
-
-#[cfg(feature = "llvm-backend")]
-pub mod llvm;
 
 #[cfg(feature = "llvm-backend")]
 pub mod wgsl_llvm;

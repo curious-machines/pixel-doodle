@@ -2,13 +2,13 @@
 
 ## Hardware: Cortex-X925 (10 big @ 3.9 GHz) + Cortex-A725 (10 little @ 2.8 GHz)
 
-Benchmark data collected 2026-03-21 using LLVM backend, Mandelbrot kernel (256 max iterations), 1200x900 resolution.
+Benchmark data collected 2026-03-21 using gpu-llvm backend, Mandelbrot kernel (256 max iterations), 1200x900 resolution.
 
 ## Summary of Findings
 
 ### 1. Tile Height
 
-Reducing tile height from the original default of 16 rows to 1 row (per-row work units) improved Mandelbrot performance by **31% at 20 threads** (10.5ms → 7.2ms avg), with no measurable downside for uniform workloads like the gradient kernel.
+Reducing tile height from the original default of 16 rows to 1 row (per-row work units) improved Mandelbrot performance by **31% at 20 threads** (10.5ms -> 7.2ms avg), with no measurable downside for uniform workloads like the gradient kernel.
 
 | Tile Height | Tiles (900 rows) | Avg ms (20t) | Min ms | Max ms |
 |-------------|-------------------|--------------|--------|--------|
@@ -35,9 +35,9 @@ Reducing tile height from the original default of 16 rows to 1 row (per-row work
 
 Scaling is near-linear up to 4 threads, good at 8, then diminishing returns. Two factors:
 
-**big.LITTLE scheduling:** `perf stat` showed that at 1-8 threads, 97-99% of execution happened on the A725 (little) cores. Big cores only meaningfully engaged at 10+ threads. However, `taskset` pinning tests showed 10 threads on big cores (12.6ms) was essentially identical to 10 threads unpinned (12.6ms), and worse than 20 threads default (10.6ms). The perf PMU sampling percentages may overstate the little-core bias — the scheduler appears to handle things reasonably.
+**big.LITTLE scheduling:** `perf stat` showed that at 1-8 threads, 97-99% of execution happened on the A725 (little) cores. Big cores only meaningfully engaged at 10+ threads. However, `taskset` pinning tests showed 10 threads on big cores (12.6ms) was essentially identical to 10 threads unpinned (12.6ms), and worse than 20 threads default (10.6ms). The perf PMU sampling percentages may overstate the little-core bias -- the scheduler appears to handle things reasonably.
 
-**Coordination overhead:** Total CPU-seconds grew from 5.4s (1t) to 7.0s (20t) — 29% more total work for the same output. This is rayon work-stealing, thread wake/sleep, and synchronization costs.
+**Coordination overhead:** Total CPU-seconds grew from 5.4s (1t) to 7.0s (20t) -- 29% more total work for the same output. This is rayon work-stealing, thread wake/sleep, and synchronization costs.
 
 ### 3. What Is NOT a Bottleneck
 
@@ -51,21 +51,21 @@ These numbers were collected when a GPU compute backend existed (since removed).
 
 | Backend | Avg ms | Mpix/s | vs 1-thread CPU |
 |---------|--------|--------|-----------------|
-| LLVM 1t | 97.5   | 11.1   | 1x              |
-| LLVM 20t| 10.5   | 103    | 9.3x            |
+| gpu-llvm 1t | 97.5   | 11.1   | 1x              |
+| gpu-llvm 20t| 10.5   | 103    | 9.3x            |
 | GPU     | 0.74   | 1464   | 132x            |
 
 The GPU was ~14x faster than the best CPU configuration. GPUs run thousands of pixels simultaneously with dedicated hardware scheduling for divergent workloads.
 
-## Vectorization (SIMD) — Not Yet Implemented
+## Vectorization (SIMD) -- Not Yet Implemented
 
 ### Current State
 
-The LLVM backend emits **scalar code** for the kernel body. LLVM O3 performs some minor vectorization in the color-packing path (using `<2 x double>` for R/G channel math) but does **not** auto-vectorize the column loop or the Mandelbrot iteration loop.
+The gpu-llvm backend emits **scalar code** for the kernel body. LLVM O3 performs some minor vectorization in the color-packing path (using `<2 x double>` for R/G channel math) but does **not** auto-vectorize the column loop or the Mandelbrot iteration loop.
 
 ### Why LLVM Can't Auto-Vectorize
 
-1. **Data-dependent loop exit:** The Mandelbrot iteration loop escapes at different counts for different pixels. LLVM's loop vectorizer cannot handle this — it requires all vector lanes to exit at the same iteration.
+1. **Data-dependent loop exit:** The Mandelbrot iteration loop escapes at different counts for different pixels. LLVM's loop vectorizer cannot handle this -- it requires all vector lanes to exit at the same iteration.
 
 2. **Complex loop body:** The column loop contains the full kernel body including the while loop, which is too complex for the loop vectorizer to analyze and widen.
 
@@ -78,7 +78,7 @@ Emit explicit `<N x double>` vector IR in the LLVM backend to process N pixels (
 - All lanes run until the **last** lane escapes (or hits max_iter)
 - Pack N results into N pixel stores
 
-This is the same approach GPU compute shaders use — and is exactly why they're fast at divergent workloads.
+This is the same approach GPU compute shaders use -- and is exactly why they're fast at divergent workloads.
 
 ### Trade-offs to Consider
 
@@ -88,7 +88,7 @@ This is the same approach GPU compute shaders use — and is exactly why they're
 - Even 2x throughput on the hot loop would be significant
 
 **Potential costs:**
-- **Divergent workloads waste work:** For Mandelbrot, pixels inside the set run 256 iterations while nearby exterior pixels might run 10. With SIMD, all lanes run to the maximum of the group. If one pixel in a group of 4 is inside the set, all 4 run 256 iterations — a 4x waste on the other 3.
+- **Divergent workloads waste work:** For Mandelbrot, pixels inside the set run 256 iterations while nearby exterior pixels might run 10. With SIMD, all lanes run to the maximum of the group. If one pixel in a group of 4 is inside the set, all 4 run 256 iterations -- a 4x waste on the other 3.
 - **Register pressure:** Wider vectors mean more live values. On complex kernels, this could cause register spills.
 - **Implementation complexity:** The kernel IR lowering would need a "vectorized" mode that emits vector types and handles per-lane masking for control flow.
 - **Kernel compatibility:** Only kernels with compatible control flow can be vectorized. Simple kernels (gradient, circles) would benefit most. Divergent kernels (Mandelbrot) benefit less.
@@ -103,7 +103,7 @@ SVE and SVE2 are **explicitly disabled** in the LLVM backend (feature flags `-sv
 
 ### Recommendation
 
-Vectorization should be opt-in via a flag (e.g., `--simd-width 2`) so it can be benchmarked against scalar on a per-kernel basis. Start with NEON (2x f64) before attempting SVE. The gradient kernel is the simplest test case — no divergent control flow, pure arithmetic.
+Vectorization should be opt-in via a flag (e.g., `--simd-width 2`) so it can be benchmarked against scalar on a per-kernel basis. Start with NEON (2x f64) before attempting SVE. The gradient kernel is the simplest test case -- no divergent control flow, pure arithmetic.
 
 ## Benchmark CLI Flags
 
@@ -135,9 +135,9 @@ done
 
 Raw benchmark data is stored in the repo root:
 
-- `bench_scaling_data.json` — Thread scaling results (gradient + mandelbrot)
-- `bench_perf_data.json` — `perf stat` hardware counter data
-- `bench_tile_data.csv` — Tile height sweep results
-- `bench_scaling_plot.png` — Thread scaling plot
-- `bench_perf_plot.png` — perf stat analysis plot
-- `bench_tile_plot.png` — Tile height sweep plot
+- `bench_scaling_data.json` -- Thread scaling results (gradient + mandelbrot)
+- `bench_perf_data.json` -- `perf stat` hardware counter data
+- `bench_tile_data.csv` -- Tile height sweep results
+- `bench_scaling_plot.png` -- Thread scaling plot
+- `bench_perf_plot.png` -- perf stat analysis plot
+- `bench_tile_plot.png` -- Tile height sweep plot

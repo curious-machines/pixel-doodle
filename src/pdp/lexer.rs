@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn lex_kernel_decl() {
-        let tokens = lex(r#"pixel kernel "gradient.pd""#).unwrap();
+        let tokens = lex(r#"pixel kernel "gradient.wgsl""#).unwrap();
         assert!(matches!(tokens[0].token, Token::Pixel));
         assert!(matches!(tokens[1].token, Token::Kernel));
         assert!(matches!(tokens[2].token, Token::StringLit(_)));
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn lex_comment() {
-        let tokens = lex("# this is a comment\npixel kernel \"test.pd\"").unwrap();
+        let tokens = lex("# this is a comment\npixel kernel \"test.wgsl\"").unwrap();
         assert!(matches!(tokens[0].token, Token::Pixel));
     }
 

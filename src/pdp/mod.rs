@@ -47,7 +47,7 @@ mod tests {
         let config = parse_pdp(
             r#"
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               run gradient
               display
             }
@@ -75,9 +75,9 @@ mod tests {
             on keypress(bracket_left) iterations -= 1
 
             pipeline {
-              kernel "game_of_life.pd"
-              kernel init_state = "init/random_binary.pd"
-              kernel inject = "shared/inject.pd"
+              kernel "game_of_life.wgsl"
+              kernel init_state = "init/random_binary.wgsl"
+              kernel inject = "shared/inject.wgsl"
 
               buffer state = constant(0.0)
               buffer age = constant(0.0)
@@ -122,11 +122,11 @@ mod tests {
             on keypress(period) frame += 1
 
             pipeline {
-              kernel advect = "smoke/advect.pd"
-              kernel divergence = "smoke/divergence.pd"
-              kernel jacobi = "smoke/jacobi.pd"
-              kernel project = "smoke/project.pd"
-              kernel inject = "shared/inject.pd"
+              kernel advect = "smoke/advect.wgsl"
+              kernel divergence = "smoke/divergence.wgsl"
+              kernel jacobi = "smoke/jacobi.wgsl"
+              kernel project = "smoke/project.wgsl"
+              kernel inject = "shared/inject.wgsl"
 
               buffer vx = constant(0.0)
               buffer vy = constant(0.0)
@@ -169,7 +169,7 @@ mod tests {
         let result = parse_pdp(
             r#"
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run nonexistent
               display
             }
@@ -183,7 +183,7 @@ mod tests {
     fn toplevel_kernel_rejected() {
         let result = parse_pdp(
             r#"
-            pixel kernel "test.pd"
+            pixel kernel "test.wgsl"
             pipeline { run test
             display }
             "#,
@@ -212,7 +212,7 @@ mod tests {
             "include \"pan_zoom.pdp\"\n",
             "\n",
             "pipeline {\n",
-            "  pixel kernel \"gradient.pd\"\n",
+            "  pixel kernel \"gradient.wgsl\"\n",
             "  run gradient\n",
             "  display\n",
             "}\n",
@@ -230,11 +230,11 @@ mod tests {
         let dir = make_test_dir("include_reject");
         std::fs::write(
             dir.join("bad.pdp"),
-            "pipeline { pixel kernel \"test.pd\"\n run test\n display }\n",
+            "pipeline { pixel kernel \"test.wgsl\"\n run test\n display }\n",
         )
         .unwrap();
 
-        let source = "include \"bad.pdp\"\npipeline { pixel kernel \"test.pd\"\n run test\n display }\n";
+        let source = "include \"bad.pdp\"\npipeline { pixel kernel \"test.wgsl\"\n run test\n display }\n";
         let result = parse(source, &dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must not contain pipeline"));
@@ -258,7 +258,7 @@ mod tests {
 
         let source = std::fs::read_to_string(dir.join("a.pdp")).unwrap();
         let config = parse(
-            &format!("{source}\npipeline {{\n  pixel kernel \"test.pd\"\n  run test\n  display\n}}\n"),
+            &format!("{source}\npipeline {{\n  pixel kernel \"test.wgsl\"\n  run test\n  display\n}}\n"),
             &dir,
         )
         .unwrap();

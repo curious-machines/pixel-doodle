@@ -1,8 +1,0 @@
-# Solid red — simplest possible kernel.
-kernel solid_red(x: f64, y: f64) -> u32 {
-    r: u32 = const 255
-    g: u32 = const 0
-    b: u32 = const 0
-    pixel: u32 = pack_argb r g b
-    emit pixel
-}

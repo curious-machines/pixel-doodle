@@ -1,21 +1,5 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "ray_march_ao.pd"
-  accumulate(samples: 512) {
-    run ray_march_ao
-    display
-  }
-}
-
-pipeline pdir {
-  pixel kernel "ray_march_ao.pdir"
-  accumulate(samples: 512) {
-    run ray_march_ao
-    display
-  }
-}
-
 pipeline gpu {
   pixel kernel "ray_march_ao.wgsl"
   run ray_march_ao

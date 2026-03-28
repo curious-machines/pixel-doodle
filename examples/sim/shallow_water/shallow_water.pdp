@@ -8,60 +8,6 @@ builtin const mouse_y: f64
 on keypress(space) paused = !paused
 on keypress(period) frame += 1
 
-pipeline pd {
-  kernel "shallow_water.pd"
-  kernel init_h = "init/shallow_water_h.pd"
-  kernel inject = "../../shared/inject.pd"
-
-  buffer h = constant(0.0)
-  buffer vx = constant(0.0)
-  buffer vy = constant(0.0)
-  buffer h_next = constant(0.0)
-  buffer vx_next = constant(0.0)
-  buffer vy_next = constant(0.0)
-
-  init {
-    run init_h with(out: out h)
-  }
-  on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) with(target: h, target_out: out h)
-  }
-  loop(iterations: 4) {
-    run shallow_water with(h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next)
-    display
-    swap h, h_next
-    swap vx, vx_next
-    swap vy, vy_next
-  }
-}
-
-pipeline pdir {
-  kernel "shallow_water.pdir"
-  kernel init_h = "init/shallow_water_h.pd"
-  kernel inject = "../../shared/inject.pd"
-
-  buffer h = constant(0.0)
-  buffer vx = constant(0.0)
-  buffer vy = constant(0.0)
-  buffer h_next = constant(0.0)
-  buffer vx_next = constant(0.0)
-  buffer vy_next = constant(0.0)
-
-  init {
-    run init_h with(out: out h)
-  }
-  on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1) with(target: h, target_out: out h)
-  }
-  loop(iterations: 4) {
-    run shallow_water with(h_in: h, vx_in: vx, vy_in: vy, h_out: out h_next, vx_out: out vx_next, vy_out: out vy_next)
-    display
-    swap h, h_next
-    swap vx, vx_next
-    swap vy, vy_next
-  }
-}
-
 pipeline gpu {
   kernel step = "shallow_water_step.wgsl"
   kernel vis = "shallow_water_vis.wgsl"

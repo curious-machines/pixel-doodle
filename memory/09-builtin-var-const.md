@@ -11,7 +11,7 @@ The PDP language has 10 implicit "intrinsic" variables (`width`, `height`, `time
 - **`const` keyword** marks a user-defined or builtin immutable value
 - Using an undeclared intrinsic is a **hard error**
 - Declarations include **explicit types** (`builtin const time: f64`)
-- **Pipeline-only scope** — kernel built-ins (`x`, `y`, etc.) are unchanged
+- **Pipeline-only scope** — WGSL kernel built-ins (`x`, `y`, etc.) are unchanged
 - `const` means "not assignable by the pipeline" — the runtime can still update `time` each frame
 
 ## Syntax

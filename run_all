@@ -4,12 +4,10 @@ set -euo pipefail
 usage() {
     echo "Usage: ./run_all <category/example> [options]"
     echo ""
-    echo "  Runs the example with all 5 JIT backends sequentially:"
-    echo "    1. pd + cranelift"
-    echo "    2. pd + llvm"
-    echo "    3. pdir + cranelift"
-    echo "    4. gpu + gpu-cranelift"
-    echo "    5. gpu + gpu-llvm"
+    echo "  Runs the example with all 3 GPU backends sequentially:"
+    echo "    1. gpu"
+    echo "    2. gpu-cranelift"
+    echo "    3. gpu-llvm"
     echo ""
     echo "  Extra arguments are passed through to each run."
     echo ""
@@ -26,8 +24,6 @@ example="$1"
 shift
 
 backends=(
-    "pipeline=pd,backend=cranelift"
-    "pipeline=pd,backend=llvm"
     "pipeline=gpu,backend=gpu"
     "pipeline=gpu,backend=gpu-cranelift"
     "pipeline=gpu,backend=gpu-llvm"

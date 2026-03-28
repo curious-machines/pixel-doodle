@@ -1,6 +1,6 @@
 # pixel-doodle
 
-Exploratory project for executing code — possibly from a custom language — that leverages various approaches to parallelism (threads, SIMD) to generate pixel data displayed in a window.
+Exploratory project for executing WGSL compute shaders that generate pixel data, displayed in a window. Supports native GPU execution (via wgpu) and CPU fallback (via Cranelift or LLVM JIT compilation of WGSL through naga).
 
 ## Constraints
 
@@ -9,97 +9,49 @@ Exploratory project for executing code — possibly from a custom language — t
 - Minimize external dependencies (preference, not mandate — JIT libraries are acceptable)
 - This is an exploration with no fixed long-term direction; expect experimentation
 
-## Stack (under consideration, not finalized)
+## Stack
 
-Two viable stacks were evaluated:
+| Layer         | Technology                           |
+|---------------|--------------------------------------|
+| Host language | Rust                                 |
+| Shaders       | WGSL (parsed by naga)                |
+| GPU           | wgpu                                 |
+| CPU fallback  | Cranelift or LLVM (JIT from naga IR) |
+| Display       | winit + softbuffer                   |
+| Threading     | rayon                                |
+| Build system  | Cargo                                |
 
-| Layer         | C++ option              | Rust option              |
-|---------------|-------------------------|--------------------------|
-| Host language | C++17                   | Rust                     |
-| JIT           | LLVM (OrcJIT) or AsmJIT | Cranelift                |
-| Display       | sokol_app + sokol_gfx   | egui or sokol bindings   |
-| Threading     | std::thread / oneTBB    | rayon                    |
-| Host SIMD     | Google Highway          | wide crate / std::simd   |
-| Build system  | CMake + FetchContent    | Cargo                    |
-
-Key JIT tradeoff: LLVM provides auto-vectorization; Cranelift does not but compiles faster. AsmJIT supports both x86_64 and AArch64.
-
-## Custom Language (PDIR — Pixel Doodle Intermediate Representation)
-
-The project includes a small custom language called **PDIR** (Pixel Doodle Intermediate Representation), designed for AI-assisted generation. Design principles:
-- SSA form (every value assigned once, named)
-- Explicit types everywhere — no inference, no implicit conversions
-- Flat over nested — sequence of named assignments over deep expression trees
-- Regular, non-contextual syntax
-- Explicit SIMD width and parallel annotations (not inferred)
-
-### IR-First Architecture
-
-The SSA IR (`Kernel` type in `kernel_ir.rs`) is the central artifact. The text format (`.pdir` files) is a readable, writable serialization — not ugly machine format. A higher-level language may be added later as a second frontend targeting the same IR, so keep the IR clean and syntax-independent.
+## Architecture
 
 ### Kernel Model
 
-A kernel body describes **per-pixel** computation. Backends generate the tile loop wrapper (row/col iteration, coordinate math, pixel store). The kernel declares explicit parameters and a return type, and produces a value via `emit`.
+Kernels are WGSL compute shaders. The runtime dispatches them either on the GPU (native wgpu) or on the CPU (compiled via naga → Cranelift/LLVM JIT).
 
-Parameters fall into two categories:
-- **Built-in**: provided by the tile loop (`x`, `y`, `px`, `py`, `sample_index`, `time`, `width`, `height` for pixel kernels; `px`, `py`, `width`, `height` for sim kernels)
-- **User-defined**: any other parameter (e.g., `max_iter: u32`) — supplied via the `run` statement in `.pdp` files, passed through a packed byte buffer at the ABI level
+### Pipeline Config (.pdp)
 
-### Type System
+`.pdp` files describe how to orchestrate kernels:
+- Declare buffers, textures, variables
+- Reference `.wgsl` kernel files
+- Define execution order, loops, swaps, mouse/keyboard handlers
 
-- **Scalars**: `f32`, `f64`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `bool`
-- **Vectors**: `vec2<T>`, `vec3<T>`, `vec4<T>` — parameterized, explicit element type required
-- **Matrices**: `mat2<T>`, `mat3<T>`, `mat4<T>` — column-major, parameterized
-- **Fixed-size arrays**: `array<T; N>` — semicolon separates type from count
-- **Structs**: `struct Name { field: type, ... }` — user-defined composite types
-- **Textures**: read-only RGBA8 image data, sampled via `tex_load` (integer coords) or `tex_sample` (normalized UV with bilinear filtering), returning `vec4<f32>`
-- No implicit type coercion — explicit `as` casts required
+### Backends
 
-### Text Format (.pdir)
-
-```
-kernel gradient(x: f64, y: f64) -> u32 {
-    r: f64 = mul x 255.0
-    r_u: u32 = f64_to_u32 r
-    g: f64 = mul y 255.0
-    g_u: u32 = f64_to_u32 g
-    b: u32 = const 128
-    pixel: u32 = pack_argb r_u g_u b
-    emit pixel
-}
-```
-
-### Control Flow (V2)
-
-Structured `while` with explicit loop-carried values:
-```
-while carry(zx: f64 = z0, zy: f64 = z0, iter: u32 = i0) {
-    # condition check
-    cond cont
-    # body
-    yield new_zx new_zy new_iter
-}
-# carry vars (zx, zy, iter) are live here with final values
-```
-
-### Parser
-
-Hand-written recursive descent — no external parser dependencies. Resolves names to `Var` indices, type-checks operands, reports errors with line:col positions.
+- **gpu** (default): Native GPU execution via wgpu compute shaders
+- **gpu-cranelift**: CPU fallback — compiles WGSL to native code via naga + Cranelift
+- **gpu-llvm**: CPU fallback — compiles WGSL to native code via naga + LLVM (optional feature)
 
 ## Implementation Strategy
 
-- Start with the display loop before writing any JIT code
-- Isolate windowing from JIT so they can be debugged independently
-- Parallel execution model: split pixel buffer into tiles, distribute to worker threads, each thread calls JIT'd function on its tile
+- Parallel execution model: GPU dispatches workgroups; CPU fallback splits rows across threads
 - Source image data is shared read-only across threads; output is partitioned so each thread owns its region exclusively
 - Align work division to cache line boundaries (64 bytes) to avoid false sharing
 
 ## Testing
 
-After making code changes that could affect rendering (JIT backends, codegen, runtime, kernel parsing), run the regression test suite:
+After making code changes that could affect rendering (backends, codegen, runtime), run the regression test suite:
 
 ```bash
-./test_regression              # Test all 142 sample×backend combos against golden references
+./test_regression              # Test all sample×backend combos against golden references
 ./test_regression --no-build   # Skip rebuild if already built
 ./test_regression basic/gradient  # Test a single example
 ```

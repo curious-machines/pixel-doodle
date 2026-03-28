@@ -33,11 +33,11 @@ cargo run --release -- --sim gray-scott
 # GPU compute shader (wgpu/WGSL)
 cargo run --release -- --sim gray-scott --backend gpu
 
-# Cranelift JIT (PDIR kernel)
-cargo run --release -- --sim gray-scott --backend cranelift --kernel examples/sim/gray_scott.pdir
+# Cranelift JIT
+cargo run --release -- --sim gray-scott --backend cranelift
 
-# LLVM JIT (PDIR kernel, requires llvm-backend feature)
-cargo run --release --features llvm-backend -- --sim gray-scott --backend llvm --kernel examples/sim/gray_scott.pdir
+# LLVM JIT (requires llvm-backend feature)
+cargo run --release --features llvm-backend -- --sim gray-scott --backend llvm
 ```
 
 Mouse click/drag injects chemical V at the cursor position (native and GPU backends).
@@ -67,22 +67,11 @@ Mouse click/drag injects chemical V at the cursor position (native and GPU backe
 - Pixel output buffer uses stride alignment for `copy_buffer_to_texture`
 - `inject()` writes directly to the current field buffer via `queue.write_buffer`
 
-### Backend 3: PDIR/JIT (`examples/sim/gray_scott.pdir`)
+### Backend 3: JIT (Cranelift/LLVM)
 
-New IR and language features added to support buffer operations:
+WGSL kernels compiled via Cranelift or LLVM JIT backends. Uses the sim kernel ABI with buffer pointer params for double-buffered field I/O.
 
-**IR extensions** (`src/kernel_ir.rs`):
-- `BufDecl { name, is_output }` — buffer declaration
-- `Kernel::buffers: Vec<BufDecl>` — buffer list on kernel struct
-- `Inst::BufLoad { buf, x, y }` — load f64 from buffer at (x,y)
-- `Inst::BufStore { buf, x, y, val }` — store f64 to buffer at (x,y)
-
-**Parser extensions** (`src/lang/parser.rs`):
-- `buffers(name: read, name: write, ...)` declaration after return type
-- `buf_load <buffer> <x> <y>` instruction (produces f64)
-- `buf_store <buffer> <x> <y> <val>` instruction (produces dummy u32)
-
-**New JIT ABI** (`src/jit/mod.rs`):
+**JIT ABI** (`src/jit/mod.rs`):
 ```rust
 pub type SimTileKernelFn = unsafe extern "C" fn(
     output: *mut u32,
@@ -93,27 +82,9 @@ pub type SimTileKernelFn = unsafe extern "C" fn(
 );
 ```
 
-**Cranelift backend** (`src/jit/cranelift.rs`):
-- `compile_sim_kernel()` generates tile loop with integer coordinates and buffer pointer params
-- `BufContext` struct threads width/buffer pointers through `lower_inst`
-- `BufLoad` emits: load buffer pointer from array, compute flat index, load f64
-- `BufStore` emits: same address math, store f64, return dummy 0
-
-**LLVM backend** (`src/jit/llvm.rs`):
-- `compile_sim_kernel()` and `build_sim_tile_loop()` mirror the Cranelift approach
-- `LlvmBufContext` threads params through lowering functions
-- Uses `build_gep` for pointer arithmetic
-
 **Render path** (`src/render.rs`):
 - `render_sim()` — rayon tile parallelism for sim kernels
 - Takes raw buffer pointer slices, stashes as `usize` for `Send+Sync`
-
-**PDIR kernel** (`examples/sim/gray_scott.pdir`):
-- Declares `buffers(u_in: read, v_in: read, u_out: write, v_out: write)`
-- Kernel params: `px: u32, py: u32, width: u32, height: u32`
-- Computes wrapping neighbor coordinates, 5-point Laplacian, Gray-Scott update
-- Stores results via `buf_store`, visualizes via color ramp and `pack_argb`
-- Uses f64 buffers (promoted from f32 in native; doubles memory but keeps IR simple)
 
 ### Main integration (`src/main.rs`)
 
@@ -129,9 +100,6 @@ Three `Backend` variants for simulation:
 | `src/simulation.rs` | Native CPU fluid state and step function |
 | `src/gpu/fluid.rs` | GPU fluid backend (buffer management, dispatch) |
 | `src/gpu/gray_scott.wgsl` | WGSL compute shader (step + visualize) |
-| `examples/sim/gray_scott.pdir` | Gray-Scott kernel in PDIR |
-| `src/kernel_ir.rs` | IR with BufLoad/BufStore instructions |
-| `src/lang/parser.rs` | Parser with buffer declarations |
 | `src/jit/mod.rs` | SimTileKernelFn ABI definition |
 | `src/jit/cranelift.rs` | Cranelift sim kernel compilation |
 | `src/jit/llvm.rs` | LLVM sim kernel compilation |
@@ -183,11 +151,11 @@ cargo run --release -- --sim shallow-water
 # GPU compute shader (wgpu/WGSL)
 cargo run --release -- --sim shallow-water --backend gpu
 
-# Cranelift JIT (PDIR kernel)
-cargo run --release -- --sim shallow-water --backend cranelift --kernel examples/sim/shallow_water.pdir
+# Cranelift JIT
+cargo run --release -- --sim shallow-water --backend cranelift
 
-# LLVM JIT (PDIR kernel, requires llvm-backend feature)
-cargo run --release --features llvm-backend -- --sim shallow-water --backend llvm --kernel examples/sim/shallow_water.pdir
+# LLVM JIT (requires llvm-backend feature)
+cargo run --release --features llvm-backend -- --sim shallow-water --backend llvm
 ```
 
 Mouse click/drag injects height bumps at the cursor position (all backends).
@@ -210,13 +178,11 @@ Mouse click/drag injects height bumps at the cursor position (all backends).
 - Same dispatch pattern as Gray-Scott: multiple substeps + visualization in one command encoder
 - `inject()` writes height bumps directly via `queue.write_buffer`
 
-### Backend 3: PDIR/JIT (`examples/sim/shallow_water.pdir`)
+### Backend 3: JIT (Cranelift/LLVM)
 
-- PDIR kernel with 6 buffers: `h_in`, `vx_in`, `vy_in` (read) + `h_out`, `vx_out`, `vy_out` (write)
+- WGSL kernel with 6 buffers: `h_in`, `vx_in`, `vy_in` (read) + `h_out`, `vx_out`, `vy_out` (write)
 - Same Lax-Friedrichs scheme as native — neighbor averaging, central differences, flux divergence
-- Visualization color ramp computed inline via nested `select` instructions
-- 141 SSA statements; compiles via existing `compile_sim_kernel()` (Cranelift or LLVM)
-- No changes to parser, IR, or JIT backends — the existing buffer infrastructure handled 6 buffers without modification
+- Compiles via `compile_sim_kernel()` (Cranelift or LLVM)
 
 ### Main integration (`src/main.rs`)
 
@@ -232,7 +198,6 @@ Three `Backend` variants:
 | `src/simulation.rs` | `ShallowWaterState` — CPU step, inject, visualization |
 | `src/gpu/shallow_water_gpu.rs` | GPU backend (buffer management, dispatch) |
 | `src/gpu/shallow_water.wgsl` | WGSL compute shader (step + visualize) |
-| `examples/sim/shallow_water.pdir` | Shallow water kernel in PDIR |
 | `src/main.rs` | CLI integration (`--sim shallow-water`) |
 
 ---
@@ -276,10 +241,10 @@ cargo run --release -- --sim smoke --backend gpu
 # Native CPU (rayon parallelism)
 cargo run --release -- --sim smoke --backend native
 
-# Cranelift JIT (multi-pass PDIR kernels)
+# Cranelift JIT
 cargo run --release -- --sim smoke --backend cranelift
 
-# LLVM JIT (multi-pass PDIR kernels, requires llvm-backend feature)
+# LLVM JIT (requires llvm-backend feature)
 cargo run --release --features llvm-backend -- --sim smoke --backend llvm
 ```
 
@@ -327,23 +292,21 @@ copy_buffer_to_texture
 
 Total: 44 compute dispatches per frame (1 + 1 + 40 + 1 + 1).
 
-### Backend 3: PDIR/JIT (multi-pass kernel orchestration)
+### Backend 3: JIT (multi-pass kernel orchestration)
 
-First simulation to use **multi-pass kernel orchestration** — 4 separate PDIR kernels compiled independently, called in sequence by the host with buffer swaps between passes. This works around the single-pass `SimTileKernelFn` ABI limitation.
+First simulation to use **multi-pass kernel orchestration** — 4 separate WGSL kernels compiled independently, called in sequence by the host with buffer swaps between passes. This works around the single-pass `SimTileKernelFn` ABI limitation.
 
-- `examples/sim/smoke/advect.pdir` (91 stmts) — Semi-Lagrangian advection with inlined bilinear interpolation (4 BufLoads per field × 3 fields = 12 loads), buoyancy, dissipation, boundary zeroing
-- `examples/sim/smoke/divergence.pdir` (32 stmts) — Central-difference velocity divergence
-- `examples/sim/smoke/jacobi.pdir` (34 stmts) — One Jacobi pressure iteration (called 40× by host)
-- `examples/sim/smoke/project.pdir` (45 stmts) — Pressure gradient subtraction + density visualization
+- `advect` — Semi-Lagrangian advection with bilinear interpolation, buoyancy, dissipation, boundary zeroing
+- `divergence` — Central-difference velocity divergence
+- `jacobi` — One Jacobi pressure iteration (called 40x by host)
+- `project` — Pressure gradient subtraction + density visualization
 
 Host orchestration per frame:
 1. Swap vx/vy/density with vx0/vy0/density0
 2. `render_sim(advect_fn, [vx0,vy0,den0], [vx,vy,den])`
 3. `render_sim(div_fn, [vx,vy], [divergence])`
-4. 40× `render_sim(jacobi_fn, [divergence,pressure], [pressure_tmp])` + swap
+4. 40x `render_sim(jacobi_fn, [divergence,pressure], [pressure_tmp])` + swap
 5. `render_sim(project_fn, [pressure,vx,vy,density], [vx0,vy0])` + swap back
-
-Neighbor coordinates use `rem` wrapping (not raw subtraction) to avoid u32 underflow segfaults on BufLoad. Boundary results are discarded via `select`.
 
 ### Main integration (`src/main.rs`)
 
@@ -359,10 +322,6 @@ Three `Backend` variants:
 | `src/simulation.rs` | `SmokeState` — CPU advect, pressure solve, project, visualization |
 | `src/gpu/smoke_gpu.rs` | GPU backend (5 pipelines, 7 buffers, dispatch orchestration) |
 | `src/gpu/smoke.wgsl` | WGSL compute shader (5 entry points) |
-| `examples/sim/smoke/advect.pdir` | Semi-Lagrangian advection kernel |
-| `examples/sim/smoke/divergence.pdir` | Velocity divergence kernel |
-| `examples/sim/smoke/jacobi.pdir` | Jacobi pressure iteration kernel |
-| `examples/sim/smoke/project.pdir` | Pressure projection + visualization kernel |
 | `src/main.rs` | CLI integration, multi-pass host orchestration |
 
 ---
@@ -392,7 +351,7 @@ Parameters: density (initial random fill, default 0.3). Toroidal boundary condit
 # GPU compute shader (supports zoom/pan)
 cargo run --release -- --sim game-of-life --backend gpu
 
-# Cranelift JIT (embedded PD kernel)
+# Cranelift JIT
 cargo run --release -- --sim game-of-life --backend cranelift
 
 # LLVM JIT
@@ -417,9 +376,9 @@ Mouse click/drag draws live cells. Keyboard: Space=pause, `.`=step, `[`/`]`=spee
   - `inject()` writes live cells directly to current grid buffer
   - `render_current()` re-renders without stepping (for paused display)
 
-### Backend 2: PD/JIT (embedded kernel)
+### Backend 2: JIT (Cranelift/LLVM)
 
-- `examples/sim/game_of_life.pd` — PD kernel with 4 f64 buffers:
+- WGSL kernel with 4 f64 buffers:
   - `state_in`, `age_in` (read), `state_out`, `age_out` (write)
   - State: 1.0 = alive, 0.0 = dead. Age: positive = alive duration, negative = dead fade
   - B3/S23 via f64 range checks (e.g., `count > 2.5 && count < 3.5` for exactly 3)
@@ -444,5 +403,5 @@ CLI: `--sim game-of-life`, `--density` flag, supports `gpu`/`cranelift`/`llvm` b
 |------|------|
 | `src/gpu/game_of_life_gpu.rs` | GPU backend (2 pipelines, ping-pong grids, viewport) |
 | `src/gpu/game_of_life.wgsl` | WGSL compute shader (step + visualize with viewport) |
-| `examples/sim/game_of_life.pd` | Game of Life kernel in PD |
+| `examples/sim/game_of_life.wgsl` | Game of Life kernel in WGSL |
 | `src/main.rs` | CLI integration, pause/step/speed controls |

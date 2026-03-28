@@ -19,7 +19,7 @@ A custom DSL (`.pdp` — Pixel Doodle Config) that declaratively describes every
 ## Design Decisions
 
 - **GPU**: Include in format if it doesn't overly complicate CPU/JIT config
-- **Init strategy**: Use .pd kernels for all buffer initialization (init kernel returns f64 per cell); `constant()` as built-in convenience
+- **Init strategy**: Use WGSL kernels for all buffer initialization (init kernel returns f64 per cell); `constant()` as built-in convenience
 - **Pipeline**: Ordered step list (explicit, declarative); encompasses loops, accumulation, and event handlers
 - **Native backends**: Defer external plugin loading to later; keep in-tree for now
 - **Paths**: Relative to config file by default; `@root/` prefix for project root
@@ -33,36 +33,36 @@ A custom DSL (`.pdp` — Pixel Doodle Config) that declaratively describes every
 
 ### Syntax Overview
 
-Line-oriented, `#` comments, blocks with `{ }`. Minimal punctuation. Parseable with simple recursive descent (same approach as PD parser).
+Line-oriented, `#` comments, blocks with `{ }`. Minimal punctuation. Parseable with simple recursive descent.
 
 ### Kernel Declarations
 
 Three kernel types, explicitly declared:
 
 ```
-pixel kernel "gradient.pd"
-sim kernel "gray_scott.pd"
-init kernel init_random = "init/random.pd"
+pixel kernel "gradient.wgsl"
+sim kernel "gray_scott.wgsl"
+init kernel init_random = "init/random.wgsl"
 ```
 
 - Type is required (`pixel`, `sim`, `init`) — no auto-detection
 - Runtime validates kernel signature matches declared type
-- Backend inferred from file extension: `.pd`/`.pdir` → CPU/JIT, `.wgsl` → GPU
+- All kernels use WGSL (`.wgsl` files)
 - Unnamed kernels get a default name from the file's base name (must be valid identifier)
 - Named kernels use `name = "path"` syntax
 
 #### Named multi-kernel declarations
 ```
-sim kernel advect = "smoke/advect.pd"
-sim kernel divergence = "smoke/divergence.pd"
-sim kernel jacobi = "smoke/jacobi.pd"
-sim kernel project = "smoke/project.pd"
+sim kernel advect = "smoke/advect.wgsl"
+sim kernel divergence = "smoke/divergence.wgsl"
+sim kernel jacobi = "smoke/jacobi.wgsl"
+sim kernel project = "smoke/project.wgsl"
 ```
 
 #### Path resolution
 ```
-pixel kernel "gradient.pd"                    # relative to config file
-pixel kernel "@root/examples/shared/util.pd"  # relative to project root
+pixel kernel "gradient.wgsl"                    # relative to config file
+pixel kernel "@root/examples/shared/util.wgsl"  # relative to project root
 ```
 
 ### Buffer Declarations
@@ -296,7 +296,7 @@ height = 1080
 ### 1. Gradient (simplest pixel kernel)
 ```
 pipeline {
-  pixel kernel "gradient.pd"
+  pixel kernel "gradient.wgsl"
   run gradient
   display
 }
@@ -308,7 +308,7 @@ include "shared/builtins.pdp"
 include "shared/pan_zoom.pdp"
 
 pipeline {
-  pixel kernel "mandelbrot.pd"
+  pixel kernel "mandelbrot.wgsl"
   accumulate(samples: 256) {
     run mandelbrot
     display
@@ -333,9 +333,9 @@ on keypress(bracket_right) iterations += 1
 on keypress(bracket_left) iterations -= 1
 
 pipeline {
-  kernel "game_of_life.pd"
-  kernel init_state = "init/random_binary.pd"
-  kernel inject = "shared/inject.pd"
+  kernel "game_of_life.wgsl"
+  kernel init_state = "init/random_binary.wgsl"
+  kernel inject = "shared/inject.wgsl"
 
   buffer state = constant(0.0)
   buffer age = constant(0.0)

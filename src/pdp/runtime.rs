@@ -6,33 +6,14 @@ use winit::keyboard::KeyCode;
 use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
-use crate::jit::{self, SimTileKernelFn, TextureSlot, TileKernelFn, UserArgSlot};
+use crate::jit::{self, TextureSlot};
 use crate::progressive::AccumulationBuffer;
-use crate::render;
 use crate::texture::TextureData;
 
 use super::ast::*;
 
 /// Resolved kernel ready for execution.
 enum CompiledKernelEntry {
-    Pixel {
-        func: TileKernelFn,
-        _compiled: Box<dyn jit::CompiledKernel>,
-        user_arg_slots: Vec<UserArgSlot>,
-        /// Texture slot names in declaration order.
-        tex_slot_names: Vec<String>,
-    },
-    Sim {
-        func: SimTileKernelFn,
-        _compiled: Box<dyn jit::CompiledSimKernel>,
-        /// Read buffer slot names in order.
-        read_slots: Vec<String>,
-        /// Write buffer slot names in order.
-        write_slots: Vec<String>,
-        user_arg_slots: Vec<UserArgSlot>,
-        /// Texture slot names in declaration order.
-        tex_slot_names: Vec<String>,
-    },
     /// GPU pixel kernel — renders directly to display texture.
     Gpu {
         wgsl_source: String,
@@ -173,9 +154,9 @@ impl Runtime {
             mouse_was_down: false,
             mouse_down_edge: false,
             mouse_up_edge: false,
-            tile_height: render::DEFAULT_TILE_HEIGHT,
+            tile_height: 16,
             animated: false,
-            backend_name: "cranelift".into(),
+            backend_name: "gpu".into(),
             pipeline_name: None,
             base_dir: base_dir.to_path_buf(),
             gpu_backend: None,
@@ -344,73 +325,15 @@ impl Runtime {
                 continue;
             }
 
-            let src = std::fs::read_to_string(&path)
-                .map_err(|e| format!("failed to read kernel '{}': {}", path.display(), e))?;
-
-            let ir = if path.extension().is_some_and(|e| e == "pd") {
-                crate::lang::pd::parse(&src, Some(&path))
-                    .map_err(|e| format!("parse error in '{}': {}", path.display(), e))?
-            } else {
-                crate::lang::parser::parse(&src)
-                    .map_err(|e| format!("parse error in '{}': {}", path.display(), e))?
-            };
-
-            // Detect animation
-            if ir.params.iter().any(|p| p.name == "time") {
-                self.animated = true;
-            }
-
-            let (user_arg_slots, _) =
-                jit::compute_user_arg_layout(&ir, decl.kind.tile_loop_params());
-            match decl.kind {
-                KernelKind::Pixel => {
-                    let compiled = compile_pixel_kernel(&backend_name, &ir, &user_arg_slots)?;
-                    let func = compiled.function_ptr();
-                    let tex_slot_names: Vec<String> = ir.textures.iter().map(|t| t.name.clone()).collect();
-                    self.kernels.insert(
-                        decl.name.clone(),
-                        CompiledKernelEntry::Pixel {
-                            func,
-                            _compiled: compiled,
-                            user_arg_slots,
-                            tex_slot_names,
-                        },
-                    );
-                }
-                KernelKind::Standard => {
-                    let read_slots: Vec<String> = ir
-                        .buffers
-                        .iter()
-                        .filter(|b| !b.is_output)
-                        .map(|b| b.name.clone())
-                        .collect();
-                    let write_slots: Vec<String> = ir
-                        .buffers
-                        .iter()
-                        .filter(|b| b.is_output)
-                        .map(|b| b.name.clone())
-                        .collect();
-                    let compiled = compile_sim_kernel(&backend_name, &ir, &user_arg_slots)?;
-                    let func = compiled.function_ptr();
-                    let tex_slot_names: Vec<String> = ir.textures.iter().map(|t| t.name.clone()).collect();
-                    self.kernels.insert(
-                        decl.name.clone(),
-                        CompiledKernelEntry::Sim {
-                            func,
-                            _compiled: compiled,
-                            read_slots,
-                            write_slots,
-                            user_arg_slots,
-                            tex_slot_names,
-                        },
-                    );
-                }
-            }
+            return Err(format!(
+                "unsupported kernel file extension for '{}' — only .wgsl is supported",
+                path.display()
+            ));
         }
 
         // Warn if backend setting has no effect on the selected pipeline
         if self.has_gpu_kernels
-            && !matches!(self.backend_name.as_str(), "cranelift" | "gpu-cranelift" | "gpu-llvm")
+            && !matches!(self.backend_name.as_str(), "gpu-cranelift" | "gpu-llvm")
             && kernel_decls.iter().all(|d| {
                 resolve_path(&d.path, &base_dir)
                     .extension()
@@ -809,80 +732,6 @@ impl Runtime {
         }
     }
 
-    /// Pack user-defined argument values into a byte buffer matching the compiled layout.
-    fn pack_user_args(&self, slots: &[UserArgSlot], args: &[NamedArg]) -> Vec<u8> {
-        use crate::kernel_ir::{ScalarType, ValType};
-        if slots.is_empty() {
-            // Warn if caller passed args to a kernel that has no user params
-            for arg in args {
-                eprintln!("warning: argument '{}' does not match any kernel parameter", arg.name);
-            }
-            return Vec::new();
-        }
-        // Check for unknown args
-        for arg in args {
-            if !slots.iter().any(|s| s.name == arg.name) {
-                eprintln!("warning: argument '{}' does not match any kernel parameter", arg.name);
-            }
-        }
-        // Compute total size from last slot
-        let last = slots.last().unwrap();
-        let last_size = match last.ty {
-            ValType::Scalar(s) => s.byte_size(),
-            _ => 8,
-        };
-        let total = ((last.offset + last_size) + 7) & !7;
-        let mut buf = vec![0u8; total];
-        for slot in slots {
-            let value = args.iter().find(|a| a.name == slot.name);
-            let f = match value {
-                Some(a) => match &a.value {
-                    Literal::Float(f) => *f,
-                    Literal::Int(i) => *i as f64,
-                    Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
-                    Literal::Str(_) => 0.0,
-                    Literal::VarRef(name) => self.get_variable(name),
-                },
-                None => panic!("missing argument '{}' for kernel", slot.name),
-            };
-            let o = slot.offset;
-            match slot.ty {
-                ValType::Scalar(ScalarType::F64) => {
-                    buf[o..o + 8].copy_from_slice(&f.to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::F32) => {
-                    buf[o..o + 4].copy_from_slice(&(f as f32).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::I8) => {
-                    buf[o..o + 1].copy_from_slice(&(f as i8).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::U8) => {
-                    buf[o..o + 1].copy_from_slice(&(f as u8).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::I16) => {
-                    buf[o..o + 2].copy_from_slice(&(f as i16).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::U16) => {
-                    buf[o..o + 2].copy_from_slice(&(f as u16).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::I32) => {
-                    buf[o..o + 4].copy_from_slice(&(f as i32).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::U32) => {
-                    buf[o..o + 4].copy_from_slice(&(f as u32).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::I64) => {
-                    buf[o..o + 8].copy_from_slice(&(f as i64).to_le_bytes());
-                }
-                ValType::Scalar(ScalarType::U64) => {
-                    buf[o..o + 8].copy_from_slice(&(f as u64).to_le_bytes());
-                }
-                _ => panic!("unsupported user-arg type {:?}", slot.ty),
-            }
-        }
-        buf
-    }
-
     /// Execute a kernel via `run`.
     fn execute_run(
         &mut self,
@@ -893,66 +742,6 @@ impl Runtime {
     ) {
         let entry = self.kernels.get(kernel_name);
         match entry {
-            Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) => {
-                let kfn = *func;
-                let packed = self.pack_user_args(user_arg_slots, args);
-                let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
-                let args_addr = args_ptr as usize;
-                let tex_slots = self.build_tex_slots(tex_slot_names);
-                let (cx, cy, z, t) = (self.center_x, self.center_y, self.zoom, self.time);
-                let w = self.width as usize;
-                let h = self.height as usize;
-                let th = self.tile_height;
-                let buf = &mut self.pixel_buffer;
-                let sample_index = 0xFFFFFFFF; // non-progressive by default
-                with_pool(pool, || {
-                    render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
-                });
-            }
-            Some(CompiledKernelEntry::Sim {
-                func,
-                read_slots,
-                write_slots,
-                user_arg_slots,
-                tex_slot_names,
-                ..
-            }) => {
-                let sim_fn = *func;
-                let packed = self.pack_user_args(user_arg_slots, args);
-                let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
-                let tex_slots = self.build_tex_slots(tex_slot_names);
-                let w = self.width as usize;
-                let h = self.height as usize;
-                let th = self.tile_height;
-
-                // Build buffer pointer arrays from bindings
-                let bufs_in: Vec<*const f64> = read_slots
-                    .iter()
-                    .map(|slot| {
-                        let buf_name = find_binding(input_bindings, slot)
-                            .unwrap_or_else(|| slot.clone());
-                        self.buffers
-                            .get(&buf_name)
-                            .unwrap_or_else(|| panic!("buffer '{}' not found", buf_name))
-                            .as_ptr()
-                    })
-                    .collect();
-
-                let bufs_out: Vec<*mut f64> = write_slots
-                    .iter()
-                    .map(|slot| {
-                        let buf_name = find_binding(input_bindings, slot)
-                            .unwrap_or_else(|| slot.clone());
-                        self.buffers
-                            .get_mut(&buf_name)
-                            .unwrap_or_else(|| panic!("buffer '{}' not found", buf_name))
-                            .as_mut_ptr()
-                    })
-                    .collect();
-
-                let pixel_buf = &mut self.pixel_buffer;
-                render::render_sim(pixel_buf, w, h, sim_fn, &bufs_in, &bufs_out, th, args_ptr, &tex_slots);
-            }
             Some(CompiledKernelEntry::Gpu { .. }) => {
                 // GPU pixel kernels render directly to the display texture.
                 // Resolve user args to f32 values for GPU uniform buffer.
@@ -1194,7 +983,7 @@ impl Runtime {
         }
     }
 
-    /// Accumulation for PD/PDIR kernels: runtime manages the AccumulationBuffer.
+    /// Accumulation with runtime-managed AccumulationBuffer.
     fn execute_accumulate_external(
         &mut self,
         max_samples: u32,
@@ -1220,35 +1009,7 @@ impl Runtime {
             return;
         }
 
-        let sample_index = accum.sample_count;
-
-        for step in body {
-            match step {
-                PipelineStep::Run { kernel_name, args, .. } => {
-                    if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) =
-                        self.kernels.get(kernel_name)
-                    {
-                        let kfn = *func;
-                        let packed = self.pack_user_args(user_arg_slots, args);
-                        let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
-                        let args_addr = args_ptr as usize;
-                        let tex_slots = self.build_tex_slots(tex_slot_names);
-                        let (cx, cy, z, t) =
-                            (self.center_x, self.center_y, self.zoom, self.time);
-                        let w = self.width as usize;
-                        let h = self.height as usize;
-                        let th = self.tile_height;
-                        let buf = &mut self.pixel_buffer;
-                        with_pool(pool, || {
-                            render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
-                        });
-                    }
-                }
-                other => {
-                    self.execute_steps(&[other.clone()], pool);
-                }
-            }
-        }
+        self.execute_steps(body, pool);
 
         let accum = self.accum.as_mut().unwrap();
         accum.accumulate(&self.pixel_buffer);
@@ -1647,13 +1408,6 @@ fn resolve_path(path: &str, base_dir: &Path) -> std::path::PathBuf {
     }
 }
 
-fn find_binding(bindings: &[BufferBinding], slot_name: &str) -> Option<String> {
-    bindings
-        .iter()
-        .find(|b| b.param_name == slot_name)
-        .map(|b| b.buffer_name.clone())
-}
-
 fn has_accumulate_step(steps: &[PipelineStep]) -> bool {
     steps.iter().any(|s| matches!(s, PipelineStep::Accumulate { .. }))
 }
@@ -1665,46 +1419,6 @@ fn find_accumulate_samples(steps: &[PipelineStep]) -> u32 {
         }
     }
     256
-}
-
-fn compile_pixel_kernel(
-    backend_name: &str,
-    kernel: &crate::kernel_ir::Kernel,
-    user_args: &[UserArgSlot],
-) -> Result<Box<dyn jit::CompiledKernel>, String> {
-    match backend_name {
-        #[cfg(feature = "cranelift-backend")]
-        "cranelift" => {
-            let backend = jit::cranelift::CraneliftBackend;
-            Ok(jit::JitBackend::compile(&backend, kernel, user_args))
-        }
-        #[cfg(feature = "llvm-backend")]
-        "llvm" => {
-            let backend = jit::llvm::LlvmBackend;
-            Ok(jit::JitBackend::compile(&backend, kernel, user_args))
-        }
-        other => Err(format!("unknown backend '{}'", other)),
-    }
-}
-
-fn compile_sim_kernel(
-    backend_name: &str,
-    kernel: &crate::kernel_ir::Kernel,
-    user_args: &[UserArgSlot],
-) -> Result<Box<dyn jit::CompiledSimKernel>, String> {
-    match backend_name {
-        #[cfg(feature = "cranelift-backend")]
-        "cranelift" => {
-            let backend = jit::cranelift::CraneliftBackend;
-            Ok(jit::JitBackend::compile_sim(&backend, kernel, user_args))
-        }
-        #[cfg(feature = "llvm-backend")]
-        "llvm" => {
-            let backend = jit::llvm::LlvmBackend;
-            Ok(jit::JitBackend::compile_sim(&backend, kernel, user_args))
-        }
-        other => Err(format!("unknown backend '{}'", other)),
-    }
 }
 
 /// Map a winit KeyCode to the string name used in .pdp files.

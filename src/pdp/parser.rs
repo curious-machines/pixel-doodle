@@ -266,7 +266,7 @@ impl Parser {
             KernelKind::Standard
         };
 
-        // Either: "path.pd" (unnamed) or name = "path.pd" (named)
+        // Either: "path.wgsl" (unnamed) or name = "path.wgsl" (named)
         match self.peek().clone() {
             Token::StringLit(path) => {
                 self.advance();
@@ -1141,7 +1141,7 @@ mod tests {
         let config = parse_str(
             r#"
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               run gradient
               display
             }
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(config.pipelines[0].kernels.len(), 1);
         assert_eq!(config.pipelines[0].kernels[0].kind, KernelKind::Pixel);
         assert_eq!(config.pipelines[0].kernels[0].name, "gradient");
-        assert_eq!(config.pipelines[0].kernels[0].path, "gradient.pd");
+        assert_eq!(config.pipelines[0].kernels[0].path, "gradient.wgsl");
         let steps = &config.pipelines[0].steps;
         assert_eq!(steps.len(), 2);
         assert!(matches!(&steps[0], PipelineStep::Run { kernel_name, .. } if kernel_name == "gradient"));
@@ -1169,7 +1169,7 @@ mod tests {
             on keydown(plus) zoom *= 1.1
 
             pipeline {
-              pixel kernel "mandelbrot.pd"
+              pixel kernel "mandelbrot.wgsl"
               accumulate(samples: 256) {
                 run mandelbrot
                 display
@@ -1196,9 +1196,9 @@ mod tests {
             on keypress(period) frame += 1
 
             pipeline {
-              kernel "gray_scott.pd"
-              kernel init_u = "init/gray_scott_u.pd"
-              kernel init_v = "init/gray_scott_v.pd"
+              kernel "gray_scott.wgsl"
+              kernel init_u = "init/gray_scott_u.wgsl"
+              kernel init_v = "init/gray_scott_v.wgsl"
 
               buffer u = constant(0.0)
               buffer v = constant(0.0)
@@ -1247,10 +1247,10 @@ mod tests {
             title = "Smoke Simulation"
 
             pipeline {
-              kernel advect = "smoke/advect.pd"
-              kernel divergence = "smoke/divergence.pd"
-              kernel jacobi = "smoke/jacobi.pd"
-              kernel project = "smoke/project.pd"
+              kernel advect = "smoke/advect.wgsl"
+              kernel divergence = "smoke/divergence.wgsl"
+              kernel jacobi = "smoke/jacobi.wgsl"
+              kernel project = "smoke/project.wgsl"
 
               buffer vx = constant(0.0)
               buffer vy = constant(0.0)
@@ -1298,8 +1298,8 @@ mod tests {
             on keypress(bracket_left) iterations -= 1
 
             pipeline {
-              kernel "game_of_life.pd"
-              kernel init_state = "init/random_binary.pd"
+              kernel "game_of_life.wgsl"
+              kernel init_state = "init/random_binary.wgsl"
 
               buffer state = constant(0.0)
               buffer age = constant(0.0)
@@ -1342,12 +1342,12 @@ mod tests {
             r#"
             settings {
               threads = 4
-              backend = "cranelift"
+              backend = "gpu"
               tile_height = 8
             }
 
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               run gradient
               display
             }
@@ -1366,7 +1366,7 @@ mod tests {
             r#"
             var mode: range<u32>(0..3, wrap: true) = 0
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -1385,7 +1385,7 @@ mod tests {
             var speed: f64 = 1.0
             const max_iter: u32 = 256
             pipeline {
-              pixel kernel "test.pd"
+              pixel kernel "test.wgsl"
               run test
               display
             }
@@ -1416,7 +1416,7 @@ mod tests {
             on keypress(space) paused = !paused
 
             pipeline pd {
-              kernel "gray_scott.pd"
+              kernel "gray_scott.wgsl"
               buffer u = constant(1.0)
               buffer v = constant(0.0)
 
@@ -1468,7 +1468,7 @@ mod tests {
             }
 
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               display gradient
             }
             "#,
@@ -1493,7 +1493,7 @@ mod tests {
             on keydown(1) center_x = -0.5
 
             pipeline {
-              pixel kernel "gradient.pd"
+              pixel kernel "gradient.wgsl"
               display gradient
             }
             "#,
@@ -1507,9 +1507,9 @@ mod tests {
 
     #[test]
     fn derive_name_from_path() {
-        assert_eq!(derive_kernel_name("gradient.pd"), "gradient");
-        assert_eq!(derive_kernel_name("smoke/advect.pd"), "advect");
-        assert_eq!(derive_kernel_name("my-kernel.pd"), "my_kernel");
-        assert_eq!(derive_kernel_name("123bad.pd"), "_123bad");
+        assert_eq!(derive_kernel_name("gradient.wgsl"), "gradient");
+        assert_eq!(derive_kernel_name("smoke/advect.wgsl"), "advect");
+        assert_eq!(derive_kernel_name("my-kernel.wgsl"), "my_kernel");
+        assert_eq!(derive_kernel_name("123bad.wgsl"), "_123bad");
     }
 }

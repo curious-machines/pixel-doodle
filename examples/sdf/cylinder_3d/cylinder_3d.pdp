@@ -1,11 +1,5 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "cylinder_3d.pd"
-  run cylinder_3d
-  display
-}
-
 pipeline gpu {
   pixel kernel "cylinder_3d.wgsl"
   run cylinder_3d

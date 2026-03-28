@@ -127,7 +127,7 @@ cargo run --release -- examples/sim/smoke/smoke.pdp --set threads=8 --set tile_h
 Example `.pds` file:
 ```
 threads = 8
-backend = "cranelift"
+backend = "gpu"
 tile_height = 4
 ```
 
@@ -155,7 +155,7 @@ cargo run --release -- examples/sim/smoke/smoke.pdp --bench --threads 4
 ## Building
 
 ```bash
-# Default (Cranelift JIT backend)
+# Default (Cranelift-based CPU backend for WGSL)
 cargo build --release
 
 # With LLVM support (requires LLVM 20 dev libraries)
@@ -175,10 +175,10 @@ If `llvm-config-20` is not on PATH:
 LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backend
 ```
 
-To use the LLVM backend, set it in the `.pdp` settings block:
+To use the LLVM-based CPU backend, set it in the `.pdp` settings block:
 ```
 settings {
-  backend = "llvm"
+  backend = "gpu-llvm"
 }
 ```
-Or via CLI: `--set backend=llvm`
+Or via CLI: `--set backend=gpu-llvm`

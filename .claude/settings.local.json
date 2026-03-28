@@ -51,7 +51,12 @@
       "Bash(./test_regression --no-build --update 2>&1)",
       "Bash(./test_regression --no-build sim/game_of_life 2>&1)",
       "Bash(./test_regression --no-build sim/ 2>&1)",
-      "Bash(./test_regression --no-build --update sim/ 2>&1)"
+      "Bash(./test_regression --no-build --update sim/ 2>&1)",
+      "Bash(/tmp/inventory.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(for pdp:*)",
+      "Bash(./test_regression)",
+      "Bash(xargs rm:*)"
     ]
   }
 }

@@ -12,31 +12,6 @@ on keypress(period) frame += 1
 on keypress(bracket_right) iterations += 1
 on keypress(bracket_left) iterations -= 1
 
-pipeline pd {
-  kernel "game_of_life.pd"
-  kernel init_state = "init/random_binary.pd"
-  kernel inject = "../../shared/inject.pd"
-
-  buffer state = constant(0.0)
-  buffer age = constant(0.0)
-  buffer state_next = constant(0.0)
-  buffer age_next = constant(0.0)
-
-  init {
-    run init_state with(out: out state)
-  }
-  on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
-  }
-  loop(iterations: iterations) {
-    run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
-    display
-    swap state, state_next
-    swap age, age_next
-  }
-}
-
 pipeline gpu {
   kernel step = "game_of_life_step.wgsl"
   kernel vis = "game_of_life_vis.wgsl"

@@ -7,18 +7,15 @@ usage() {
     echo "  category/example: basic/gradient, sim/smoke, sdf/gears, etc."
     echo ""
     echo "  Common --set values:"
-    echo "    pipeline=pd|pdir|gpu       select pipeline (default: first in pdp)"
-    echo "    backend=cranelift|llvm|gpu-cranelift|gpu-llvm"
+    echo "    backend=gpu|gpu-cranelift|gpu-llvm"
     echo "    width=N height=N           window size"
     echo ""
     echo "  All extra arguments are passed through to pixel-doodle."
     echo ""
     echo "Examples:"
     echo "  ./run basic/gradient"
-    echo "  ./run basic/mandelbrot --set pipeline=gpu"
-    echo "  ./run sim/smoke --set pipeline=gpu,backend=gpu-cranelift"
-    echo "  ./run sim/smoke --set pipeline=gpu,backend=gpu-llvm"
-    echo "  ./run basic/gradient --set backend=llvm"
+    echo "  ./run sim/smoke --set backend=gpu-cranelift"
+    echo "  ./run sim/smoke --set backend=gpu-llvm"
     exit 1
 }
 
@@ -31,7 +28,7 @@ shift
 # Detect if llvm backend is requested to enable the right cargo feature.
 features="cranelift-backend"
 for arg in "$@"; do
-    if [[ "$arg" == *"backend=llvm"* || "$arg" == *"backend=gpu-llvm"* ]]; then
+    if [[ "$arg" == *"backend=gpu-llvm"* ]]; then
         features="llvm-backend"
         # Ensure llvm-sys can find LLVM on macOS (Homebrew) and Linux
         if [[ -z "${LLVM_SYS_201_PREFIX:-}" ]]; then

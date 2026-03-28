@@ -102,10 +102,6 @@ done
 backends_for_pipeline() {
     local pipeline="$1"
     case "$pipeline" in
-        pd|pdir)
-            echo "cranelift"
-            echo "llvm"
-            ;;
         gpu)
             echo "gpu"
             echo "gpu-cranelift"

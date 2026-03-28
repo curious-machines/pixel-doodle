@@ -1,17 +1,5 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "gears.pd"
-  run gears
-  display
-}
-
-pipeline pdir {
-  pixel kernel "gears.pdir"
-  run gears
-  display
-}
-
 pipeline gpu {
   pixel kernel "gears.wgsl"
   run gears

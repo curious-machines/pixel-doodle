@@ -1,7 +1,7 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "circle-wobble.pd"
+pipeline gpu {
+  pixel kernel "circle_wobble.wgsl"
   run circle_wobble
   display
 }

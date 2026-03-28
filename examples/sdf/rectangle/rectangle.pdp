@@ -1,7 +1,7 @@
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "rectangle.pd"
+pipeline gpu {
+  pixel kernel "rectangle.wgsl"
   run rectangle
   display
 }

@@ -1,4 +1,4 @@
-# PDP — Pixel Doodle Pipeline Reference
+# PDP -- Pixel Doodle Pipeline Reference
 
 PDP is a declarative configuration language that describes how to run pixel-doodle examples. A `.pdp` file specifies what kernels to load, how to initialize buffers, what pipeline of steps to execute each frame, and how user input maps to actions.
 
@@ -32,7 +32,7 @@ title = "My Example"
 on key(plus) zoom *= 1.1
 
 pipeline {
-  pixel kernel "my_kernel.pd"
+  pixel kernel "my_kernel.wgsl"
   run my_kernel
   display
 }
@@ -46,7 +46,7 @@ Every `.pdp` file must have at least one `pipeline` block. Pipelines contain ker
 
 ```
 pipeline {
-  pixel kernel "gradient.pd"
+  pixel kernel "gradient.wgsl"
   run gradient
   display
 }
@@ -57,16 +57,8 @@ pipeline {
 A single file can define multiple named pipelines for different variants:
 
 ```
-pipeline pd {
-  pixel kernel "mandelbrot.pd"
-  accumulate(samples: 256) {
-    run mandelbrot
-    display
-  }
-}
-
-pipeline pdir {
-  pixel kernel "mandelbrot.pdir"
+pipeline cpu {
+  pixel kernel "mandelbrot.wgsl"
   accumulate(samples: 256) {
     run mandelbrot
     display
@@ -80,7 +72,7 @@ pipeline gpu {
 }
 ```
 
-Pipeline names are arbitrary identifiers. Common conventions: `pd`, `pdir`, `gpu`.
+Pipeline names are arbitrary identifiers. Common conventions: `cpu`, `gpu`.
 
 Pipeline selection:
 - **One pipeline**: always used
@@ -93,8 +85,8 @@ Kernel declarations must be inside a `pipeline` block. Two types:
 
 ```
 pipeline {
-  pixel kernel "gradient.pd"                  # pixel shader — per-pixel computation
-  kernel "gray_scott.pd"                      # general kernel — reads/writes buffers
+  pixel kernel "gradient.wgsl"                  # pixel shader -- per-pixel computation
+  kernel "gray_scott.wgsl"                      # general kernel -- reads/writes buffers
 }
 ```
 
@@ -103,8 +95,8 @@ pipeline {
 When no name is given, the kernel name is derived from the filename:
 
 ```
-pixel kernel "gradient.pd"      # name: gradient
-kernel "smoke/advect.pd"        # name: advect
+pixel kernel "gradient.wgsl"      # name: gradient
+kernel "smoke/advect.wgsl"        # name: advect
 ```
 
 ### Named kernels
@@ -112,8 +104,8 @@ kernel "smoke/advect.pd"        # name: advect
 Use `name = "path"` to give a kernel an explicit name:
 
 ```
-kernel advect = "smoke/advect.pd"
-kernel divergence = "smoke/divergence.pd"
+kernel advect = "smoke/advect.wgsl"
+kernel divergence = "smoke/divergence.wgsl"
 ```
 
 ### Kernel types
@@ -130,13 +122,13 @@ Initialization kernels are no longer a separate declaration type. Instead, use a
 Paths are relative to the config file's directory by default. Use `@root/` to reference from the project root:
 
 ```
-pixel kernel "gradient.pd"                       # relative to config file
-pixel kernel "@root/examples/shared/util.pd"     # relative to project root
+pixel kernel "gradient.wgsl"                       # relative to config file
+pixel kernel "@root/examples/shared/util.wgsl"     # relative to project root
 ```
 
 ## Buffer Declarations
 
-Buffer declarations must be inside a `pipeline` block. CPU simulation buffers are `width × height` arrays of `f64`. GPU buffers require a type annotation:
+Buffer declarations must be inside a `pipeline` block. CPU simulation buffers are `width x height` arrays of `f64`. GPU buffers require a type annotation:
 
 ```
 pipeline {
@@ -181,13 +173,13 @@ texture name = file("path/to/image.png")
 - Paths are relative to the config file's directory
 - Supported formats: PNG, JPEG (via the `image` crate)
 - Textures are loaded as RGBA8 data
-- Texture names must match the kernel's `textures(...)` declaration (for PD kernels) or WGSL binding names (for GPU kernels)
+- Texture names must match the WGSL binding names in the kernel
 
 ### Example
 
 ```
-pipeline pd {
-  pixel kernel "textured.pd"
+pipeline {
+  pixel kernel "textured.wgsl"
   texture albedo = file("albedo.png")
   texture normal = file("normal.png")
   run textured
@@ -250,7 +242,7 @@ Execution settings not visible to kernels:
 ```
 settings {
   threads = 4              # worker thread count
-  backend = "cranelift"    # JIT backend: "cranelift", "llvm", or "gpu"
+  backend = "gpu"          # backend: "gpu", "gpu-cranelift", or "gpu-llvm"
   tile_height = 8          # rows per tile for parallel dispatch
 }
 ```
@@ -338,7 +330,7 @@ Included content is merged into the including file as if written inline.
 
 ## Pipeline Steps
 
-### `run` — Execute a kernel
+### `run` -- Execute a kernel
 
 ```
 run kernel_name                                              # no I/O (pixel kernel)
@@ -356,13 +348,6 @@ run advect with(vx_in: vx0, den_in: density0, vx_out: out vx) # sim kernel with 
 
 Kernels can declare parameters beyond the built-in names (`x`, `y`, `px`, `py`, `sample_index`, `time`, `width`, `height` for pixel kernels; `px`, `py`, `width`, `height` for simulation kernels). Any parameter whose name is not a built-in is a **user-defined argument** that must be supplied in the `run` statement.
 
-For example, a kernel that declares `max_iter: u32`:
-
-```
-# In the .pd kernel file:
-kernel mandelbrot(x: f64, y: f64, max_iter: u32) -> u32 { ... }
-```
-
 Must be called with that argument in the .pdp file:
 
 ```
@@ -378,8 +363,8 @@ max_iters: range<u32>(10..500) = 256
 on key(up) max_iters += 10
 on key(down) max_iters -= 10
 
-pipeline pd {
-  pixel kernel "mandelbrot.pd"
+pipeline {
+  pixel kernel "mandelbrot.wgsl"
   run mandelbrot(max_iter: max_iters)    # resolved each frame from the variable
   display
 }
@@ -387,15 +372,15 @@ pipeline pd {
 
 Variable references are resolved at runtime before each kernel dispatch, so changes via key bindings or `--set` take effect immediately.
 
-Supported argument types: all scalar types (`f32`, `f64`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`). All user args must be explicitly provided — there are no default values.
+Supported argument types: all scalar types (`f32`, `f64`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`). All user args must be explicitly provided -- there are no default values.
 
-### `display` — Show pixels on screen
+### `display` -- Show pixels on screen
 
 Presents pixel data to the screen. Takes no arguments (CPU) or a buffer name (GPU):
 
 ```
-display                    # CPU — display the pixel buffer written by the most recent run step
-display pixels             # GPU — display the named gpu(u32) buffer
+display                    # CPU -- display the pixel buffer written by the most recent run step
+display pixels             # GPU -- display the named gpu(u32) buffer
 ```
 
 Every pipeline must have at least one `display` step.
@@ -409,7 +394,7 @@ run vis with(grid_in: grid, pixels: out pixels)
 display pixels
 ```
 
-### `init` — Run steps once at startup
+### `init` -- Run steps once at startup
 
 The `init { }` block contains steps that execute exactly once before the first frame. Use it to populate buffers with initial values:
 
@@ -422,7 +407,7 @@ init {
 
 Steps inside `init` follow the same syntax as regular pipeline steps (`run`, `swap`, etc.) but `display` is not allowed inside `init`.
 
-### `swap` — Swap buffers
+### `swap` -- Swap buffers
 
 ```
 swap u, u_next
@@ -432,7 +417,7 @@ swap vy, vy0
 
 Swaps buffer contents by pointer (O(1), no copying). One pair per statement.
 
-### `loop` — Repeat within a frame
+### `loop` -- Repeat within a frame
 
 ```
 loop(iterations: 8) {
@@ -444,7 +429,7 @@ loop(iterations: iterations) {
 }
 ```
 
-### `accumulate` — Progressive sampling across frames
+### `accumulate` -- Progressive sampling across frames
 
 ```
 accumulate(samples: 256) {
@@ -455,7 +440,7 @@ accumulate(samples: 256) {
 
 Each frame renders one sample. Results are accumulated and averaged for display. Resets when viewport changes (center/zoom modification).
 
-### `on click` — Mouse event handler
+### `on click` -- Mouse event handler
 
 ```
 on click(continuous: true) {
@@ -464,8 +449,8 @@ on click(continuous: true) {
 }
 ```
 
-- `continuous: true` — fires every frame while the mouse button is held
-- `continuous: false` — fires once per click (default)
+- `continuous: true` -- fires every frame while the mouse button is held
+- `continuous: false` -- fires once per click (default)
 - Position in the pipeline determines execution order relative to other steps
 
 ### Built-in `inject` kernel
@@ -481,7 +466,7 @@ run inject(value: -3.0, radius: 15, falloff: "quadratic") with(target: out buf)
 |-----------|-------------|
 | `value` | Value to write (f64) |
 | `radius` | Injection radius in pixels |
-| `falloff` | `"flat"` (default, sets value) or `"quadratic"` (scales by 1-d²/r², adds to existing) |
+| `falloff` | `"flat"` (default, sets value) or `"quadratic"` (scales by 1-d^2/r^2, adds to existing) |
 
 ## Override Layering
 
@@ -498,7 +483,7 @@ A flat key-value file (one per line, `#` comments):
 ```
 # my_machine.pds
 threads = 4
-backend = "cranelift"
+backend = "gpu"
 width = 1920
 height = 1080
 ```
@@ -509,7 +494,7 @@ height = 1080
 
 ```
 pipeline {
-  pixel kernel "gradient.pd"
+  pixel kernel "gradient.wgsl"
   run gradient
   display
 }
@@ -520,16 +505,8 @@ pipeline {
 ```
 include "../../shared/pan_zoom.pdp"
 
-pipeline pd {
-  pixel kernel "mandelbrot.pd"
-  accumulate(samples: 256) {
-    run mandelbrot
-    display
-  }
-}
-
-pipeline pdir {
-  pixel kernel "mandelbrot.pdir"
+pipeline cpu {
+  pixel kernel "mandelbrot.wgsl"
   accumulate(samples: 256) {
     run mandelbrot
     display
@@ -552,10 +529,10 @@ title = "Gray-Scott Reaction Diffusion"
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline pd {
-  kernel "gray_scott.pd"
-  kernel init_u = "init/gray_scott_u.pd"
-  kernel init_v = "init/gray_scott_v.pd"
+pipeline cpu {
+  kernel "gray_scott.wgsl"
+  kernel init_u = "init/gray_scott_u.wgsl"
+  kernel init_v = "init/gray_scott_v.wgsl"
 
   buffer u = constant(0.0)
   buffer v = constant(0.0)
@@ -605,11 +582,11 @@ title = "Smoke Simulation"
 on key(space) paused = !paused
 on key(period) frame += 1
 
-pipeline pd {
-  kernel advect = "advect.pd"
-  kernel divergence = "divergence.pd"
-  kernel jacobi = "jacobi.pd"
-  kernel project = "project.pd"
+pipeline {
+  kernel advect = "advect.wgsl"
+  kernel divergence = "divergence.wgsl"
+  kernel jacobi = "jacobi.wgsl"
+  kernel project = "project.wgsl"
 
   buffer vx = constant(0.0)
   buffer vy = constant(0.0)
@@ -653,9 +630,9 @@ on key(period) frame += 1
 on key(bracket_right) iterations += 1
 on key(bracket_left) iterations -= 1
 
-pipeline pd {
-  kernel "game_of_life.pd"
-  kernel init_state = "init/random_binary.pd"
+pipeline {
+  kernel "game_of_life.wgsl"
+  kernel init_state = "init/random_binary.wgsl"
 
   buffer state = constant(0.0)
   buffer age = constant(0.0)
