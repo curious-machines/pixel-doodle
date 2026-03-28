@@ -1340,6 +1340,18 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 let max_v = self.get_expr(arg2.unwrap()).to_vec();
                 Ok(vals.iter().enumerate().map(|(i, v)| { let t = self.builder.ins().fmax(*v, min_v[i]); self.builder.ins().fmin(t, max_v[i]) }).collect())
             }
+            MathFunction::Mix => {
+                let b_vals = self.get_expr(arg1.unwrap()).to_vec();
+                let t_vals = self.get_expr(arg2.unwrap()).to_vec();
+                let one = self.builder.ins().f32const(1.0);
+                Ok(vals.iter().enumerate().map(|(i, a)| {
+                    let t = t_vals[i % t_vals.len()];
+                    let omt = self.builder.ins().fsub(one, t);
+                    let at = self.builder.ins().fmul(*a, omt);
+                    let bt = self.builder.ins().fmul(b_vals[i], t);
+                    self.builder.ins().fadd(at, bt)
+                }).collect())
+            }
             _ => {
                 let mut results = Vec::with_capacity(n);
                 for v in &vals {

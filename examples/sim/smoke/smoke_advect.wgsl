@@ -1,7 +1,7 @@
 // Physics constants
-const DT: f32 = 0.016;
+const DT: f32 = 4.0;
 const DISSIPATION: f32 = 0.998;
-const BUOYANCY: f32 = 1.0;
+const BUOYANCY: f32 = 0.08;
 
 struct Params {
     width: u32,
