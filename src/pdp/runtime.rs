@@ -41,6 +41,15 @@ enum CompiledKernelEntry {
     GpuSim {
         wgsl_source: String,
     },
+    /// WGSL shader compiled to CPU via naga + Cranelift.
+    #[cfg(feature = "cranelift-backend")]
+    WgslCpu {
+        compiled: jit::wgsl_cranelift::CompiledWgslKernel,
+        /// Number of storage buffers (binding 1, 2, ...).
+        num_storage_buffers: usize,
+        /// Texture slot names in declaration order.
+        tex_slot_names: Vec<String>,
+    },
 }
 
 /// The PDP execution engine. Holds all state for running a config-driven example.
@@ -269,13 +278,34 @@ impl Runtime {
         for decl in &kernel_decls {
             let path = resolve_path(&decl.path, &base_dir);
 
-            // GPU kernels (.wgsl) — defer compilation until display is available
+            // GPU kernels (.wgsl) — compile to CPU or defer to GPU
             if path.extension().is_some_and(|e| e == "wgsl") {
                 let src = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read kernel '{}': {}", path.display(), e))?;
                 if src.contains("params.time") {
                     self.animated = true;
                 }
+
+                #[cfg(feature = "cranelift-backend")]
+                if backend_name == "wgsl-cpu" {
+                    let compiled = jit::wgsl_cranelift::compile_wgsl(&src)
+                        .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
+                    // Count storage buffers from the pipeline's texture/buffer declarations.
+                    let tex_names: Vec<String> = self
+                        .selected_pipeline()
+                        .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
+                        .unwrap_or_default();
+                    // Count storage buffer bindings by parsing the WGSL (quick heuristic).
+                    let num_bufs = src.matches("var<storage").count();
+                    eprintln!("compiled WGSL kernel '{}' to CPU ({} storage buffers)", decl.name, num_bufs);
+                    self.kernels.insert(decl.name.clone(), CompiledKernelEntry::WgslCpu {
+                        compiled,
+                        num_storage_buffers: num_bufs,
+                        tex_slot_names: tex_names,
+                    });
+                    continue;
+                }
+
                 // Standard kernels go through GpuSimRunner, pixel kernels through GpuBackend
                 let entry = if decl.kind == KernelKind::Standard {
                     CompiledKernelEntry::GpuSim { wgsl_source: src }
@@ -844,6 +874,82 @@ impl Runtime {
                         val as f32
                     }).collect();
                     runner.dispatch(kernel_name, &bindings, &user_args);
+                }
+            }
+            #[cfg(feature = "cranelift-backend")]
+            Some(CompiledKernelEntry::WgslCpu { compiled, num_storage_buffers, tex_slot_names }) => {
+                let fn_ptr = compiled.fn_ptr;
+                let w = self.width;
+                let h = self.height;
+                let stride = w; // no alignment needed for CPU
+
+                // Build Params struct matching the GPU layout:
+                // width(u32) height(u32) max_iter(u32) stride(u32)
+                // x_min(f32) y_min(f32) x_step(f32) y_step(f32)
+                // sample_index(u32) sample_count(u32) time(f32) _pad(u32)
+                let aspect = w as f64 / h as f64;
+                let view_w = 3.5 / self.zoom;
+                let view_h = view_w / aspect;
+                let x_min = (self.center_x - view_w / 2.0) as f32;
+                let y_min = (self.center_y - view_h / 2.0) as f32;
+                let x_step = (view_w / w as f64) as f32;
+                let y_step = (view_h / h as f64) as f32;
+
+                let mut params = vec![0u8; 256]; // same size as GPU uniform buffer
+                params[0..4].copy_from_slice(&w.to_le_bytes());
+                params[4..8].copy_from_slice(&h.to_le_bytes());
+                params[8..12].copy_from_slice(&256u32.to_le_bytes()); // max_iter
+                params[12..16].copy_from_slice(&stride.to_le_bytes());
+                params[16..20].copy_from_slice(&x_min.to_le_bytes());
+                params[20..24].copy_from_slice(&y_min.to_le_bytes());
+                params[24..28].copy_from_slice(&x_step.to_le_bytes());
+                params[28..32].copy_from_slice(&y_step.to_le_bytes());
+                params[32..36].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // sample_index (no jitter)
+                params[36..40].copy_from_slice(&0u32.to_le_bytes()); // sample_count
+                params[40..44].copy_from_slice(&(self.time as f32).to_le_bytes());
+
+                // Write user args after the base Params (offset 48), as f32.
+                let mut arg_offset = 48;
+                for a in args {
+                    let val = match &a.value {
+                        Literal::Float(f) => *f as f32,
+                        Literal::Int(i) => *i as f32,
+                        Literal::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
+                        Literal::Str(_) => 0.0f32,
+                        Literal::VarRef(name) => self.get_variable(name) as f32,
+                    };
+                    if arg_offset + 4 <= params.len() {
+                        params[arg_offset..arg_offset + 4].copy_from_slice(&val.to_le_bytes());
+                        arg_offset += 4;
+                    }
+                }
+
+                // Build buffer pointer array: binding 1 = output pixel buffer.
+                let num_bufs = *num_storage_buffers;
+                let mut buf_ptrs: Vec<*mut u8> = Vec::with_capacity(num_bufs);
+                buf_ptrs.push(self.pixel_buffer.as_mut_ptr() as *mut u8);
+                // Additional buffers would go here for sim kernels.
+                while buf_ptrs.len() < num_bufs {
+                    buf_ptrs.push(std::ptr::null_mut());
+                }
+
+                // Build texture slots.
+                let tex_slots = self.build_tex_slots(tex_slot_names);
+                let tex_ptr = if tex_slots.is_empty() {
+                    std::ptr::null()
+                } else {
+                    tex_slots.as_ptr() as *const u8
+                };
+
+                unsafe {
+                    fn_ptr(
+                        params.as_ptr(),
+                        buf_ptrs.as_ptr() as *const *mut u8,
+                        tex_ptr,
+                        w,
+                        h,
+                        stride,
+                    );
                 }
             }
             None => {
