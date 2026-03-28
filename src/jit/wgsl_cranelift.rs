@@ -35,6 +35,10 @@ use naga::{
 /// For sim shaders: buffers[N] corresponds to @binding(N+1).
 /// `tex_slots` is a pointer to an array of TextureSlot structs (16 bytes each),
 /// one per texture binding in binding order. May be null if no textures.
+///
+/// The kernel processes rows `[row_start, row_end)`. The `params` buffer still
+/// contains the full image width/height for view mapping — row_start/row_end
+/// only control which rows this call computes.
 pub type WgslKernelFn = unsafe extern "C" fn(
     params: *const u8,
     buffers: *const *mut u8,
@@ -42,6 +46,8 @@ pub type WgslKernelFn = unsafe extern "C" fn(
     width: u32,
     height: u32,
     stride: u32,
+    row_start: u32,
+    row_end: u32,
 );
 
 /// Compiled WGSL kernel — holds the JIT module (to keep code alive) and the
@@ -86,7 +92,8 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     }
     let mut jit_module = JITModule::new(jit_builder);
 
-    // Build the function signature: (params, buffers, tex_slots, width, height, stride) -> void
+    // Build the function signature:
+    // (params, buffers, tex_slots, width, height, stride, row_start, row_end) -> void
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(I64)); // params: *const u8
     sig.params.push(AbiParam::new(I64)); // buffers: *const *mut u8
@@ -94,6 +101,8 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     sig.params.push(AbiParam::new(I32)); // width: u32
     sig.params.push(AbiParam::new(I32)); // height: u32
     sig.params.push(AbiParam::new(I32)); // stride: u32
+    sig.params.push(AbiParam::new(I32)); // row_start: u32
+    sig.params.push(AbiParam::new(I32)); // row_end: u32
 
     let func_id = jit_module
         .declare_function("wgsl_main", Linkage::Local, &sig)
@@ -120,6 +129,8 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
         let p_width = builder.block_params(entry_block)[3];
         let p_height = builder.block_params(entry_block)[4];
         let p_stride = builder.block_params(entry_block)[5];
+        let p_row_start = builder.block_params(entry_block)[6];
+        let p_row_end = builder.block_params(entry_block)[7];
 
         // Build row/col loop: for row in 0..height { for col in 0..width { ... } }
         let loop_header_row = builder.create_block();
@@ -134,15 +145,14 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
         let v_row = builder.declare_var(I32);
         let v_col = builder.declare_var(I32);
 
-        let zero = builder.ins().iconst(I32, 0);
-        builder.def_var(v_row, zero);
+        builder.def_var(v_row, p_row_start);
         builder.ins().jump(loop_header_row, &[]);
 
-        // Row loop header: if row >= height, exit.
+        // Row loop header: if row >= row_end, exit.
         // NOTE: Don't seal loop headers yet — they have back-edges from increments.
         builder.switch_to_block(loop_header_row);
         let row_val = builder.use_var(v_row);
-        let row_cmp = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, row_val, p_height);
+        let row_cmp = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, row_val, p_row_end);
         builder.ins().brif(row_cmp, exit_block, &[], loop_body_row, &[]);
 
         // Row loop body: reset col = 0, enter col loop.
@@ -1797,6 +1807,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 
@@ -1866,6 +1878,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 
@@ -1933,6 +1947,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 
@@ -1999,6 +2015,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 
@@ -2063,6 +2081,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 
@@ -2130,6 +2150,8 @@ mod tests {
                 width,
                 height,
                 stride,
+                0,
+                height,
             );
         }
 

@@ -926,31 +926,45 @@ impl Runtime {
 
                 // Build buffer pointer array: binding 1 = output pixel buffer.
                 let num_bufs = *num_storage_buffers;
-                let mut buf_ptrs: Vec<*mut u8> = Vec::with_capacity(num_bufs);
-                buf_ptrs.push(self.pixel_buffer.as_mut_ptr() as *mut u8);
+                let output_ptr = self.pixel_buffer.as_mut_ptr() as usize;
                 // Additional buffers would go here for sim kernels.
-                while buf_ptrs.len() < num_bufs {
-                    buf_ptrs.push(std::ptr::null_mut());
-                }
 
                 // Build texture slots.
                 let tex_slots = self.build_tex_slots(tex_slot_names);
-                let tex_ptr = if tex_slots.is_empty() {
-                    std::ptr::null()
-                } else {
-                    tex_slots.as_ptr() as *const u8
-                };
+                let tex_addr = tex_slots.as_ptr() as usize;
 
-                unsafe {
-                    fn_ptr(
-                        params.as_ptr(),
-                        buf_ptrs.as_ptr() as *const *mut u8,
-                        tex_ptr,
-                        w,
-                        h,
-                        stride,
-                    );
-                }
+                let th = self.tile_height;
+                let params_ref = &params;
+                with_pool(pool, || {
+                    use rayon::prelude::*;
+                    let num_tiles = (h as usize + th - 1) / th;
+                    (0..num_tiles).into_par_iter().for_each(|tile| {
+                        let row_start = (tile * th) as u32;
+                        let row_end = ((tile + 1) * th).min(h as usize) as u32;
+                        let mut buf_ptrs: Vec<*mut u8> = Vec::with_capacity(num_bufs);
+                        buf_ptrs.push(output_ptr as *mut u8);
+                        while buf_ptrs.len() < num_bufs {
+                            buf_ptrs.push(std::ptr::null_mut());
+                        }
+                        let tex_ptr = if tex_addr == 0 {
+                            std::ptr::null()
+                        } else {
+                            tex_addr as *const u8
+                        };
+                        unsafe {
+                            fn_ptr(
+                                params_ref.as_ptr(),
+                                buf_ptrs.as_ptr() as *const *mut u8,
+                                tex_ptr,
+                                w,
+                                h,
+                                stride,
+                                row_start,
+                                row_end,
+                            );
+                        }
+                    });
+                });
             }
             None => {
                 eprintln!("warning: kernel '{}' not found", kernel_name);
