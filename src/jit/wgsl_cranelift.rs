@@ -195,8 +195,6 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
 
     let mut ctx = cranelift_codegen::Context::for_function(func);
     if let Err(e) = jit_module.define_function(func_id, &mut ctx) {
-        // Print the Cranelift IR for debugging.
-        eprintln!("Cranelift IR:\n{}", ctx.func.display());
         return Err(format!("define_function: {e:#}"));
     }
     jit_module.finalize_definitions().unwrap();
@@ -685,7 +683,15 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
     }
 
     fn eval_expr(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<(), String> {
-        if self.expr_values.contains_key(&handle) {
+        // Skip re-evaluation for non-trivial expressions that are already cached.
+        // Literals, constants, and zero values are always re-emitted because cached
+        // values may live in a block that doesn't dominate the current position
+        // (e.g., after if/else merges or loop iterations).
+        let is_trivial = matches!(
+            &func.expressions[handle],
+            Expression::Literal(_) | Expression::Constant(_) | Expression::ZeroValue(_)
+        );
+        if !is_trivial && self.expr_values.contains_key(&handle) {
             return Ok(());
         }
 
