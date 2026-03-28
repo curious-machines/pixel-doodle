@@ -553,18 +553,6 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         self.get_expr(handle)[0]
     }
 
-    /// Ensure an expression is evaluated, then return its values.
-    fn ensure_expr(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<Vec<cranelift_codegen::ir::Value>, String> {
-        if !self.expr_values.contains_key(&handle) {
-            self.eval_expr(handle, func)?;
-        }
-        Ok(self.get_expr(handle).to_vec())
-    }
-
-    fn ensure_expr_scalar(&mut self, handle: Handle<Expression>, func: &naga::Function) -> Result<cranelift_codegen::ir::Value, String> {
-        Ok(self.ensure_expr(handle, func)?[0])
-    }
-
     /// Best-effort type resolution by inspecting the expression.
     fn resolve_expr_type<'c>(&'c self, handle: Handle<Expression>, func: &'c naga::Function) -> &'c TypeInner {
         match &func.expressions[handle] {
@@ -1230,7 +1218,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         arg: Handle<Expression>,
         arg1: Option<Handle<Expression>>,
         arg2: Option<Handle<Expression>>,
-        func: &naga::Function,
+        _func: &naga::Function,
     ) -> Result<Vec<cranelift_codegen::ir::Value>, String> {
         let vals = self.get_expr(arg).to_vec();
         let n = vals.len();
