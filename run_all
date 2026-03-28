@@ -36,7 +36,8 @@ backends=(
 for combo in "${backends[@]}"; do
     echo "═══ $combo ═══"
     # Extract pipeline and backend values for the window title.
+    name=$(basename "$example")
     pip="${combo#*pipeline=}"; pip="${pip%%,*}"
     be="${combo#*backend=}"; be="${be%%,*}"
-    ./run "$example" --set "$combo,title=$pip + $be" "$@" || echo "  ⚠ exited with $?"
+    ./run "$example" --set "$combo,title=$name - $pip/$be" "$@" || echo "  ⚠ exited with $?"
 done

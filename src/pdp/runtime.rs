@@ -59,9 +59,13 @@ pub struct Runtime {
     /// Byte-level simulation buffers for gpu-cranelift/gpu-llvm backend (name -> raw bytes).
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     gpu_cpu_buffers: HashMap<String, Vec<u8>>,
-    /// Progressive sample counter for gpu-cranelift/gpu-llvm backends.
+    /// Auto-allocated storage buffers for pixel kernels (not sim — doesn't trigger continuous redraw).
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
-    gpu_cpu_sample_index: u32,
+    gpu_cpu_auto_buffers: HashMap<String, Vec<u8>>,
+    /// Progressive sample counter for GPU pixel kernels (all GPU backends).
+    gpu_sample_index: u32,
+    /// Max samples for GPU progressive accumulation (from accumulate block, 0 = single-shot).
+    gpu_max_samples: u32,
     /// Loaded textures: name -> RGBA8 data.
     textures: HashMap<String, TextureData>,
     /// User-defined variables.
@@ -144,7 +148,9 @@ impl Runtime {
             #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             gpu_cpu_buffers: HashMap::new(),
             #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
-            gpu_cpu_sample_index: 0,
+            gpu_cpu_auto_buffers: HashMap::new(),
+            gpu_sample_index: 0,
+            gpu_max_samples: 0,
             textures: HashMap::new(),
             variables,
             var_ranges,
@@ -532,6 +538,14 @@ impl Runtime {
     /// Set up progressive rendering if needed.
     pub fn setup_progressive(&mut self) {
         if self.has_accumulate() {
+            // GPU/GpuCpu kernels handle accumulation internally in the shader —
+            // don't create the external AccumulationBuffer for them.
+            let uses_internal_accum = self.kernels.values().any(|e| {
+                matches!(e, CompiledKernelEntry::Gpu { .. } | CompiledKernelEntry::GpuCpu { .. })
+            });
+            if uses_internal_accum {
+                return;
+            }
             let pipeline = self.selected_pipeline().unwrap();
             let max = find_accumulate_samples(&pipeline.steps);
             self.display_buffer = Some(vec![0u32; (self.width * self.height) as usize]);
@@ -963,8 +977,8 @@ impl Runtime {
                         "y_min" => params[off..off+4].copy_from_slice(&((self.center_y - view_h / 2.0) as f32).to_le_bytes()),
                         "x_step" => params[off..off+4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
                         "y_step" => params[off..off+4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
-                        "sample_index" => params[off..off+4].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()),
-                        "sample_count" => params[off..off+4].copy_from_slice(&0u32.to_le_bytes()),
+                        "sample_index" => params[off..off+4].copy_from_slice(&self.gpu_sample_index.to_le_bytes()),
+                        "sample_count" => params[off..off+4].copy_from_slice(&(self.gpu_sample_index + 1).to_le_bytes()),
                         "time" => params[off..off+4].copy_from_slice(&(self.time as f32).to_le_bytes()),
                         name if name.starts_with('_') => {} // padding
                         _ => {
@@ -1008,7 +1022,7 @@ impl Runtime {
                     for i in 1..num_bufs {
                         let elem_bytes = compiled.buffer_elem_bytes.get(i).copied().unwrap_or(4) as usize;
                         let auto_name = format!("__auto_buf_{i}");
-                        let buf = self.gpu_cpu_buffers.entry(auto_name)
+                        let buf = self.gpu_cpu_auto_buffers.entry(auto_name)
                             .or_insert_with(|| vec![0u8; pixel_count * elem_bytes]);
                         buf_ptrs_base[i] = buf.as_mut_ptr() as usize;
                     }
@@ -1060,9 +1074,11 @@ impl Runtime {
     /// Reset gpu-cpu progressive sampling state: clear accum buffers and sample counter.
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     fn reset_gpu_cpu_accum(&mut self) {
-        self.gpu_cpu_sample_index = 0;
-        // Zero out any accum-like gpu_cpu_buffers so stale samples don't persist.
+        self.gpu_sample_index = 0;
         for buf in self.gpu_cpu_buffers.values_mut() {
+            buf.fill(0);
+        }
+        for buf in self.gpu_cpu_auto_buffers.values_mut() {
             buf.fill(0);
         }
     }
@@ -1109,7 +1125,34 @@ impl Runtime {
         body: &[PipelineStep],
         pool: &Option<rayon::ThreadPool>,
     ) {
-        // Initialize accumulation on first call
+        // Detect if the body uses a kernel that does its own internal accumulation
+        // (GpuCpu or Gpu kernels with accum buffers managed by the shader).
+        let uses_internal_accum = body.iter().any(|step| {
+            if let PipelineStep::Run { kernel_name, .. } = step {
+                matches!(
+                    self.kernels.get(kernel_name),
+                    Some(CompiledKernelEntry::Gpu { .. })
+                    | Some(CompiledKernelEntry::GpuCpu { .. })
+                )
+            } else {
+                false
+            }
+        });
+
+        if uses_internal_accum {
+            self.execute_accumulate_internal(max_samples, body, pool);
+        } else {
+            self.execute_accumulate_external(max_samples, body, pool);
+        }
+    }
+
+    /// Accumulation for PD/PDIR kernels: runtime manages the AccumulationBuffer.
+    fn execute_accumulate_external(
+        &mut self,
+        max_samples: u32,
+        body: &[PipelineStep],
+        pool: &Option<rayon::ThreadPool>,
+    ) {
         if self.accum.is_none() {
             self.accum = Some(AccumulationBuffer::new(
                 self.width as usize,
@@ -1126,41 +1169,35 @@ impl Runtime {
 
         let accum = self.accum.as_mut().unwrap();
         if accum.is_converged() {
-            // Already converged — just present the display buffer
             return;
         }
 
         let sample_index = accum.sample_count;
 
-        // For accumulate, we need to run pixel kernels with the sample index
-        // Override the pixel rendering to use progressive mode
-        {
-            // Find the run step for a pixel kernel inside body and run it with sample_index
-            for step in body {
-                match step {
-                    PipelineStep::Run { kernel_name, args, .. } => {
-                        if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) =
-                            self.kernels.get(kernel_name)
-                        {
-                            let kfn = *func;
-                            let packed = self.pack_user_args(user_arg_slots, args);
-                            let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
-                            let args_addr = args_ptr as usize;
-                            let tex_slots = self.build_tex_slots(tex_slot_names);
-                            let (cx, cy, z, t) =
-                                (self.center_x, self.center_y, self.zoom, self.time);
-                            let w = self.width as usize;
-                            let h = self.height as usize;
-                            let th = self.tile_height;
-                            let buf = &mut self.pixel_buffer;
-                            with_pool(pool, || {
-                                render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
-                            });
-                        }
+        for step in body {
+            match step {
+                PipelineStep::Run { kernel_name, args, .. } => {
+                    if let Some(CompiledKernelEntry::Pixel { func, user_arg_slots, tex_slot_names, .. }) =
+                        self.kernels.get(kernel_name)
+                    {
+                        let kfn = *func;
+                        let packed = self.pack_user_args(user_arg_slots, args);
+                        let args_ptr = if packed.is_empty() { std::ptr::null() } else { packed.as_ptr() };
+                        let args_addr = args_ptr as usize;
+                        let tex_slots = self.build_tex_slots(tex_slot_names);
+                        let (cx, cy, z, t) =
+                            (self.center_x, self.center_y, self.zoom, self.time);
+                        let w = self.width as usize;
+                        let h = self.height as usize;
+                        let th = self.tile_height;
+                        let buf = &mut self.pixel_buffer;
+                        with_pool(pool, || {
+                            render::render(buf, w, h, cx, cy, z, kfn, sample_index, t, th, args_addr as *const u8, &tex_slots);
+                        });
                     }
-                    other => {
-                        self.execute_steps(&[other.clone()], pool);
-                    }
+                }
+                other => {
+                    self.execute_steps(&[other.clone()], pool);
                 }
             }
         }
@@ -1169,6 +1206,33 @@ impl Runtime {
         accum.accumulate(&self.pixel_buffer);
         let disp = self.display_buffer.as_mut().unwrap();
         accum.resolve(disp);
+    }
+
+    /// Accumulation for GpuCpu/Gpu kernels: shader manages its own accum buffer.
+    /// The runtime just passes sample_index/sample_count and tracks convergence.
+    fn execute_accumulate_internal(
+        &mut self,
+        max_samples: u32,
+        body: &[PipelineStep],
+        pool: &Option<rayon::ThreadPool>,
+    ) {
+        self.gpu_max_samples = max_samples;
+
+        if self.accum_dirty {
+            self.gpu_sample_index = 0;
+            self.reset_gpu_cpu_accum();
+            self.accum_dirty = false;
+        }
+
+        if self.gpu_sample_index >= max_samples {
+            return; // converged
+        }
+
+        // Execute the body steps — execute_run will pick up gpu_sample_index
+        // for GpuCpu kernels; for real GPU kernels render_gpu_frame reads it.
+        self.execute_steps(body, pool);
+
+        self.gpu_sample_index += 1;
     }
 
     /// Handle a keydown event. Returns `true` if the app should quit.
@@ -1340,13 +1404,14 @@ impl Runtime {
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
+            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                0xFFFFFFFF,
-                0,
+                si,
+                si + 1,
                 self.time,
                 &self.gpu_user_args,
             );
@@ -1368,13 +1433,14 @@ impl Runtime {
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
+            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                0xFFFFFFFF,
-                0,
+                si,
+                si + 1,
                 self.time,
                 &self.gpu_user_args,
             );
@@ -1462,14 +1528,22 @@ impl Runtime {
         if !self.gpu_cpu_buffers.is_empty() {
             return true;
         }
+        // GPU progressive accumulation (from accumulate block)
+        if self.gpu_max_samples > 0 && self.gpu_sample_index < self.gpu_max_samples {
+            return true;
+        }
         // GPU simulations have buffers in the GPU runner, not self.buffers
         self.gpu_sim_runner.is_some()
     }
 
     pub fn accumulation_info(&self) -> Option<(u32, u32)> {
-        self.accum
-            .as_ref()
-            .map(|a| (a.sample_count, a.max_samples))
+        if let Some(ref a) = self.accum {
+            return Some((a.sample_count, a.max_samples));
+        }
+        if self.gpu_max_samples > 0 {
+            return Some((self.gpu_sample_index, self.gpu_max_samples));
+        }
+        None
     }
 }
 
