@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: ./run_all <category/example> [options]"
+    echo ""
+    echo "  Runs the example with all 5 JIT backends sequentially:"
+    echo "    1. pd + cranelift"
+    echo "    2. pd + llvm"
+    echo "    3. pdir + cranelift"
+    echo "    4. gpu + gpu-cranelift"
+    echo "    5. gpu + gpu-llvm"
+    echo ""
+    echo "  Extra arguments are passed through to each run."
+    echo ""
+    echo "Examples:"
+    echo "  ./run_all basic/gradient"
+    echo "  ./run_all sdf/cylinder_3d --set width=800,height=600"
+    exit 1
+}
+
+[[ $# -lt 1 ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+
+example="$1"
+shift
+
+backends=(
+    "pipeline=pd,backend=cranelift"
+    "pipeline=pd,backend=llvm"
+    "pipeline=gpu,backend=gpu"
+    "pipeline=gpu,backend=gpu-cranelift"
+    "pipeline=gpu,backend=gpu-llvm"
+)
+
+for combo in "${backends[@]}"; do
+    echo "═══ $combo ═══"
+    # Extract pipeline and backend values for the window title.
+    pip="${combo#*pipeline=}"; pip="${pip%%,*}"
+    be="${combo#*backend=}"; be="${be%%,*}"
+    ./run "$example" --set "$combo,title=$pip + $be" "$@" || echo "  ⚠ exited with $?"
+done

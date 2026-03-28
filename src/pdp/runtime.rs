@@ -233,6 +233,7 @@ impl Runtime {
                 }
                 "backend" => self.backend_name = value.clone(),
                 "pipeline" => self.pipeline_name = Some(value.clone()),
+                "title" => self.config.title = Some(value.clone()),
                 "tile_height" => {
                     if let Ok(v) = value.parse::<usize>() {
                         self.tile_height = v;
