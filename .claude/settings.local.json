@@ -39,7 +39,19 @@
       "Bash(done)",
       "Bash(./run_pd cranelift:*)",
       "Bash(echo \"Exit code: $?\")",
-      "Bash(wc -l /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle/src/**/*.rs)"
+      "Bash(wc -l /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle/src/**/*.rs)",
+      "Bash(wc:*)",
+      "Bash(for d:*)",
+      "Bash(do echo:*)",
+      "Read(//home/kevin/Documents/Projects/CuriousMachines/pixel-doodle/**)",
+      "Bash(/tmp/test_shallow.rs:*)",
+      "Bash(for test:*)",
+      "Bash(find src:*)",
+      "Bash(./test_regression --update basic/gradient 2>&1)",
+      "Bash(./test_regression --no-build --update 2>&1)",
+      "Bash(./test_regression --no-build sim/game_of_life 2>&1)",
+      "Bash(./test_regression --no-build sim/ 2>&1)",
+      "Bash(./test_regression --no-build --update sim/ 2>&1)"
     ]
   }
 }
