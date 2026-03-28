@@ -43,7 +43,7 @@ enum CompiledKernelEntry {
     },
     /// WGSL shader compiled to CPU via naga + Cranelift.
     #[cfg(feature = "cranelift-backend")]
-    WgslCpu {
+    GpuCpu {
         compiled: jit::wgsl_cranelift::CompiledWgslKernel,
         /// Texture slot names in declaration order.
         tex_slot_names: Vec<String>,
@@ -56,9 +56,9 @@ pub struct Runtime {
     kernels: HashMap<String, CompiledKernelEntry>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
-    /// Byte-level simulation buffers for wgsl-cpu backend (name -> raw bytes).
+    /// Byte-level simulation buffers for gpu-cranelift backend (name -> raw bytes).
     #[cfg(feature = "cranelift-backend")]
-    wgsl_cpu_buffers: HashMap<String, Vec<u8>>,
+    gpu_cpu_buffers: HashMap<String, Vec<u8>>,
     /// Loaded textures: name -> RGBA8 data.
     textures: HashMap<String, TextureData>,
     /// User-defined variables.
@@ -139,7 +139,7 @@ impl Runtime {
             kernels: HashMap::new(),
             buffers: HashMap::new(),
             #[cfg(feature = "cranelift-backend")]
-            wgsl_cpu_buffers: HashMap::new(),
+            gpu_cpu_buffers: HashMap::new(),
             textures: HashMap::new(),
             variables,
             var_ranges,
@@ -290,7 +290,7 @@ impl Runtime {
                 }
 
                 #[cfg(feature = "cranelift-backend")]
-                if backend_name == "wgsl-cpu" {
+                if backend_name == "gpu-cranelift" {
                     let compiled = jit::wgsl_cranelift::compile_wgsl(&src)
                         .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
                     // Count storage buffers from the pipeline's texture/buffer declarations.
@@ -299,7 +299,7 @@ impl Runtime {
                         .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
                         .unwrap_or_default();
                     eprintln!("compiled WGSL kernel '{}' to CPU ({} storage buffers)", decl.name, compiled.num_storage_buffers);
-                    self.kernels.insert(decl.name.clone(), CompiledKernelEntry::WgslCpu {
+                    self.kernels.insert(decl.name.clone(), CompiledKernelEntry::GpuCpu {
                         compiled,
                         tex_slot_names: tex_names,
                     });
@@ -409,9 +409,9 @@ impl Runtime {
 
         for decl in &buf_decls {
             if let Some(gpu_type) = decl.gpu_type {
-                // GPU buffers — skip for GPU backend, allocate as bytes for wgsl-cpu.
+                // GPU buffers — skip for GPU backend, allocate as bytes for gpu-cranelift.
                 #[cfg(feature = "cranelift-backend")]
-                if self.backend_name == "wgsl-cpu" {
+                if self.backend_name == "gpu-cranelift" {
                     let elem_bytes = gpu_type.byte_size() as usize;
                     let buf_size = size * elem_bytes;
                     let mut data = vec![0u8; buf_size];
@@ -428,7 +428,7 @@ impl Runtime {
                             }
                         }
                     }
-                    self.wgsl_cpu_buffers.insert(decl.name.clone(), data);
+                    self.gpu_cpu_buffers.insert(decl.name.clone(), data);
                 }
                 continue;
             }
@@ -687,14 +687,14 @@ impl Runtime {
                         self.buffers.insert(b.clone(), buf_b);
                         swapped = true;
                     }
-                    // Then wgsl-cpu byte buffers
+                    // Then gpu-cranelift byte buffers
                     #[cfg(feature = "cranelift-backend")]
-                    if !swapped && self.wgsl_cpu_buffers.contains_key(a.as_str()) {
-                        let mut buf_a = self.wgsl_cpu_buffers.remove(a).unwrap();
-                        let mut buf_b = self.wgsl_cpu_buffers.remove(b).unwrap();
+                    if !swapped && self.gpu_cpu_buffers.contains_key(a.as_str()) {
+                        let mut buf_a = self.gpu_cpu_buffers.remove(a).unwrap();
+                        let mut buf_b = self.gpu_cpu_buffers.remove(b).unwrap();
                         std::mem::swap(&mut buf_a, &mut buf_b);
-                        self.wgsl_cpu_buffers.insert(a.clone(), buf_a);
-                        self.wgsl_cpu_buffers.insert(b.clone(), buf_b);
+                        self.gpu_cpu_buffers.insert(a.clone(), buf_a);
+                        self.gpu_cpu_buffers.insert(b.clone(), buf_b);
                         swapped = true;
                     }
                     // Then GPU
@@ -913,7 +913,7 @@ impl Runtime {
                 }
             }
             #[cfg(feature = "cranelift-backend")]
-            Some(CompiledKernelEntry::WgslCpu { compiled, tex_slot_names }) => {
+            Some(CompiledKernelEntry::GpuCpu { compiled, tex_slot_names }) => {
                 let fn_ptr = compiled.fn_ptr;
                 let binding_map = &compiled.binding_map;
                 let num_bufs = compiled.num_storage_buffers;
@@ -972,8 +972,8 @@ impl Runtime {
                     let wgsl_name = &binding.param_name;
                     let pdp_name = &binding.buffer_name;
                     if let Some(&buf_idx) = binding_map.get(wgsl_name.as_str()) {
-                        // Look in wgsl_cpu_buffers first, then pixel_buffer.
-                        if let Some(buf) = self.wgsl_cpu_buffers.get_mut(pdp_name) {
+                        // Look in gpu_cpu_buffers first, then pixel_buffer.
+                        if let Some(buf) = self.gpu_cpu_buffers.get_mut(pdp_name) {
                             buf_ptrs_base[buf_idx] = buf.as_mut_ptr() as usize;
                         }
                     }
@@ -1029,9 +1029,9 @@ impl Runtime {
     fn execute_display(&mut self, buffer_name: Option<&str>) {
         match buffer_name {
             Some(name) => {
-                // Check if this is a wgsl-cpu buffer — copy to pixel_buffer.
+                // Check if this is a gpu-cranelift buffer — copy to pixel_buffer.
                 #[cfg(feature = "cranelift-backend")]
-                if let Some(buf) = self.wgsl_cpu_buffers.get(name) {
+                if let Some(buf) = self.gpu_cpu_buffers.get(name) {
                     // Interpret as u32 array and copy to pixel_buffer.
                     let n = self.pixel_buffer.len().min(buf.len() / 4);
                     for i in 0..n {
@@ -1406,7 +1406,7 @@ impl Runtime {
             return true;
         }
         #[cfg(feature = "cranelift-backend")]
-        if !self.wgsl_cpu_buffers.is_empty() {
+        if !self.gpu_cpu_buffers.is_empty() {
             return true;
         }
         // GPU simulations have buffers in the GPU runner, not self.buffers
