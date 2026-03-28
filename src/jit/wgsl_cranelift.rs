@@ -791,8 +791,15 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         }
                     }
                     TypeInner::Vector { .. } => {
-                        let base_vals = self.get_expr(*base);
-                        vec![base_vals[*index as usize]]
+                        // Check if base is a LocalVariable (pointer) — resolve through the var.
+                        let base_naga = &func.expressions[*base];
+                        if let Expression::LocalVariable(lv) = base_naga {
+                            let vars = self.local_vars[lv].clone();
+                            vec![self.builder.use_var(vars[*index as usize])]
+                        } else {
+                            let base_vals = self.get_expr(*base);
+                            vec![base_vals[*index as usize]]
+                        }
                     }
                     TypeInner::Scalar(_) => {
                         // Scalar accessed with index 0 — just return the value.
@@ -855,8 +862,17 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         let vars = self.local_vars[lv].clone();
                         vars.iter().map(|v| self.builder.use_var(*v)).collect()
                     }
+                    Expression::AccessIndex { base, index } => {
+                        // Load a specific component from a local variable vector.
+                        let base_expr = &func.expressions[*base];
+                        if let Expression::LocalVariable(lv) = base_expr {
+                            let vars = self.local_vars[lv].clone();
+                            vec![self.builder.use_var(vars[*index as usize])]
+                        } else {
+                            self.get_expr(*pointer).to_vec()
+                        }
+                    }
                     _ => {
-                        self.eval_expr(*pointer, func)?;
                         self.get_expr(*pointer).to_vec()
                     }
                 }
@@ -1403,6 +1419,17 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                         for (i, v) in vars.iter().enumerate() {
                             if i < src_vals.len() {
                                 self.builder.def_var(*v, src_vals[i]);
+                            }
+                        }
+                    }
+                    Expression::AccessIndex { base, index } => {
+                        // Store to a specific component of a local variable vector.
+                        let base_ptr_expr = &func.expressions[*base];
+                        if let Expression::LocalVariable(lv) = base_ptr_expr {
+                            let vars = self.local_vars[lv].clone();
+                            let idx = *index as usize;
+                            if idx < vars.len() {
+                                self.builder.def_var(vars[idx], src_vals[0]);
                             }
                         }
                     }
@@ -2067,5 +2094,65 @@ mod tests {
         let corner = output[0];
         let r_corner = (corner >> 16) & 0xFF;
         assert!(r_corner > 200, "corner red should be >200, got {r_corner}");
+    }
+
+    #[test]
+    fn inject_vec2_wgsl_on_cpu() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/shared/inject_vec2.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile inject_vec2.wgsl");
+
+        let width: u32 = 8;
+        let height: u32 = 8;
+        let stride: u32 = width;
+        let total = (width * height) as usize;
+
+        // Params: width(4) height(4) stride(4) _pad(4)
+        //         inject_x(4) inject_y(4) radius(4) value(4)
+        //         falloff_quadratic(4) component(4) _pad2(4) _pad3(4)
+        // Total: 48 bytes
+        let mut params = [0u8; 48];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&stride.to_le_bytes());
+        // inject at center (4, 4), radius 2, value 5.0, flat (falloff=0), component 0 (x)
+        params[16..20].copy_from_slice(&4.0f32.to_le_bytes()); // inject_x
+        params[20..24].copy_from_slice(&4.0f32.to_le_bytes()); // inject_y
+        params[24..28].copy_from_slice(&2.0f32.to_le_bytes()); // radius
+        params[28..32].copy_from_slice(&5.0f32.to_le_bytes()); // value
+        params[32..36].copy_from_slice(&0.0f32.to_le_bytes()); // falloff_quadratic (flat)
+        params[36..40].copy_from_slice(&0.0f32.to_le_bytes()); // component (x=0)
+
+        // Input: all zeros (vec2<f32>, 8 bytes per pixel).
+        let buf_in = vec![0.0f32; total * 2];
+        let mut buf_out = vec![0.0f32; total * 2];
+
+        let buffers: [*mut u8; 2] = [
+            buf_in.as_ptr() as *mut u8,
+            buf_out.as_mut_ptr() as *mut u8,
+        ];
+
+        unsafe {
+            (compiled.fn_ptr)(
+                params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
+                std::ptr::null(),
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // Cell at (4,4) — center, within radius → x component should be 5.0.
+        let center_x = buf_out[(4 * width as usize + 4) * 2];
+        let center_y = buf_out[(4 * width as usize + 4) * 2 + 1];
+        assert!((center_x - 5.0).abs() < 0.01, "center x should be 5.0, got {center_x}");
+        assert!(center_y.abs() < 0.01, "center y should be 0.0, got {center_y}");
+
+        // Cell at (0,0) — outside radius → should be unchanged (0.0).
+        let corner_x = buf_out[0];
+        assert!(corner_x.abs() < 0.01, "corner x should be 0.0, got {corner_x}");
     }
 }
