@@ -1,0 +1,4 @@
+# Golden reference images are generated locally via:
+#   ./test_regression --update
+# They are not tracked in git to avoid repo bloat (~49MB).
+*.ppm

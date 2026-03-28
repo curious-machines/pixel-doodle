@@ -93,3 +93,20 @@ Hand-written recursive descent — no external parser dependencies. Resolves nam
 - Parallel execution model: split pixel buffer into tiles, distribute to worker threads, each thread calls JIT'd function on its tile
 - Source image data is shared read-only across threads; output is partitioned so each thread owns its region exclusively
 - Align work division to cache line boundaries (64 bytes) to avoid false sharing
+
+## Testing
+
+After making code changes that could affect rendering (JIT backends, codegen, runtime, kernel parsing), run the regression test suite:
+
+```bash
+./test_regression              # Test all 142 sample×backend combos against golden references
+./test_regression --no-build   # Skip rebuild if already built
+./test_regression basic/gradient  # Test a single example
+```
+
+If the test fails because of an intentional change, update the golden images:
+```bash
+./test_regression --update     # Regenerate all golden images
+```
+
+Golden images are stored locally in `tests/golden/` (not tracked in git). Generate them on first clone with `./test_regression --update`.

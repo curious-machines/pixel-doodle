@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BINARY="$SCRIPT_DIR/target/release/pixel-doodle"
+GOLDEN_DIR="$SCRIPT_DIR/tests/golden"
+TMP_DIR="/tmp/pixel-doodle-regression"
+WIDTH=400
+HEIGHT=300
+THRESHOLD=0
+TIMEOUT=30
+
+# Counters (use file-based counters to survive subshells)
+COUNTER_FILE="$TMP_DIR/.counters"
+
+init_counters() {
+    echo "0 0 0 0" > "$COUNTER_FILE"  # passed failed skipped new
+}
+
+inc_counter() {
+    # $1 = field index (1=passed, 2=failed, 3=skipped, 4=new)
+    local counts
+    counts=$(cat "$COUNTER_FILE")
+    local p f s n
+    read -r p f s n <<< "$counts"
+    case "$1" in
+        passed)  p=$((p + 1)) ;;
+        failed)  f=$((f + 1)) ;;
+        skipped) s=$((s + 1)) ;;
+        new)     n=$((n + 1)) ;;
+    esac
+    echo "$p $f $s $n" > "$COUNTER_FILE"
+}
+
+read_counters() {
+    cat "$COUNTER_FILE"
+}
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+usage() {
+    cat <<EOF
+Usage: ./test_regression [options] [example-filter]
+
+Options:
+  --update [filter]    Regenerate golden images (all or filtered)
+  --compile-only       Just verify compilation succeeds (no golden compare)
+  --list               List all valid (example, pipeline, backend) combos
+  --threshold N        Per-channel pixel tolerance (default: 0 = exact)
+  --no-build           Skip cargo build step
+  --help               Show this help
+
+Examples:
+  ./test_regression                        # Run all regression tests
+  ./test_regression basic/gradient         # Test one example
+  ./test_regression --update               # Regenerate all golden images
+  ./test_regression --update basic/gradient
+  ./test_regression --compile-only
+  ./test_regression --list
+EOF
+    exit 0
+}
+
+# Parse arguments
+MODE="test"  # test | update | compile-only | list
+FILTER=""
+DO_BUILD=true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --update)
+            MODE="update"
+            shift
+            if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
+                FILTER="$1"; shift
+            fi
+            ;;
+        --compile-only)
+            MODE="compile-only"; shift ;;
+        --list)
+            MODE="list"; shift ;;
+        --threshold)
+            THRESHOLD="$2"; shift 2 ;;
+        --no-build)
+            DO_BUILD=false; shift ;;
+        --help|-h)
+            usage ;;
+        -*)
+            echo "Unknown option: $1"; exit 1 ;;
+        *)
+            FILTER="$1"; shift ;;
+    esac
+done
+
+# Backend combos for each pipeline type
+backends_for_pipeline() {
+    local pipeline="$1"
+    case "$pipeline" in
+        pd|pdir)
+            echo "cranelift"
+            echo "llvm"
+            ;;
+        gpu)
+            echo "gpu"
+            echo "gpu-cranelift"
+            echo "gpu-llvm"
+            ;;
+    esac
+}
+
+# Discover all test cases: (example_path, pipeline, backend)
+discover_cases() {
+    local pdp_files
+    pdp_files=$(find "$SCRIPT_DIR/examples" -name '*.pdp' -not -path '*/shared/*' | sort)
+
+    for pdp in $pdp_files; do
+        local dir
+        dir="$(dirname "$pdp")"
+        local example_name
+        example_name="${dir#"$SCRIPT_DIR/examples/"}"
+
+        # Apply filter
+        if [[ -n "$FILTER" && "$example_name" != *"$FILTER"* ]]; then
+            continue
+        fi
+
+        # Extract pipeline names
+        local pipelines
+        pipelines=$(grep -oP '^pipeline\s+\K\w+' "$pdp" || true)
+
+        for pipeline in $pipelines; do
+            local backends
+            backends=$(backends_for_pipeline "$pipeline")
+            for backend in $backends; do
+                echo "$example_name|$pipeline|$backend"
+            done
+        done
+    done
+}
+
+# Golden image path for a test case
+golden_path() {
+    local example="$1" pipeline="$2" backend="$3"
+    echo "$GOLDEN_DIR/$example/$pipeline-$backend.ppm"
+}
+
+# Compare two PPM files, returns 0 if within threshold
+compare_ppm() {
+    local actual="$1" golden="$2" threshold="$3"
+
+    if [[ ! -f "$golden" ]]; then
+        return 2  # no golden exists
+    fi
+
+    # Fast path: exact byte match
+    if cmp -s "$actual" "$golden"; then
+        return 0
+    fi
+
+    if [[ "$threshold" -eq 0 ]]; then
+        # Exact match required but files differ
+        report_diff "$actual" "$golden"
+        return 1
+    fi
+
+    # Per-pixel comparison with tolerance
+    python3 -c "
+import sys
+
+def read_ppm(path):
+    with open(path, 'rb') as f:
+        magic = f.readline().strip()
+        assert magic == b'P6', f'Not P6 PPM: {magic}'
+        line = f.readline()
+        while line.startswith(b'#'):
+            line = f.readline()
+        w, h = map(int, line.split())
+        maxval = int(f.readline().strip())
+        data = f.read()
+        return w, h, data
+
+w1, h1, d1 = read_ppm('$actual')
+w2, h2, d2 = read_ppm('$golden')
+if (w1, h1) != (w2, h2):
+    print(f'Size mismatch: {w1}x{h1} vs {w2}x{h2}')
+    sys.exit(1)
+if len(d1) != len(d2):
+    print(f'Data length mismatch: {len(d1)} vs {len(d2)}')
+    sys.exit(1)
+
+threshold = $threshold
+max_diff = 0
+over_count = 0
+total = len(d1)
+for i in range(total):
+    diff = abs(d1[i] - d2[i])
+    if diff > max_diff:
+        max_diff = diff
+    if diff > threshold:
+        over_count += 1
+
+pct = 100.0 * over_count / total if total > 0 else 0
+
+if max_diff > threshold:
+    print(f'DIFF: max_channel_diff={max_diff} channels_over_threshold={over_count}/{total} ({pct:.2f}%)')
+    sys.exit(1)
+else:
+    sys.exit(0)
+" 2>&1
+}
+
+# Report diff stats between two PPM files
+report_diff() {
+    local actual="$1" golden="$2"
+    python3 -c "
+import sys
+
+def read_ppm(path):
+    with open(path, 'rb') as f:
+        magic = f.readline().strip()
+        if magic != b'P6':
+            print(f'  Not P6 PPM: {magic}')
+            return None, None, None
+        line = f.readline()
+        while line.startswith(b'#'):
+            line = f.readline()
+        w, h = map(int, line.split())
+        maxval = int(f.readline().strip())
+        data = f.read()
+        return w, h, data
+
+w1, h1, d1 = read_ppm('$actual')
+w2, h2, d2 = read_ppm('$golden')
+if d1 is None or d2 is None:
+    sys.exit(0)
+if (w1, h1) != (w2, h2):
+    print(f'  Size mismatch: {w1}x{h1} vs {w2}x{h2}')
+    sys.exit(0)
+if len(d1) != len(d2):
+    print(f'  Data length mismatch: {len(d1)} vs {len(d2)}')
+    sys.exit(0)
+
+max_diff = 0
+diff_count = 0
+total = len(d1)
+for i in range(total):
+    diff = abs(d1[i] - d2[i])
+    if diff > max_diff:
+        max_diff = diff
+    if diff > 0:
+        diff_count += 1
+
+pct = 100.0 * diff_count / total if total > 0 else 0
+print(f'  max_channel_diff={max_diff} differing_channels={diff_count}/{total} ({pct:.1f}%)')
+" 2>&1 || true
+}
+
+# Run a single test case
+run_case() {
+    local example="$1" pipeline="$2" backend="$3"
+    local label="$example [$pipeline/$backend]"
+    local set_args="pipeline=$pipeline,backend=$backend,width=$WIDTH,height=$HEIGHT"
+    local out_dir="$TMP_DIR/$example"
+    local out_file="$out_dir/$pipeline-$backend.ppm"
+    local gold
+    gold=$(golden_path "$example" "$pipeline" "$backend")
+
+    mkdir -p "$out_dir"
+
+    # Render headlessly
+    local stderr_file="$out_dir/$pipeline-$backend.stderr"
+    local exit_code=0
+    timeout "$TIMEOUT" "$BINARY" "examples/$example" \
+        --set "$set_args" --output "$out_file" \
+        2>"$stderr_file" || exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        # Check for GPU unavailability
+        if [[ "$backend" == "gpu" ]] && grep -qiE 'adapter|no suitable|gpu.*not|failed to create' "$stderr_file" 2>/dev/null; then
+            printf "${YELLOW}SKIP${RESET}  %s (no GPU adapter)\n" "$label"
+            inc_counter skipped
+            return
+        fi
+        # Check for timeout
+        if [[ $exit_code -eq 124 ]]; then
+            printf "${RED}FAIL${RESET}  %s (timeout after ${TIMEOUT}s)\n" "$label"
+            inc_counter failed
+            return
+        fi
+        printf "${RED}FAIL${RESET}  %s (exit code %d)\n" "$label" "$exit_code"
+        head -5 "$stderr_file" 2>/dev/null | sed 's/^/  /' || true
+        inc_counter failed
+        return
+    fi
+
+    # Compile-only mode: success means pass
+    if [[ "$MODE" == "compile-only" ]]; then
+        printf "${GREEN}PASS${RESET}  %s\n" "$label"
+        inc_counter passed
+        return
+    fi
+
+    # Update mode: save as golden
+    if [[ "$MODE" == "update" ]]; then
+        mkdir -p "$(dirname "$gold")"
+        cp "$out_file" "$gold"
+        printf "${CYAN}SAVED${RESET} %s\n" "$label"
+        inc_counter new
+        return
+    fi
+
+    # Test mode: compare against golden
+    if [[ ! -f "$gold" ]]; then
+        mkdir -p "$(dirname "$gold")"
+        cp "$out_file" "$gold"
+        printf "${YELLOW}NEW${RESET}   %s (saved as golden)\n" "$label"
+        inc_counter new
+        return
+    fi
+
+    local cmp_result=0
+    compare_ppm "$out_file" "$gold" "$THRESHOLD" || cmp_result=$?
+
+    if [[ $cmp_result -eq 0 ]]; then
+        printf "${GREEN}PASS${RESET}  %s\n" "$label"
+        inc_counter passed
+    else
+        printf "${RED}FAIL${RESET}  %s (pixel mismatch)\n" "$label"
+        inc_counter failed
+    fi
+}
+
+# ── Main ──────────────────────────────────────────────────────────────
+
+# Build
+if [[ "$MODE" != "list" && "$DO_BUILD" == "true" ]]; then
+    echo "Building release binary..."
+    cargo build --release --features cranelift-backend,llvm-backend --manifest-path "$SCRIPT_DIR/Cargo.toml" 2>&1 | tail -3
+    echo ""
+fi
+
+# Discover cases
+cases=$(discover_cases)
+total=$(echo "$cases" | wc -l)
+
+if [[ -z "$cases" ]]; then
+    echo "No test cases found."
+    exit 0
+fi
+
+# List mode
+if [[ "$MODE" == "list" ]]; then
+    printf "${BOLD}%-40s %-8s %s${RESET}\n" "Example" "Pipeline" "Backend"
+    echo "────────────────────────────────────────────────────────────────"
+    echo "$cases" | while IFS='|' read -r example pipeline backend; do
+        printf "%-40s %-8s %s\n" "$example" "$pipeline" "$backend"
+    done
+    echo ""
+    echo "Total: $total test cases"
+    exit 0
+fi
+
+# Clean tmp dir
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR"
+init_counters
+
+# Header
+echo ""
+printf "${BOLD}Running %d regression tests (${WIDTH}x${HEIGHT}, threshold=%d)${RESET}\n" "$total" "$THRESHOLD"
+echo "════════════════════════════════════════════════════════════════"
+
+# Run all cases (use process substitution to avoid subshell)
+while IFS='|' read -r example pipeline backend; do
+    run_case "$example" "$pipeline" "$backend"
+done <<< "$cases"
+
+# Read final counters
+read -r passed failed skipped new_golden <<< "$(read_counters)"
+
+# Summary
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+printf "${BOLD}Results:${RESET} "
+[[ $passed -gt 0 ]] && printf "${GREEN}%d passed${RESET} " "$passed"
+[[ $failed -gt 0 ]] && printf "${RED}%d failed${RESET} " "$failed"
+[[ $skipped -gt 0 ]] && printf "${YELLOW}%d skipped${RESET} " "$skipped"
+[[ $new_golden -gt 0 ]] && printf "${CYAN}%d new${RESET} " "$new_golden"
+echo ""
+
+# Exit with failure if any tests failed
+[[ $failed -gt 0 ]] && exit 1
+exit 0
