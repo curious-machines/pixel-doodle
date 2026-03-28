@@ -629,6 +629,48 @@ impl Runtime {
         }
     }
 
+    /// Initialize GPU backends headlessly (no display required).
+    /// Used by --output and --bench modes.
+    fn init_gpu_sim_headless(&mut self) {
+        // GPU sim kernels — create headless GpuSimRunner
+        let has_gpu_sim = self.kernels.values().any(|e| matches!(e, CompiledKernelEntry::GpuSim { .. }));
+        if has_gpu_sim && self.gpu_sim_runner.is_none() {
+            let mut runner = GpuSimRunner::new_headless(self.width, self.height);
+
+            let all_buffers: Vec<BufferDecl> = self
+                .selected_pipeline()
+                .map(|p| p.buffers.clone())
+                .unwrap_or_default();
+
+            for buf_decl in &all_buffers {
+                if let Some(gpu_type) = buf_decl.gpu_type {
+                    runner.add_buffer(&buf_decl.name, gpu_type);
+                    match &buf_decl.init {
+                        BufferInit::Constant(val) => {
+                            runner.init_buffer_constant(&buf_decl.name, *val);
+                        }
+                    }
+                }
+            }
+
+            let kernel_entries: Vec<(String, String)> = self.kernels.iter().filter_map(|(name, entry)| {
+                if let CompiledKernelEntry::GpuSim { wgsl_source } = entry {
+                    Some((name.clone(), wgsl_source.clone()))
+                } else {
+                    None
+                }
+            }).collect();
+
+            for (name, source) in &kernel_entries {
+                if let Err(e) = runner.add_pipeline(name, source) {
+                    eprintln!("warning: failed to compile GPU pipeline '{}': {}", name, e);
+                }
+            }
+
+            self.gpu_sim_runner = Some(runner);
+        }
+    }
+
     /// Execute init blocks from the selected pipeline. Call once after init_gpu().
     pub fn execute_init_block(&mut self, pool: &Option<rayon::ThreadPool>) {
         let init_steps: Vec<Vec<PipelineStep>> = self
@@ -1475,33 +1517,50 @@ impl Runtime {
         if !self.has_gpu_kernels {
             return;
         }
-        // Find the WGSL source
-        let wgsl = self.kernels.values().find_map(|entry| {
-            if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
-                Some(wgsl_source.clone())
-            } else {
-                None
+
+        let has_gpu_sim = self.kernels.values().any(|e| matches!(e, CompiledKernelEntry::GpuSim { .. }));
+
+        if has_gpu_sim {
+            // GPU sim pipeline: init runner headlessly, run init + frame, readback.
+            self.init_gpu_sim_headless();
+            let pool: Option<rayon::ThreadPool> = None;
+            self.execute_init_block(&pool);
+            self.execute_frame(0.0, &pool);
+
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name.clone() {
+                if let Some(ref runner) = self.gpu_sim_runner {
+                    self.pixel_buffer = runner.readback_buffer(buf_name);
+                }
             }
-        });
-        if let Some(source) = wgsl {
-            let tex_names: Vec<String> = self
-                .selected_pipeline()
-                .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
-                .unwrap_or_default();
-            let tex_refs: Vec<&TextureData> = tex_names
-                .iter()
-                .filter_map(|name| self.textures.get(name.as_str()))
-                .collect();
-            let (gpu, device, queue) = GpuBackend::new_headless(
-                self.width, self.height, 256, &source, &tex_refs,
-            );
-            gpu.dispatch_compute(
-                &device, &queue,
-                self.center_x, self.center_y, self.zoom,
-                0xFFFFFFFF, 0, self.time,
-                &self.gpu_user_args,
-            );
-            self.pixel_buffer = gpu.readback_pixels(&device, &queue);
+        } else {
+            // GPU pixel kernel: create headless context, dispatch once, readback.
+            let wgsl = self.kernels.values().find_map(|entry| {
+                if let CompiledKernelEntry::Gpu { wgsl_source } = entry {
+                    Some(wgsl_source.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(source) = wgsl {
+                let tex_names: Vec<String> = self
+                    .selected_pipeline()
+                    .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
+                    .unwrap_or_default();
+                let tex_refs: Vec<&TextureData> = tex_names
+                    .iter()
+                    .filter_map(|name| self.textures.get(name.as_str()))
+                    .collect();
+                let (gpu, device, queue) = GpuBackend::new_headless(
+                    self.width, self.height, 256, &source, &tex_refs,
+                );
+                gpu.dispatch_compute(
+                    &device, &queue,
+                    self.center_x, self.center_y, self.zoom,
+                    0xFFFFFFFF, 0, self.time,
+                    &self.gpu_user_args,
+                );
+                self.pixel_buffer = gpu.readback_pixels(&device, &queue);
+            }
         }
     }
 

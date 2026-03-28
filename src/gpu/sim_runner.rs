@@ -84,6 +84,99 @@ impl GpuSimRunner {
         }
     }
 
+    /// Create a new GPU sim runner with its own headless device (no display needed).
+    pub fn new_headless(width: u32, height: u32) -> Self {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("failed to find a suitable GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("sim-runner headless"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                ..Default::default()
+            },
+        ))
+        .expect("failed to create device");
+
+        let stride = aligned_bytes_per_row(width) / 4;
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim params"),
+            size: 256,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params = SimParams {
+            width,
+            height,
+            stride,
+            _pad: 0,
+        };
+        queue.write_buffer(&uniform_buffer, 0, bytemuck::bytes_of(&params));
+
+        Self {
+            device,
+            queue,
+            buffers: HashMap::new(),
+            pipelines: HashMap::new(),
+            uniform_buffer,
+            width,
+            height,
+            stride,
+        }
+    }
+
+    /// Read a named u32 pixel buffer back to CPU memory.
+    pub fn readback_buffer(&self, buffer_name: &str) -> Vec<u32> {
+        let gpu_buf = match self.buffers.get(buffer_name) {
+            Some(b) => b,
+            None => {
+                eprintln!("warning: GPU buffer '{}' not found for readback", buffer_name);
+                return vec![0u32; (self.width * self.height) as usize];
+            }
+        };
+
+        let buf_size = gpu_buf.buffer.size();
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback staging"),
+            size: buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback"),
+        });
+        encoder.copy_buffer_to_buffer(&gpu_buf.buffer, 0, &staging, 0, buf_size);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
+
+        let mapped = slice.get_mapped_range();
+        let stride_pixels = self.stride as usize;
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        // The GPU buffer has stride-aligned rows; compact to width×height.
+        let gpu_data: &[u32] = bytemuck::cast_slice(&mapped);
+        let mut out = vec![0u32; w * h];
+        for row in 0..h {
+            let src_start = row * stride_pixels;
+            let dst_start = row * w;
+            out[dst_start..dst_start + w].copy_from_slice(&gpu_data[src_start..src_start + w]);
+        }
+        out
+    }
+
     /// Allocate a named GPU storage buffer.
     pub fn add_buffer(
         &mut self,
