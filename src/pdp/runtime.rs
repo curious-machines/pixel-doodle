@@ -977,8 +977,14 @@ impl Runtime {
                         "y_min" => params[off..off+4].copy_from_slice(&((self.center_y - view_h / 2.0) as f32).to_le_bytes()),
                         "x_step" => params[off..off+4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
                         "y_step" => params[off..off+4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
-                        "sample_index" => params[off..off+4].copy_from_slice(&self.gpu_sample_index.to_le_bytes()),
-                        "sample_count" => params[off..off+4].copy_from_slice(&(self.gpu_sample_index + 1).to_le_bytes()),
+                        "sample_index" => {
+                            let si = if self.gpu_max_samples > 0 { self.gpu_sample_index } else { 0xFFFFFFFF };
+                            params[off..off+4].copy_from_slice(&si.to_le_bytes());
+                        }
+                        "sample_count" => {
+                            let sc = if self.gpu_max_samples > 0 { self.gpu_sample_index + 1 } else { 0 };
+                            params[off..off+4].copy_from_slice(&sc.to_le_bytes());
+                        }
                         "time" => params[off..off+4].copy_from_slice(&(self.time as f32).to_le_bytes()),
                         name if name.starts_with('_') => {} // padding
                         _ => {
@@ -1404,14 +1410,18 @@ impl Runtime {
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
-            let si = self.gpu_sample_index;
+            let (si, sc) = if self.gpu_max_samples > 0 {
+                (self.gpu_sample_index, self.gpu_sample_index + 1)
+            } else {
+                (0xFFFFFFFF, 0)
+            };
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
                 si,
-                si + 1,
+                sc,
                 self.time,
                 &self.gpu_user_args,
             );
@@ -1433,14 +1443,18 @@ impl Runtime {
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
-            let si = self.gpu_sample_index;
+            let (si, sc) = if self.gpu_max_samples > 0 {
+                (self.gpu_sample_index, self.gpu_sample_index + 1)
+            } else {
+                (0xFFFFFFFF, 0)
+            };
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
                 si,
-                si + 1,
+                sc,
                 self.time,
                 &self.gpu_user_args,
             );
