@@ -41,10 +41,10 @@ enum CompiledKernelEntry {
     GpuSim {
         wgsl_source: String,
     },
-    /// WGSL shader compiled to CPU via naga + Cranelift.
-    #[cfg(feature = "cranelift-backend")]
+    /// WGSL shader compiled to CPU via naga + Cranelift or LLVM.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     GpuCpu {
-        compiled: jit::wgsl_cranelift::CompiledWgslKernel,
+        compiled: jit::CompiledWgslKernel,
         /// Texture slot names in declaration order.
         tex_slot_names: Vec<String>,
     },
@@ -56,9 +56,12 @@ pub struct Runtime {
     kernels: HashMap<String, CompiledKernelEntry>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
-    /// Byte-level simulation buffers for gpu-cranelift backend (name -> raw bytes).
-    #[cfg(feature = "cranelift-backend")]
+    /// Byte-level simulation buffers for gpu-cranelift/gpu-llvm backend (name -> raw bytes).
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     gpu_cpu_buffers: HashMap<String, Vec<u8>>,
+    /// Progressive sample counter for gpu-cranelift/gpu-llvm backends.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+    gpu_cpu_sample_index: u32,
     /// Loaded textures: name -> RGBA8 data.
     textures: HashMap<String, TextureData>,
     /// User-defined variables.
@@ -111,6 +114,8 @@ pub struct Runtime {
     gpu_pixel_buffer_name: Option<String>,
     /// User args for GPU pixel kernels, resolved at execute_run time.
     gpu_user_args: Vec<f32>,
+    /// Progressive sample counter for GPU pixel kernels.
+    gpu_sample_index: u32,
     /// The config file path, used in window title when no explicit title is set.
     config_path: Option<String>,
 }
@@ -138,8 +143,10 @@ impl Runtime {
             config,
             kernels: HashMap::new(),
             buffers: HashMap::new(),
-            #[cfg(feature = "cranelift-backend")]
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             gpu_cpu_buffers: HashMap::new(),
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+            gpu_cpu_sample_index: 0,
             textures: HashMap::new(),
             variables,
             var_ranges,
@@ -174,6 +181,7 @@ impl Runtime {
             last_frame_was_gpu: false,
             gpu_pixel_buffer_name: None,
             gpu_user_args: Vec::new(),
+            gpu_sample_index: 0,
             config_path: None,
         }
     }
@@ -293,12 +301,27 @@ impl Runtime {
                 if backend_name == "gpu-cranelift" {
                     let compiled = jit::wgsl_cranelift::compile_wgsl(&src)
                         .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
-                    // Count storage buffers from the pipeline's texture/buffer declarations.
                     let tex_names: Vec<String> = self
                         .selected_pipeline()
                         .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
                         .unwrap_or_default();
-                    eprintln!("compiled WGSL kernel '{}' to CPU ({} storage buffers)", decl.name, compiled.num_storage_buffers);
+                    eprintln!("compiled WGSL kernel '{}' to CPU via Cranelift ({} storage buffers)", decl.name, compiled.num_storage_buffers);
+                    self.kernels.insert(decl.name.clone(), CompiledKernelEntry::GpuCpu {
+                        compiled,
+                        tex_slot_names: tex_names,
+                    });
+                    continue;
+                }
+
+                #[cfg(feature = "llvm-backend")]
+                if backend_name == "gpu-llvm" {
+                    let compiled = jit::wgsl_llvm::compile_wgsl(&src)
+                        .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
+                    let tex_names: Vec<String> = self
+                        .selected_pipeline()
+                        .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
+                        .unwrap_or_default();
+                    eprintln!("compiled WGSL kernel '{}' to CPU via LLVM ({} storage buffers)", decl.name, compiled.num_storage_buffers);
                     self.kernels.insert(decl.name.clone(), CompiledKernelEntry::GpuCpu {
                         compiled,
                         tex_slot_names: tex_names,
@@ -383,7 +406,7 @@ impl Runtime {
 
         // Warn if backend setting has no effect on the selected pipeline
         if self.has_gpu_kernels
-            && self.backend_name != "cranelift"
+            && !matches!(self.backend_name.as_str(), "cranelift" | "gpu-cranelift" | "gpu-llvm")
             && kernel_decls.iter().all(|d| {
                 resolve_path(&d.path, &base_dir)
                     .extension()
@@ -409,9 +432,9 @@ impl Runtime {
 
         for decl in &buf_decls {
             if let Some(gpu_type) = decl.gpu_type {
-                // GPU buffers — skip for GPU backend, allocate as bytes for gpu-cranelift.
-                #[cfg(feature = "cranelift-backend")]
-                if self.backend_name == "gpu-cranelift" {
+                // GPU buffers — skip for GPU backend, allocate as bytes for gpu-cranelift/gpu-llvm.
+                #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+                if self.backend_name == "gpu-cranelift" || self.backend_name == "gpu-llvm" {
                     let elem_bytes = gpu_type.byte_size() as usize;
                     let buf_size = size * elem_bytes;
                     let mut data = vec![0u8; buf_size];
@@ -638,7 +661,7 @@ impl Runtime {
         }
 
         // Only execute pipeline if frame has advanced
-        if self.frame <= self.frames_executed && !self.animated && self.accum.is_none() {
+        if self.frame <= self.frames_executed && !self.animated && !self.needs_continuous_redraw() {
             return false;
         }
 
@@ -687,8 +710,8 @@ impl Runtime {
                         self.buffers.insert(b.clone(), buf_b);
                         swapped = true;
                     }
-                    // Then gpu-cranelift byte buffers
-                    #[cfg(feature = "cranelift-backend")]
+                    // Then gpu-cranelift/gpu-llvm byte buffers
+                    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
                     if !swapped && self.gpu_cpu_buffers.contains_key(a.as_str()) {
                         let mut buf_a = self.gpu_cpu_buffers.remove(a).unwrap();
                         let mut buf_b = self.gpu_cpu_buffers.remove(b).unwrap();
@@ -912,7 +935,7 @@ impl Runtime {
                     runner.dispatch(kernel_name, &bindings, &user_args);
                 }
             }
-            #[cfg(feature = "cranelift-backend")]
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             Some(CompiledKernelEntry::GpuCpu { compiled, tex_slot_names }) => {
                 let fn_ptr = compiled.fn_ptr;
                 let binding_map = &compiled.binding_map;
@@ -942,8 +965,8 @@ impl Runtime {
                         "y_min" => params[off..off+4].copy_from_slice(&((self.center_y - view_h / 2.0) as f32).to_le_bytes()),
                         "x_step" => params[off..off+4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
                         "y_step" => params[off..off+4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
-                        "sample_index" => params[off..off+4].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()),
-                        "sample_count" => params[off..off+4].copy_from_slice(&0u32.to_le_bytes()),
+                        "sample_index" => params[off..off+4].copy_from_slice(&self.gpu_cpu_sample_index.to_le_bytes()),
+                        "sample_count" => params[off..off+4].copy_from_slice(&(self.gpu_cpu_sample_index + 1).to_le_bytes()),
                         "time" => params[off..off+4].copy_from_slice(&(self.time as f32).to_le_bytes()),
                         name if name.starts_with('_') => {} // padding
                         _ => {
@@ -979,9 +1002,18 @@ impl Runtime {
                     }
                 }
 
-                // If no bindings were specified, fall back to pixel_buffer for binding 0.
+                // If no bindings were specified, auto-allocate buffers for pixel kernels.
+                // Binding 0 → pixel_buffer (u32 output), remaining → gpu_cpu_buffers.
                 if input_bindings.is_empty() && num_bufs > 0 {
                     buf_ptrs_base[0] = self.pixel_buffer.as_mut_ptr() as usize;
+                    let pixel_count = (w * h) as usize;
+                    for i in 1..num_bufs {
+                        let elem_bytes = compiled.buffer_elem_bytes.get(i).copied().unwrap_or(4) as usize;
+                        let auto_name = format!("__auto_buf_{i}");
+                        let buf = self.gpu_cpu_buffers.entry(auto_name)
+                            .or_insert_with(|| vec![0u8; pixel_count * elem_bytes]);
+                        buf_ptrs_base[i] = buf.as_mut_ptr() as usize;
+                    }
                 }
 
                 // Build texture slots.
@@ -1018,6 +1050,8 @@ impl Runtime {
                         }
                     });
                 });
+
+                self.gpu_cpu_sample_index += 1;
             }
             None => {
                 eprintln!("warning: kernel '{}' not found", kernel_name);
@@ -1026,11 +1060,24 @@ impl Runtime {
     }
 
     /// Present pixels to screen.
+    /// Reset gpu-cpu progressive sampling state: clear accum buffers and sample counter.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+    fn reset_gpu_cpu_accum(&mut self) {
+        self.gpu_cpu_sample_index = 0;
+        // Zero out any accum-like gpu_cpu_buffers so stale samples don't persist.
+        for buf in self.gpu_cpu_buffers.values_mut() {
+            buf.fill(0);
+        }
+    }
+
+    #[cfg(not(any(feature = "cranelift-backend", feature = "llvm-backend")))]
+    fn reset_gpu_cpu_accum(&mut self) {}
+
     fn execute_display(&mut self, buffer_name: Option<&str>) {
         match buffer_name {
             Some(name) => {
-                // Check if this is a gpu-cranelift buffer — copy to pixel_buffer.
-                #[cfg(feature = "cranelift-backend")]
+                // Check if this is a gpu-cranelift/gpu-llvm buffer — copy to pixel_buffer.
+                #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
                 if let Some(buf) = self.gpu_cpu_buffers.get(name) {
                     // Interpret as u32 array and copy to pixel_buffer.
                     let n = self.pixel_buffer.len().min(buf.len() / 4);
@@ -1048,8 +1095,11 @@ impl Runtime {
             }
             None => {
                 // CPU display — pixel buffer already written by run steps.
-                // GPU pixel kernel — mark as rendered.
-                if self.has_gpu_kernels && self.gpu_sim_runner.is_none() {
+                // GPU pixel kernel (real GPU backend) — mark as rendered so
+                // main loop uses the GPU present path. GpuCpu kernels write
+                // directly to pixel_buffer and use the normal CPU display path.
+                let is_gpu_cpu = matches!(self.backend_name.as_str(), "gpu-cranelift" | "gpu-llvm");
+                if self.has_gpu_kernels && self.gpu_sim_runner.is_none() && !is_gpu_cpu {
                     self.gpu_rendered_this_frame = true;
                 }
             }
@@ -1260,14 +1310,20 @@ impl Runtime {
             "center_x" => {
                 self.center_x = clamped;
                 self.accum_dirty = true;
+                self.gpu_sample_index = 0;
+                self.reset_gpu_cpu_accum();
             }
             "center_y" => {
                 self.center_y = clamped;
                 self.accum_dirty = true;
+                self.gpu_sample_index = 0;
+                self.reset_gpu_cpu_accum();
             }
             "zoom" => {
                 self.zoom = clamped;
                 self.accum_dirty = true;
+                self.gpu_sample_index = 0;
+                self.reset_gpu_cpu_accum();
             }
             "paused" => self.paused = clamped != 0.0,
             "frame" => self.frame = clamped as u64,
@@ -1281,22 +1337,24 @@ impl Runtime {
     /// If the last frame used GPU rendering, dispatch the GPU and present.
     /// Returns true if GPU rendered (caller should NOT upload_and_present).
     /// Re-present the last GPU frame (for use when pipeline was skipped, e.g. paused).
-    pub fn re_present_gpu_frame(&self, display: &Display) -> bool {
+    pub fn re_present_gpu_frame(&mut self, display: &Display) -> bool {
         if !self.last_frame_was_gpu {
             return false;
         }
-        // GPU pixel kernel path
+        // GPU pixel kernel path — keep accumulating samples even when frame is skipped
         if let Some(ref gpu) = self.gpu_backend {
+            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                0xFFFFFFFF,
-                0,
+                si,
+                si + 1,
                 self.time,
                 &self.gpu_user_args,
             );
+            self.gpu_sample_index += 1;
             return true;
         }
         // GPU sim kernel path — re-present the pixel buffer
@@ -1309,22 +1367,24 @@ impl Runtime {
         false
     }
 
-    pub fn render_gpu_frame(&self, display: &Display) -> bool {
+    pub fn render_gpu_frame(&mut self, display: &Display) -> bool {
         if !self.gpu_rendered_this_frame {
             return false;
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
+            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                0xFFFFFFFF,
-                0,
+                si,
+                si + 1,
                 self.time,
                 &self.gpu_user_args,
             );
+            self.gpu_sample_index += 1;
             return true;
         }
         // GPU sim kernel path — present the pixel buffer from the runner
@@ -1405,8 +1465,12 @@ impl Runtime {
         if !self.buffers.is_empty() {
             return true;
         }
-        #[cfg(feature = "cranelift-backend")]
+        #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
         if !self.gpu_cpu_buffers.is_empty() {
+            return true;
+        }
+        // GPU pixel kernels progressively accumulate samples
+        if self.gpu_backend.is_some() {
             return true;
         }
         // GPU simulations have buffers in the GPU runner, not self.buffers

@@ -254,6 +254,62 @@ pub trait CompiledSimKernel: Send + Sync {
     fn function_ptr(&self) -> SimTileKernelFn;
 }
 
+// ── WGSL GPU-on-CPU shared types ────────────────────────────────────────
+
+/// JIT'd WGSL compute kernel function signature.
+///
+/// `buffers` is an array of pointers, one per storage buffer binding (in binding
+/// order). For pixel shaders: buffers[0] = output (u32), buffers[1] = accum (f32).
+/// For sim shaders: buffers[N] corresponds to @binding(N+1).
+/// `tex_slots` is a pointer to an array of TextureSlot structs (16 bytes each),
+/// one per texture binding in binding order. May be null if no textures.
+///
+/// The kernel processes rows `[row_start, row_end)`. The `params` buffer still
+/// contains the full image width/height for view mapping — row_start/row_end
+/// only control which rows this call computes.
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+pub type WgslKernelFn = unsafe extern "C" fn(
+    params: *const u8,
+    buffers: *const *mut u8,
+    tex_slots: *const u8,
+    width: u32,
+    height: u32,
+    stride: u32,
+    row_start: u32,
+    row_end: u32,
+);
+
+/// Info about a Params struct member.
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+#[derive(Clone)]
+pub struct ParamMember {
+    pub name: String,
+    pub offset: u32,
+}
+
+/// Compiled WGSL kernel — holds the JIT handle (to keep code alive) and the
+/// function pointer. Used by both gpu-cranelift and gpu-llvm backends.
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+pub struct CompiledWgslKernel {
+    _jit_handle: Box<dyn Send + Sync>,
+    pub fn_ptr: WgslKernelFn,
+    /// WGSL variable name → index into the buffers array, for each storage buffer.
+    pub binding_map: std::collections::HashMap<String, usize>,
+    /// Number of storage buffers.
+    pub num_storage_buffers: usize,
+    /// Params struct members with names and byte offsets.
+    pub params_members: Vec<ParamMember>,
+    /// Byte size per element for each storage buffer, indexed by buffer position.
+    pub buffer_elem_bytes: Vec<u32>,
+}
+
+// SAFETY: fn_ptr points to JIT'd code kept alive by _jit_handle.
+// The function is pure (reads params/buffers passed by caller).
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+unsafe impl Send for CompiledWgslKernel {}
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+unsafe impl Sync for CompiledWgslKernel {}
+
 #[cfg(feature = "cranelift-backend")]
 pub mod cranelift;
 
@@ -262,6 +318,9 @@ pub mod wgsl_cranelift;
 
 #[cfg(feature = "llvm-backend")]
 pub mod llvm;
+
+#[cfg(feature = "llvm-backend")]
+pub mod wgsl_llvm;
 
 #[cfg(test)]
 mod tests {

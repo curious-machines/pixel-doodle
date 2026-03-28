@@ -21,50 +21,13 @@ use naga::{
     UnaryOperator,
 };
 
-// ── Public API ──────────────────────────────────────────────────────────
+use super::{CompiledWgslKernel, ParamMember, WgslKernelFn};
 
-/// JIT'd WGSL compute kernel.
-///
-/// Signature: `fn(output: *mut u32, params: *const u8, width: u32, height: u32, stride: u32)`
-///
-/// The function iterates all rows/cols internally.
-/// JIT'd WGSL compute kernel.
-///
-/// `buffers` is an array of pointers, one per storage buffer binding (in binding
-/// order). For pixel shaders: buffers[0] = output (u32), buffers[1] = accum (f32).
-/// For sim shaders: buffers[N] corresponds to @binding(N+1).
-/// `tex_slots` is a pointer to an array of TextureSlot structs (16 bytes each),
-/// one per texture binding in binding order. May be null if no textures.
-///
-/// The kernel processes rows `[row_start, row_end)`. The `params` buffer still
-/// contains the full image width/height for view mapping — row_start/row_end
-/// only control which rows this call computes.
-pub type WgslKernelFn = unsafe extern "C" fn(
-    params: *const u8,
-    buffers: *const *mut u8,
-    tex_slots: *const u8,
-    width: u32,
-    height: u32,
-    stride: u32,
-    row_start: u32,
-    row_end: u32,
-);
-
-/// Compiled WGSL kernel — holds the JIT module (to keep code alive) and the
-/// function pointer.
-pub struct CompiledWgslKernel {
-    _module: JITModule,
-    pub fn_ptr: WgslKernelFn,
-    /// WGSL variable name → index into the buffers array, for each storage buffer.
-    pub binding_map: HashMap<String, usize>,
-    /// Number of storage buffers.
-    pub num_storage_buffers: usize,
-    /// Params struct members with names and byte offsets.
-    pub params_members: Vec<ParamMember>,
-}
-
-unsafe impl Send for CompiledWgslKernel {}
-unsafe impl Sync for CompiledWgslKernel {}
+/// Wrapper to make JITModule Send+Sync (the fn pointer and module data are
+/// safe to share once compilation is complete).
+struct SendSyncModule(#[allow(dead_code)] JITModule);
+unsafe impl Send for SendSyncModule {}
+unsafe impl Sync for SendSyncModule {}
 
 /// Parse and compile a WGSL compute shader to a native function.
 pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
@@ -251,24 +214,19 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     }
     let num_storage_buffers = analysis.storage_buffers.len();
 
+    let buffer_elem_bytes = analysis.storage_buffers.iter().map(|b| b.elem_bytes).collect();
+
     Ok(CompiledWgslKernel {
-        _module: jit_module,
+        _jit_handle: Box::new(SendSyncModule(jit_module)),
         fn_ptr,
         binding_map,
         num_storage_buffers,
         params_members: analysis.params_members.clone(),
+        buffer_elem_bytes,
     })
 }
 
 // ── Module analysis ─────────────────────────────────────────────────────
-
-/// Binding info extracted from the naga module.
-/// Info about a Params struct member.
-#[derive(Clone)]
-pub struct ParamMember {
-    pub name: String,
-    pub offset: u32,
-}
 
 /// Info about a storage buffer binding.
 struct StorageBufferInfo {
@@ -713,6 +671,14 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     scalar: naga::Scalar::F32,
                 };
                 &TY_VEC4_F32
+            }
+            Expression::CallResult(func_handle) => {
+                let callee = &self.naga_module.functions[*func_handle];
+                if let Some(ref result) = callee.result {
+                    &self.naga_module.types[result.ty].inner
+                } else {
+                    &TY_U32
+                }
             }
             _ => &TY_U32,
         }
@@ -1717,24 +1683,28 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             self.local_vars.insert(handle, vars);
         }
 
-        // We need to capture return values. Use a Cranelift Variable to carry
-        // the return value out of the inline body (since there may be multiple
-        // return paths).
-        let ret_var = if result_expr.is_some() {
-            // Determine return type from callee.
-            let ret_ty = callee.result.as_ref().map(|r| {
-                self.naga_type_to_cl(&self.naga_module.types[r.ty].inner)
-            }).unwrap_or(I32);
-            let rv = self.alloc_var(ret_ty);
-            let zero = self.zero_value(ret_ty);
-            self.builder.def_var(rv, zero);
-            Some(rv)
+        // We need to capture return values. Use Cranelift Variables to carry
+        // them out of the inline body (since there may be multiple return paths).
+        // For vector return types, allocate one Variable per component.
+        let ret_vars = if result_expr.is_some() {
+            let (ret_ty, n_components) = callee.result.as_ref().map(|r| {
+                let inner = &self.naga_module.types[r.ty].inner;
+                (self.naga_type_to_cl(inner), self.type_component_count(inner))
+            }).unwrap_or((I32, 1));
+            let mut vars = Vec::with_capacity(n_components);
+            for _ in 0..n_components {
+                let rv = self.alloc_var(ret_ty);
+                let zero = self.zero_value(ret_ty);
+                self.builder.def_var(rv, zero);
+                vars.push(rv);
+            }
+            Some(vars)
         } else {
             None
         };
 
         // Lower callee body, intercepting Return statements to capture values.
-        self.lower_block_with_return(&callee.body, callee, ret_var)?;
+        self.lower_block_with_return(&callee.body, callee, ret_vars.as_deref())?;
 
         // Jump to the inline return block if not already terminated.
         if !self.terminated {
@@ -1743,8 +1713,10 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         self.builder.switch_to_block(inline_return_block);
         self.builder.seal_block(inline_return_block);
 
-        // Capture return value.
-        let return_values = ret_var.map(|rv| vec![self.builder.use_var(rv)]);
+        // Capture return values.
+        let return_values = ret_vars.map(|vars| {
+            vars.iter().map(|rv| self.builder.use_var(*rv)).collect::<Vec<_>>()
+        });
 
         // Restore caller state.
         self.expr_values = saved_expr_values;
@@ -1765,16 +1737,20 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         &mut self,
         block: &naga::Block,
         func: &naga::Function,
-        ret_var: Option<Variable>,
+        ret_vars: Option<&[Variable]>,
     ) -> Result<(), String> {
         for stmt in block.iter() {
             if self.terminated { break; }
             match stmt {
                 Statement::Return { value } => {
-                    if let (Some(val_handle), Some(rv)) = (value, ret_var) {
+                    if let (Some(val_handle), Some(vars)) = (value, ret_vars) {
                         self.eval_expr(*val_handle, func)?;
-                        let val = self.get_expr_scalar(*val_handle);
-                        self.builder.def_var(rv, val);
+                        let vals = self.get_expr(*val_handle).to_vec();
+                        for (i, rv) in vars.iter().enumerate() {
+                            if i < vals.len() {
+                                self.builder.def_var(*rv, vals[i]);
+                            }
+                        }
                     }
                     self.builder.ins().jump(self.return_block, &[]);
                     self.terminated = true;
@@ -1791,14 +1767,14 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.builder.switch_to_block(then_block);
                     self.builder.seal_block(then_block);
                     self.terminated = false;
-                    self.lower_block_with_return(accept, func, ret_var)?;
+                    self.lower_block_with_return(accept, func, ret_vars)?;
                     let then_term = self.terminated;
                     if !then_term { self.builder.ins().jump(merge_block, &[]); }
 
                     self.builder.switch_to_block(else_block);
                     self.builder.seal_block(else_block);
                     self.terminated = false;
-                    self.lower_block_with_return(reject, func, ret_var)?;
+                    self.lower_block_with_return(reject, func, ret_vars)?;
                     let else_term = self.terminated;
                     if !else_term { self.builder.ins().jump(merge_block, &[]); }
 
@@ -1816,7 +1792,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.builder.switch_to_block(loop_body_block);
                     self.loop_stack.push((loop_exit, loop_continuing_block));
                     self.terminated = false;
-                    self.lower_block_with_return(body, func, ret_var)?;
+                    self.lower_block_with_return(body, func, ret_vars)?;
                     if !self.terminated {
                         self.builder.ins().jump(loop_continuing_block, &[]);
                     }
@@ -1824,7 +1800,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.builder.switch_to_block(loop_continuing_block);
                     self.builder.seal_block(loop_continuing_block);
                     self.terminated = false;
-                    self.lower_block_with_return(continuing, func, ret_var)?;
+                    self.lower_block_with_return(continuing, func, ret_vars)?;
                     if let Some(break_cond) = break_if {
                         let cond = self.get_expr_scalar(*break_cond);
                         self.builder.ins().brif(cond, loop_exit, &[], loop_body_block, &[]);
