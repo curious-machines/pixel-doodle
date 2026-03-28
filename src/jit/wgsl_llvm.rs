@@ -637,7 +637,11 @@ impl<'a> ShaderCompiler<'a> {
                 naga::Literal::U64(_) => &TY_U64,
                 _ => &TY_F32,
             },
-            Expression::Binary { left, .. } => self.resolve_expr_type(*left, func),
+            Expression::Binary { left, right, .. } => {
+                let lt = self.resolve_expr_type(*left, func);
+                if matches!(lt, TypeInner::Vector { .. }) { lt }
+                else { self.resolve_expr_type(*right, func) }
+            }
             Expression::Unary { expr, .. } => self.resolve_expr_type(*expr, func),
             Expression::AccessIndex { base, index } => {
                 let base_ty = self.resolve_expr_type(*base, func);
@@ -1267,7 +1271,8 @@ impl<'a> ShaderCompiler<'a> {
         func: &naga::Function,
     ) -> Result<Vec<BasicValueEnum<'static>>, String> {
         let arg_ty = self.resolve_expr_type(arg, func);
-        if matches!(arg_ty, TypeInner::Vector { .. }) {
+        let actual_components = self.get_expr(arg).len();
+        if matches!(arg_ty, TypeInner::Vector { .. }) || actual_components > 1 {
             return self.lower_math_vector(fun, arg, arg1, arg2, func);
         }
 

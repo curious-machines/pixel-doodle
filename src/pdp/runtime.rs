@@ -114,8 +114,6 @@ pub struct Runtime {
     gpu_pixel_buffer_name: Option<String>,
     /// User args for GPU pixel kernels, resolved at execute_run time.
     gpu_user_args: Vec<f32>,
-    /// Progressive sample counter for GPU pixel kernels.
-    gpu_sample_index: u32,
     /// The config file path, used in window title when no explicit title is set.
     config_path: Option<String>,
 }
@@ -181,7 +179,6 @@ impl Runtime {
             last_frame_was_gpu: false,
             gpu_pixel_buffer_name: None,
             gpu_user_args: Vec::new(),
-            gpu_sample_index: 0,
             config_path: None,
         }
     }
@@ -965,8 +962,8 @@ impl Runtime {
                         "y_min" => params[off..off+4].copy_from_slice(&((self.center_y - view_h / 2.0) as f32).to_le_bytes()),
                         "x_step" => params[off..off+4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
                         "y_step" => params[off..off+4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
-                        "sample_index" => params[off..off+4].copy_from_slice(&self.gpu_cpu_sample_index.to_le_bytes()),
-                        "sample_count" => params[off..off+4].copy_from_slice(&(self.gpu_cpu_sample_index + 1).to_le_bytes()),
+                        "sample_index" => params[off..off+4].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()),
+                        "sample_count" => params[off..off+4].copy_from_slice(&0u32.to_le_bytes()),
                         "time" => params[off..off+4].copy_from_slice(&(self.time as f32).to_le_bytes()),
                         name if name.starts_with('_') => {} // padding
                         _ => {
@@ -1051,7 +1048,6 @@ impl Runtime {
                     });
                 });
 
-                self.gpu_cpu_sample_index += 1;
             }
             None => {
                 eprintln!("warning: kernel '{}' not found", kernel_name);
@@ -1310,19 +1306,19 @@ impl Runtime {
             "center_x" => {
                 self.center_x = clamped;
                 self.accum_dirty = true;
-                self.gpu_sample_index = 0;
+
                 self.reset_gpu_cpu_accum();
             }
             "center_y" => {
                 self.center_y = clamped;
                 self.accum_dirty = true;
-                self.gpu_sample_index = 0;
+
                 self.reset_gpu_cpu_accum();
             }
             "zoom" => {
                 self.zoom = clamped;
                 self.accum_dirty = true;
-                self.gpu_sample_index = 0;
+
                 self.reset_gpu_cpu_accum();
             }
             "paused" => self.paused = clamped != 0.0,
@@ -1337,24 +1333,22 @@ impl Runtime {
     /// If the last frame used GPU rendering, dispatch the GPU and present.
     /// Returns true if GPU rendered (caller should NOT upload_and_present).
     /// Re-present the last GPU frame (for use when pipeline was skipped, e.g. paused).
-    pub fn re_present_gpu_frame(&mut self, display: &Display) -> bool {
+    pub fn re_present_gpu_frame(&self, display: &Display) -> bool {
         if !self.last_frame_was_gpu {
             return false;
         }
-        // GPU pixel kernel path — keep accumulating samples even when frame is skipped
+        // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
-            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                si,
-                si + 1,
+                0xFFFFFFFF,
+                0,
                 self.time,
                 &self.gpu_user_args,
             );
-            self.gpu_sample_index += 1;
             return true;
         }
         // GPU sim kernel path — re-present the pixel buffer
@@ -1367,24 +1361,22 @@ impl Runtime {
         false
     }
 
-    pub fn render_gpu_frame(&mut self, display: &Display) -> bool {
+    pub fn render_gpu_frame(&self, display: &Display) -> bool {
         if !self.gpu_rendered_this_frame {
             return false;
         }
         // GPU pixel kernel path
         if let Some(ref gpu) = self.gpu_backend {
-            let si = self.gpu_sample_index;
             gpu.render(
                 display,
                 self.center_x,
                 self.center_y,
                 self.zoom,
-                si,
-                si + 1,
+                0xFFFFFFFF,
+                0,
                 self.time,
                 &self.gpu_user_args,
             );
-            self.gpu_sample_index += 1;
             return true;
         }
         // GPU sim kernel path — present the pixel buffer from the runner
@@ -1467,10 +1459,6 @@ impl Runtime {
         }
         #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
         if !self.gpu_cpu_buffers.is_empty() {
-            return true;
-        }
-        // GPU pixel kernels progressively accumulate samples
-        if self.gpu_backend.is_some() {
             return true;
         }
         // GPU simulations have buffers in the GPU runner, not self.buffers
