@@ -65,12 +65,16 @@ pipeline pdir {
 pipeline gpu {
   kernel step = "shallow_water_step.wgsl"
   kernel vis = "shallow_water_vis.wgsl"
+  kernel init_field = "shallow_water_init.wgsl"
   kernel inject = "../../shared/inject_vec.wgsl"
 
   buffer field: gpu(vec4<f32>) = constant(0.0)
   buffer field_next: gpu(vec4<f32>) = constant(0.0)
   buffer pixels: gpu(u32) = constant(0.0)
 
+  init {
+    run init_field with(field_out: out field)
+  }
   on mousedown {
     run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 10.0, value: 0.3, falloff_quadratic: 1, component: 0) with(buf_in: field, buf_out: out field_next)
     swap field, field_next

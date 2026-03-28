@@ -45,8 +45,6 @@ enum CompiledKernelEntry {
     #[cfg(feature = "cranelift-backend")]
     WgslCpu {
         compiled: jit::wgsl_cranelift::CompiledWgslKernel,
-        /// Number of storage buffers (binding 1, 2, ...).
-        num_storage_buffers: usize,
         /// Texture slot names in declaration order.
         tex_slot_names: Vec<String>,
     },
@@ -58,6 +56,9 @@ pub struct Runtime {
     kernels: HashMap<String, CompiledKernelEntry>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
+    /// Byte-level simulation buffers for wgsl-cpu backend (name -> raw bytes).
+    #[cfg(feature = "cranelift-backend")]
+    wgsl_cpu_buffers: HashMap<String, Vec<u8>>,
     /// Loaded textures: name -> RGBA8 data.
     textures: HashMap<String, TextureData>,
     /// User-defined variables.
@@ -137,6 +138,8 @@ impl Runtime {
             config,
             kernels: HashMap::new(),
             buffers: HashMap::new(),
+            #[cfg(feature = "cranelift-backend")]
+            wgsl_cpu_buffers: HashMap::new(),
             textures: HashMap::new(),
             variables,
             var_ranges,
@@ -295,12 +298,9 @@ impl Runtime {
                         .selected_pipeline()
                         .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
                         .unwrap_or_default();
-                    // Count storage buffer bindings by parsing the WGSL (quick heuristic).
-                    let num_bufs = src.matches("var<storage").count();
-                    eprintln!("compiled WGSL kernel '{}' to CPU ({} storage buffers)", decl.name, num_bufs);
+                    eprintln!("compiled WGSL kernel '{}' to CPU ({} storage buffers)", decl.name, compiled.num_storage_buffers);
                     self.kernels.insert(decl.name.clone(), CompiledKernelEntry::WgslCpu {
                         compiled,
-                        num_storage_buffers: num_bufs,
                         tex_slot_names: tex_names,
                     });
                     continue;
@@ -408,8 +408,28 @@ impl Runtime {
         let size = (self.width * self.height) as usize;
 
         for decl in &buf_decls {
-            // Skip GPU buffers — they're initialized in init_gpu()
-            if decl.gpu_type.is_some() {
+            if let Some(gpu_type) = decl.gpu_type {
+                // GPU buffers — skip for GPU backend, allocate as bytes for wgsl-cpu.
+                #[cfg(feature = "cranelift-backend")]
+                if self.backend_name == "wgsl-cpu" {
+                    let elem_bytes = gpu_type.byte_size() as usize;
+                    let buf_size = size * elem_bytes;
+                    let mut data = vec![0u8; buf_size];
+                    let BufferInit::Constant(val) = &decl.init;
+                    if *val != 0.0 {
+                        let component_bytes: Vec<u8> = match gpu_type {
+                            GpuElementType::I32 => (*val as i32).to_le_bytes().to_vec(),
+                            GpuElementType::U32 => (*val as u32).to_le_bytes().to_vec(),
+                            _ => (*val as f32).to_le_bytes().to_vec(),
+                        };
+                        for chunk in data.chunks_exact_mut(elem_bytes) {
+                            for (i, byte) in chunk.iter_mut().enumerate() {
+                                *byte = component_bytes[i % component_bytes.len()];
+                            }
+                        }
+                    }
+                    self.wgsl_cpu_buffers.insert(decl.name.clone(), data);
+                }
                 continue;
             }
 
@@ -657,15 +677,31 @@ impl Runtime {
                     let _ = body;
                 }
                 PipelineStep::Swap { a, b, .. } => {
-                    // Try CPU buffers first, then GPU
+                    let mut swapped = false;
+                    // Try CPU f64 buffers first
                     if self.buffers.contains_key(a.as_str()) {
                         let mut buf_a = self.buffers.remove(a).unwrap();
                         let mut buf_b = self.buffers.remove(b).unwrap();
                         std::mem::swap(&mut buf_a, &mut buf_b);
                         self.buffers.insert(a.clone(), buf_a);
                         self.buffers.insert(b.clone(), buf_b);
-                    } else if let Some(runner) = &mut self.gpu_sim_runner {
-                        runner.swap_buffers(a, b);
+                        swapped = true;
+                    }
+                    // Then wgsl-cpu byte buffers
+                    #[cfg(feature = "cranelift-backend")]
+                    if !swapped && self.wgsl_cpu_buffers.contains_key(a.as_str()) {
+                        let mut buf_a = self.wgsl_cpu_buffers.remove(a).unwrap();
+                        let mut buf_b = self.wgsl_cpu_buffers.remove(b).unwrap();
+                        std::mem::swap(&mut buf_a, &mut buf_b);
+                        self.wgsl_cpu_buffers.insert(a.clone(), buf_a);
+                        self.wgsl_cpu_buffers.insert(b.clone(), buf_b);
+                        swapped = true;
+                    }
+                    // Then GPU
+                    if !swapped {
+                        if let Some(runner) = &mut self.gpu_sim_runner {
+                            runner.swap_buffers(a, b);
+                        }
                     }
                 }
                 PipelineStep::Loop { iterations, body, .. } => {
@@ -877,57 +913,76 @@ impl Runtime {
                 }
             }
             #[cfg(feature = "cranelift-backend")]
-            Some(CompiledKernelEntry::WgslCpu { compiled, num_storage_buffers, tex_slot_names }) => {
+            Some(CompiledKernelEntry::WgslCpu { compiled, tex_slot_names }) => {
                 let fn_ptr = compiled.fn_ptr;
+                let binding_map = &compiled.binding_map;
+                let num_bufs = compiled.num_storage_buffers;
+                let params_members = &compiled.params_members;
                 let w = self.width;
                 let h = self.height;
-                let stride = w; // no alignment needed for CPU
+                let stride = w;
 
-                // Build Params struct matching the GPU layout:
-                // width(u32) height(u32) max_iter(u32) stride(u32)
-                // x_min(f32) y_min(f32) x_step(f32) y_step(f32)
-                // sample_index(u32) sample_count(u32) time(f32) _pad(u32)
+                // Build Params buffer by matching member names to runtime values.
                 let aspect = w as f64 / h as f64;
                 let view_w = 3.5 / self.zoom;
                 let view_h = view_w / aspect;
-                let x_min = (self.center_x - view_w / 2.0) as f32;
-                let y_min = (self.center_y - view_h / 2.0) as f32;
-                let x_step = (view_w / w as f64) as f32;
-                let y_step = (view_h / h as f64) as f32;
 
-                let mut params = vec![0u8; 256]; // same size as GPU uniform buffer
-                params[0..4].copy_from_slice(&w.to_le_bytes());
-                params[4..8].copy_from_slice(&h.to_le_bytes());
-                params[8..12].copy_from_slice(&256u32.to_le_bytes()); // max_iter
-                params[12..16].copy_from_slice(&stride.to_le_bytes());
-                params[16..20].copy_from_slice(&x_min.to_le_bytes());
-                params[20..24].copy_from_slice(&y_min.to_le_bytes());
-                params[24..28].copy_from_slice(&x_step.to_le_bytes());
-                params[28..32].copy_from_slice(&y_step.to_le_bytes());
-                params[32..36].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // sample_index (no jitter)
-                params[36..40].copy_from_slice(&0u32.to_le_bytes()); // sample_count
-                params[40..44].copy_from_slice(&(self.time as f32).to_le_bytes());
-
-                // Write user args after the base Params (offset 48), as f32.
-                let mut arg_offset = 48;
-                for a in args {
-                    let val = match &a.value {
-                        Literal::Float(f) => *f as f32,
-                        Literal::Int(i) => *i as f32,
-                        Literal::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
-                        Literal::Str(_) => 0.0f32,
-                        Literal::VarRef(name) => self.get_variable(name) as f32,
-                    };
-                    if arg_offset + 4 <= params.len() {
-                        params[arg_offset..arg_offset + 4].copy_from_slice(&val.to_le_bytes());
-                        arg_offset += 4;
+                let mut params = vec![0u8; 256];
+                // Track which members are "user args" (not built-in).
+                let mut user_arg_index = 0;
+                for member in params_members {
+                    let off = member.offset as usize;
+                    if off + 4 > params.len() { continue; }
+                    match member.name.as_str() {
+                        "width" => params[off..off+4].copy_from_slice(&w.to_le_bytes()),
+                        "height" => params[off..off+4].copy_from_slice(&h.to_le_bytes()),
+                        "stride" => params[off..off+4].copy_from_slice(&stride.to_le_bytes()),
+                        "max_iter" => params[off..off+4].copy_from_slice(&256u32.to_le_bytes()),
+                        "x_min" => params[off..off+4].copy_from_slice(&((self.center_x - view_w / 2.0) as f32).to_le_bytes()),
+                        "y_min" => params[off..off+4].copy_from_slice(&((self.center_y - view_h / 2.0) as f32).to_le_bytes()),
+                        "x_step" => params[off..off+4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
+                        "y_step" => params[off..off+4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
+                        "sample_index" => params[off..off+4].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes()),
+                        "sample_count" => params[off..off+4].copy_from_slice(&0u32.to_le_bytes()),
+                        "time" => params[off..off+4].copy_from_slice(&(self.time as f32).to_le_bytes()),
+                        name if name.starts_with('_') => {} // padding
+                        _ => {
+                            // User-defined parameter — match by position in `args`.
+                            if let Some(a) = args.get(user_arg_index) {
+                                let val = match &a.value {
+                                    Literal::Float(f) => *f as f32,
+                                    Literal::Int(i) => *i as f32,
+                                    Literal::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
+                                    Literal::Str(_) => 0.0f32,
+                                    Literal::VarRef(name) => self.get_variable(name) as f32,
+                                };
+                                params[off..off+4].copy_from_slice(&val.to_le_bytes());
+                            }
+                            user_arg_index += 1;
+                        }
                     }
                 }
 
-                // Build buffer pointer array: binding 1 = output pixel buffer.
-                let num_bufs = *num_storage_buffers;
-                let output_ptr = self.pixel_buffer.as_mut_ptr() as usize;
-                // Additional buffers would go here for sim kernels.
+                // Debug: dump first few values of each buffer.
+                // Build buffer pointer array by resolving bindings.
+                // Each WGSL storage buffer variable maps to a PDP buffer.
+                let mut buf_ptrs_base: Vec<usize> = vec![0; num_bufs];
+
+                for binding in input_bindings {
+                    let wgsl_name = &binding.param_name;
+                    let pdp_name = &binding.buffer_name;
+                    if let Some(&buf_idx) = binding_map.get(wgsl_name.as_str()) {
+                        // Look in wgsl_cpu_buffers first, then pixel_buffer.
+                        if let Some(buf) = self.wgsl_cpu_buffers.get_mut(pdp_name) {
+                            buf_ptrs_base[buf_idx] = buf.as_mut_ptr() as usize;
+                        }
+                    }
+                }
+
+                // If no bindings were specified, fall back to pixel_buffer for binding 0.
+                if input_bindings.is_empty() && num_bufs > 0 {
+                    buf_ptrs_base[0] = self.pixel_buffer.as_mut_ptr() as usize;
+                }
 
                 // Build texture slots.
                 let tex_slots = self.build_tex_slots(tex_slot_names);
@@ -941,11 +996,9 @@ impl Runtime {
                     (0..num_tiles).into_par_iter().for_each(|tile| {
                         let row_start = (tile * th) as u32;
                         let row_end = ((tile + 1) * th).min(h as usize) as u32;
-                        let mut buf_ptrs: Vec<*mut u8> = Vec::with_capacity(num_bufs);
-                        buf_ptrs.push(output_ptr as *mut u8);
-                        while buf_ptrs.len() < num_bufs {
-                            buf_ptrs.push(std::ptr::null_mut());
-                        }
+                        let buf_ptrs: Vec<*mut u8> = buf_ptrs_base.iter()
+                            .map(|&addr| addr as *mut u8)
+                            .collect();
                         let tex_ptr = if tex_addr == 0 {
                             std::ptr::null()
                         } else {
@@ -976,6 +1029,19 @@ impl Runtime {
     fn execute_display(&mut self, buffer_name: Option<&str>) {
         match buffer_name {
             Some(name) => {
+                // Check if this is a wgsl-cpu buffer — copy to pixel_buffer.
+                #[cfg(feature = "cranelift-backend")]
+                if let Some(buf) = self.wgsl_cpu_buffers.get(name) {
+                    // Interpret as u32 array and copy to pixel_buffer.
+                    let n = self.pixel_buffer.len().min(buf.len() / 4);
+                    for i in 0..n {
+                        let offset = i * 4;
+                        self.pixel_buffer[i] = u32::from_le_bytes([
+                            buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3],
+                        ]);
+                    }
+                    return;
+                }
                 // GPU display — present named buffer
                 self.gpu_rendered_this_frame = true;
                 self.gpu_pixel_buffer_name = Some(name.to_string());
@@ -1337,6 +1403,10 @@ impl Runtime {
         }
         // Simulations always animate (they have buffers/loops)
         if !self.buffers.is_empty() {
+            return true;
+        }
+        #[cfg(feature = "cranelift-backend")]
+        if !self.wgsl_cpu_buffers.is_empty() {
             return true;
         }
         // GPU simulations have buffers in the GPU runner, not self.buffers

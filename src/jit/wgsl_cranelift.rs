@@ -55,6 +55,12 @@ pub type WgslKernelFn = unsafe extern "C" fn(
 pub struct CompiledWgslKernel {
     _module: JITModule,
     pub fn_ptr: WgslKernelFn,
+    /// WGSL variable name → index into the buffers array, for each storage buffer.
+    pub binding_map: HashMap<String, usize>,
+    /// Number of storage buffers.
+    pub num_storage_buffers: usize,
+    /// Params struct members with names and byte offsets.
+    pub params_members: Vec<ParamMember>,
 }
 
 unsafe impl Send for CompiledWgslKernel {}
@@ -235,15 +241,35 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
     let code_ptr = jit_module.get_finalized_function(func_id);
     let fn_ptr: WgslKernelFn = unsafe { std::mem::transmute(code_ptr) };
 
+    // Build binding map: WGSL var name → buffer index.
+    let mut binding_map = HashMap::new();
+    for (i, buf) in analysis.storage_buffers.iter().enumerate() {
+        let gv = &module.global_variables[buf.global];
+        if let Some(ref name) = gv.name {
+            binding_map.insert(name.clone(), i);
+        }
+    }
+    let num_storage_buffers = analysis.storage_buffers.len();
+
     Ok(CompiledWgslKernel {
         _module: jit_module,
         fn_ptr,
+        binding_map,
+        num_storage_buffers,
+        params_members: analysis.params_members.clone(),
     })
 }
 
 // ── Module analysis ─────────────────────────────────────────────────────
 
 /// Binding info extracted from the naga module.
+/// Info about a Params struct member.
+#[derive(Clone)]
+pub struct ParamMember {
+    pub name: String,
+    pub offset: u32,
+}
+
 /// Info about a storage buffer binding.
 struct StorageBufferInfo {
     global: Handle<naga::GlobalVariable>,
@@ -266,6 +292,8 @@ struct BindingInfo {
     params_global: Handle<naga::GlobalVariable>,
     /// Byte offset of each Params struct member.
     params_offsets: Vec<u32>,
+    /// Named params members for runtime value filling.
+    params_members: Vec<ParamMember>,
     /// Storage buffers, sorted by binding index.
     storage_buffers: Vec<StorageBufferInfo>,
     /// Texture bindings (texture_2d globals), sorted by binding index.
@@ -341,9 +369,14 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
 
     let params_gv = &module.global_variables[params_handle];
     let params_ty = &module.types[params_gv.ty];
-    let offsets = match &params_ty.inner {
+    let (offsets, params_members) = match &params_ty.inner {
         TypeInner::Struct { members, .. } => {
-            members.iter().map(|m| m.offset).collect()
+            let offsets = members.iter().map(|m| m.offset).collect();
+            let named = members.iter().map(|m| ParamMember {
+                name: m.name.clone().unwrap_or_default(),
+                offset: m.offset,
+            }).collect();
+            (offsets, named)
         }
         _ => return Err("Params binding(0) is not a struct".into()),
     };
@@ -351,6 +384,7 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     Ok(BindingInfo {
         params_global: params_handle,
         params_offsets: offsets,
+        params_members,
         storage_buffers,
         textures,
         sampler_globals,
@@ -660,6 +694,10 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.resolve_expr_type(*vector, func)
                 }
             }
+            Expression::Constant(c) => {
+                let constant = &self.naga_module.constants[*c];
+                &self.naga_module.types[constant.ty].inner
+            }
             Expression::ImageQuery { .. } => {
                 // textureDimensions → vec2<u32>
                 static TY_VEC2_U32: TypeInner = TypeInner::Vector {
@@ -879,9 +917,40 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             Expression::Binary { op, left, right } => {
                 self.eval_expr(*left, func)?;
                 self.eval_expr(*right, func)?;
+                let left_ty = self.resolve_expr_type(*left, func);
+                let right_ty = self.resolve_expr_type(*right, func);
+                let left_is_vec = matches!(left_ty, TypeInner::Vector { .. });
+                let right_is_vec = matches!(right_ty, TypeInner::Vector { .. });
+
+                // Vector binary operations: component-wise.
+                if left_is_vec || right_is_vec {
+                    let lhs_vals = self.get_expr(*left).to_vec();
+                    let rhs_vals = self.get_expr(*right).to_vec();
+                    let n = lhs_vals.len().max(rhs_vals.len());
+                    let is_float = matches!(left_ty,
+                        TypeInner::Vector { scalar, .. } if scalar.kind == ScalarKind::Float)
+                        || matches!(right_ty,
+                        TypeInner::Vector { scalar, .. } if scalar.kind == ScalarKind::Float);
+                    let mut results = Vec::with_capacity(n);
+                    for i in 0..n {
+                        // Splat scalar to match vector length.
+                        let l = lhs_vals[i % lhs_vals.len()];
+                        let r = rhs_vals[i % rhs_vals.len()];
+                        let v = match op {
+                            BinaryOperator::Add => if is_float { self.builder.ins().fadd(l, r) } else { self.builder.ins().iadd(l, r) },
+                            BinaryOperator::Subtract => if is_float { self.builder.ins().fsub(l, r) } else { self.builder.ins().isub(l, r) },
+                            BinaryOperator::Multiply => if is_float { self.builder.ins().fmul(l, r) } else { self.builder.ins().imul(l, r) },
+                            BinaryOperator::Divide => if is_float { self.builder.ins().fdiv(l, r) } else { self.builder.ins().udiv(l, r) },
+                            _ => return Err(format!("unsupported vector binary op: {op:?}")),
+                        };
+                        results.push(v);
+                    }
+                    self.expr_values.insert(handle, results);
+                    return Ok(());
+                }
+
                 let mut lhs = self.get_expr_scalar(*left);
                 let mut rhs = self.get_expr_scalar(*right);
-                let left_ty = self.resolve_expr_type(*left, func);
                 let is_float = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Float);
                 let is_signed = matches!(left_ty, TypeInner::Scalar(s) if s.kind == ScalarKind::Sint);
 
