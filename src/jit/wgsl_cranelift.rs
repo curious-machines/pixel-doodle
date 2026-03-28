@@ -33,9 +33,12 @@ use naga::{
 /// `buffers` is an array of pointers, one per storage buffer binding (in binding
 /// order). For pixel shaders: buffers[0] = output (u32), buffers[1] = accum (f32).
 /// For sim shaders: buffers[N] corresponds to @binding(N+1).
+/// `tex_slots` is a pointer to an array of TextureSlot structs (16 bytes each),
+/// one per texture binding in binding order. May be null if no textures.
 pub type WgslKernelFn = unsafe extern "C" fn(
     params: *const u8,
     buffers: *const *mut u8,
+    tex_slots: *const u8,
     width: u32,
     height: u32,
     stride: u32,
@@ -74,13 +77,20 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| format!("ISA finish: {e}"))?;
 
-    let jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+    // Register texture helper symbols if textures are present.
+    if !analysis.textures.is_empty() {
+        use crate::jit;
+        jit_builder.symbol("pd_tex_sample_bilinear_clamp", jit::pd_tex_sample_bilinear_clamp as *const u8);
+    }
     let mut jit_module = JITModule::new(jit_builder);
 
-    // Build the function signature: (params, buffers, width, height, stride) -> void
+    // Build the function signature: (params, buffers, tex_slots, width, height, stride) -> void
     let mut sig = Signature::new(CallConv::SystemV);
     sig.params.push(AbiParam::new(I64)); // params: *const u8
     sig.params.push(AbiParam::new(I64)); // buffers: *const *mut u8
+    sig.params.push(AbiParam::new(I64)); // tex_slots: *const TextureSlot
     sig.params.push(AbiParam::new(I32)); // width: u32
     sig.params.push(AbiParam::new(I32)); // height: u32
     sig.params.push(AbiParam::new(I32)); // stride: u32
@@ -106,9 +116,10 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
         // Extract function parameters.
         let p_params = builder.block_params(entry_block)[0];
         let p_buffers = builder.block_params(entry_block)[1];
-        let p_width = builder.block_params(entry_block)[2];
-        let p_height = builder.block_params(entry_block)[3];
-        let p_stride = builder.block_params(entry_block)[4];
+        let p_tex_slots = builder.block_params(entry_block)[2];
+        let p_width = builder.block_params(entry_block)[3];
+        let p_height = builder.block_params(entry_block)[4];
+        let p_stride = builder.block_params(entry_block)[5];
 
         // Build row/col loop: for row in 0..height { for col in 0..width { ... } }
         let loop_header_row = builder.create_block();
@@ -158,6 +169,7 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
             &mut jit_module,
             p_params,
             p_buffers,
+            p_tex_slots,
             p_width,
             p_height,
             p_stride,
@@ -233,17 +245,30 @@ struct StorageBufferInfo {
     elem_components: usize,
 }
 
+/// Info about a texture binding.
+struct TextureInfo {
+    global: Handle<naga::GlobalVariable>,
+    /// Index into the tex_slots array (0-based, ordered by binding).
+    slot_index: usize,
+}
+
 struct BindingInfo {
     params_global: Handle<naga::GlobalVariable>,
     /// Byte offset of each Params struct member.
     params_offsets: Vec<u32>,
     /// Storage buffers, sorted by binding index.
     storage_buffers: Vec<StorageBufferInfo>,
+    /// Texture bindings (texture_2d globals), sorted by binding index.
+    textures: Vec<TextureInfo>,
+    /// Sampler globals (just tracked so we can ignore them).
+    sampler_globals: Vec<Handle<naga::GlobalVariable>>,
 }
 
 fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     let mut params_global = None;
     let mut storage_buffers = Vec::new();
+    let mut texture_bindings: Vec<(u32, Handle<naga::GlobalVariable>)> = Vec::new();
+    let mut sampler_globals = Vec::new();
 
     for (handle, gv) in module.global_variables.iter() {
         let binding = match &gv.binding {
@@ -251,11 +276,24 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
             None => continue,
         };
         if binding.group != 0 { continue; }
+
+        let ty_inner = &module.types[gv.ty].inner;
+        match ty_inner {
+            TypeInner::Image { .. } => {
+                texture_bindings.push((binding.binding, handle));
+                continue;
+            }
+            TypeInner::Sampler { .. } => {
+                sampler_globals.push(handle);
+                continue;
+            }
+            _ => {}
+        }
+
         if binding.binding == 0 {
             params_global = Some(handle);
         } else {
             // Storage buffer — determine element type.
-            let ty_inner = &module.types[gv.ty].inner;
             let (elem_bytes, elem_components) = match ty_inner {
                 TypeInner::Array { base, .. } => {
                     let elem = &module.types[*base].inner;
@@ -283,6 +321,13 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
 
     let params_handle = params_global.ok_or("no @binding(0) uniform found")?;
     storage_buffers.sort_by_key(|b| b.binding);
+    texture_bindings.sort_by_key(|(b, _)| *b);
+
+    let textures: Vec<TextureInfo> = texture_bindings
+        .iter()
+        .enumerate()
+        .map(|(slot_index, (_, global))| TextureInfo { global: *global, slot_index })
+        .collect();
 
     let params_gv = &module.global_variables[params_handle];
     let params_ty = &module.types[params_gv.ty];
@@ -297,6 +342,8 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
         params_global: params_handle,
         params_offsets: offsets,
         storage_buffers,
+        textures,
+        sampler_globals,
     })
 }
 
@@ -316,6 +363,7 @@ struct ShaderCompiler<'a, 'b> {
     // Function parameters.
     p_params: cranelift_codegen::ir::Value,
     p_buffers: cranelift_codegen::ir::Value,
+    p_tex_slots: cranelift_codegen::ir::Value,
     #[allow(dead_code)]
     p_width: cranelift_codegen::ir::Value,
     #[allow(dead_code)]
@@ -366,6 +414,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         jit_module: &'b mut JITModule,
         p_params: cranelift_codegen::ir::Value,
         p_buffers: cranelift_codegen::ir::Value,
+        p_tex_slots: cranelift_codegen::ir::Value,
         p_width: cranelift_codegen::ir::Value,
         p_height: cranelift_codegen::ir::Value,
         p_stride: cranelift_codegen::ir::Value,
@@ -382,6 +431,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             call_results: HashMap::new(),
             p_params,
             p_buffers,
+            p_tex_slots,
             p_width,
             p_height,
             p_stride,
@@ -411,6 +461,17 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 let zero = self.zero_value(cl_ty);
                 self.builder.def_var(v, zero);
                 vars.push(v);
+            }
+            // Initialize from init value if present.
+            if let Some(init) = local.init {
+                // The init expression is in the function's expression arena.
+                self.eval_expr(init, func)?;
+                let init_vals = self.get_expr(init).to_vec();
+                for (i, v) in vars.iter().enumerate() {
+                    if i < init_vals.len() {
+                        self.builder.def_var(*v, init_vals[i]);
+                    }
+                }
             }
             self.local_vars.insert(handle, vars);
         }
@@ -601,6 +662,22 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     self.resolve_expr_type(*vector, func)
                 }
             }
+            Expression::ImageQuery { .. } => {
+                // textureDimensions → vec2<u32>
+                static TY_VEC2_U32: TypeInner = TypeInner::Vector {
+                    size: naga::VectorSize::Bi,
+                    scalar: naga::Scalar::U32,
+                };
+                &TY_VEC2_U32
+            }
+            Expression::ImageSample { .. } => {
+                // textureSampleLevel → vec4<f32>
+                static TY_VEC4_F32: TypeInner = TypeInner::Vector {
+                    size: naga::VectorSize::Quad,
+                    scalar: naga::Scalar::F32,
+                };
+                &TY_VEC4_F32
+            }
             _ => &TY_U32,
         }
     }
@@ -670,6 +747,11 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                     let buf_ptr_addr = self.builder.ins().iadd(self.p_buffers, offset);
                     let buf_ptr = self.builder.ins().load(I64, MemFlags::trusted(), buf_ptr_addr, 0);
                     vec![buf_ptr]
+                } else if self.analysis.textures.iter().any(|t| t.global == *gv) || self.analysis.sampler_globals.contains(gv) {
+                    // Texture and sampler globals — return a dummy tag.
+                    // Actual texture ops (ImageSample, ImageQuery) handle these directly.
+                    let tag = self.builder.ins().iconst(I64, gv.index() as i64);
+                    vec![tag]
                 } else {
                     return Err(format!("unsupported global variable: {gv:?}"));
                 }
@@ -938,6 +1020,74 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
                 } else {
                     return Err("CallResult without preceding Call".into());
                 }
+            }
+
+            Expression::ImageQuery { image, query } => {
+                self.eval_expr(*image, func)?;
+                match query {
+                    naga::ImageQuery::Size { .. } => {
+                        // textureDimensions(img) → vec2<u32>
+                        // Load width and height from TextureSlot: { data: *u8, width: u32, height: u32 }
+                        // TextureSlot is 16 bytes; width at offset 8, height at offset 12.
+                        let img_expr = &func.expressions[*image];
+                        let tex_idx = if let Expression::GlobalVariable(gv) = img_expr {
+                            self.analysis.textures.iter().find(|t| t.global == *gv)
+                                .map(|t| t.slot_index).unwrap_or(0)
+                        } else { 0 };
+                        let slot_offset = self.builder.ins().iconst(I64, (tex_idx * 16) as i64);
+                        let slot_addr = self.builder.ins().iadd(self.p_tex_slots, slot_offset);
+                        let w = self.builder.ins().load(I32, MemFlags::trusted(), slot_addr, 8);
+                        let h = self.builder.ins().load(I32, MemFlags::trusted(), slot_addr, 12);
+                        vec![w, h]
+                    }
+                    _ => return Err(format!("unsupported ImageQuery: {query:?}")),
+                }
+            }
+
+            Expression::ImageSample { image, sampler: _, coordinate, level, .. } => {
+                self.eval_expr(*image, func)?;
+                self.eval_expr(*coordinate, func)?;
+                // textureSampleLevel(img, sampler, uv, level) → vec4<f32>
+                let img_expr = &func.expressions[*image];
+                let tex_idx = if let Expression::GlobalVariable(gv) = img_expr {
+                    self.analysis.textures.iter().find(|t| t.global == *gv)
+                        .map(|t| t.slot_index).unwrap_or(0)
+                } else { 0 };
+
+                let uv = self.get_expr(*coordinate);
+                let u_f32 = uv[0];
+                let v_f32 = uv[1];
+                // Promote f32 UV to f64 for the helper signature.
+                let u_f64 = self.builder.ins().fpromote(F64, u_f32);
+                let v_f64 = self.builder.ins().fpromote(F64, v_f32);
+
+                let _ = level; // We always use level 0 (bilinear).
+
+                // Call pd_tex_sample_bilinear_clamp(slots, tex, u, v, out)
+                let mut sig = self.jit_module.make_signature();
+                sig.params.push(AbiParam::new(I64));  // slots
+                sig.params.push(AbiParam::new(I32));  // tex
+                sig.params.push(AbiParam::new(F64));  // u
+                sig.params.push(AbiParam::new(F64));  // v
+                sig.params.push(AbiParam::new(I64));  // out
+                let func_id = self.jit_module.declare_function("pd_tex_sample_bilinear_clamp", Linkage::Import, &sig).unwrap();
+                let func_ref = self.jit_module.declare_func_in_func(func_id, self.builder.func);
+
+                // Stack slot for 4 × f32 = 16 bytes.
+                let ss = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot, 16, 3,
+                ));
+                let out_addr = self.builder.ins().stack_addr(I64, ss, 0);
+
+                let tex_const = self.builder.ins().iconst(I32, tex_idx as i64);
+                self.builder.ins().call(func_ref, &[self.p_tex_slots, tex_const, u_f64, v_f64, out_addr]);
+
+                let flags = MemFlags::new();
+                let r = self.builder.ins().load(F32, flags, out_addr, 0);
+                let g = self.builder.ins().load(F32, flags, out_addr, 4);
+                let b = self.builder.ins().load(F32, flags, out_addr, 8);
+                let a = self.builder.ins().load(F32, flags, out_addr, 12);
+                vec![r, g, b, a]
             }
 
             Expression::Math { fun, arg, arg1, arg2, arg3: _ } => {
@@ -1628,6 +1778,7 @@ mod tests {
             (compiled.fn_ptr)(
                 params.as_ptr(),
                 buffers.as_ptr() as *const *mut u8,
+                std::ptr::null(),
                 width,
                 height,
                 stride,
@@ -1696,6 +1847,7 @@ mod tests {
             (compiled.fn_ptr)(
                 params.as_ptr(),
                 buffers.as_ptr() as *const *mut u8,
+                std::ptr::null(),
                 width,
                 height,
                 stride,
@@ -1762,6 +1914,7 @@ mod tests {
             (compiled.fn_ptr)(
                 params.as_ptr(),
                 buffers.as_ptr() as *const *mut u8,
+                std::ptr::null(),
                 width,
                 height,
                 stride,
@@ -1827,6 +1980,7 @@ mod tests {
             (compiled.fn_ptr)(
                 params.as_ptr(),
                 buffers.as_ptr() as *const *mut u8,
+                std::ptr::null(),
                 width,
                 height,
                 stride,
@@ -1842,5 +1996,76 @@ mod tests {
         // Original horizontal cells (except center) should be dead
         assert!(grid_out[(8 * width + 7) as usize] <= 0, "cell (7,8) should be dead");
         assert!(grid_out[(8 * width + 9) as usize] <= 0, "cell (9,8) should be dead");
+    }
+
+    #[test]
+    fn texture_test_wgsl_on_cpu() {
+        use crate::jit::TextureSlot;
+
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/basic/texture_test/texture_test.wgsl")
+        ).unwrap();
+
+        let compiled = compile_wgsl(&source).expect("failed to compile texture_test.wgsl");
+
+        let width: u32 = 32;
+        let height: u32 = 32;
+        let stride: u32 = width;
+
+        // Create a simple 4x4 test texture: solid red (RGBA8).
+        let tex_width: u32 = 4;
+        let tex_height: u32 = 4;
+        let tex_data: Vec<u8> = (0..tex_width * tex_height)
+            .flat_map(|_| [255u8, 0, 0, 255]) // red pixels
+            .collect();
+
+        let tex_slot = TextureSlot {
+            data: tex_data.as_ptr(),
+            width: tex_width,
+            height: tex_height,
+        };
+
+        // Params: width, height, max_iter, stride, x_min, y_min, x_step, y_step
+        let mut params = [0u8; 48];
+        params[0..4].copy_from_slice(&width.to_le_bytes());
+        params[4..8].copy_from_slice(&height.to_le_bytes());
+        params[8..12].copy_from_slice(&256u32.to_le_bytes());
+        params[12..16].copy_from_slice(&stride.to_le_bytes());
+        // x_min/y_min/x_step/y_step — not used by texture_test.wgsl
+        params[16..20].copy_from_slice(&0.0f32.to_le_bytes());
+        params[20..24].copy_from_slice(&0.0f32.to_le_bytes());
+        params[24..28].copy_from_slice(&(1.0f32 / width as f32).to_le_bytes());
+        params[28..32].copy_from_slice(&(1.0f32 / height as f32).to_le_bytes());
+
+        let mut output = vec![0u32; (stride * height) as usize];
+        let buffers: [*mut u8; 1] = [output.as_mut_ptr() as *mut u8];
+
+        unsafe {
+            (compiled.fn_ptr)(
+                params.as_ptr(),
+                buffers.as_ptr() as *const *mut u8,
+                &tex_slot as *const TextureSlot as *const u8,
+                width,
+                height,
+                stride,
+            );
+        }
+
+        // The texture is square (4x4), screen is square (32x32), so no letterbox.
+        // All pixels should be red: ARGB = 0xFF_RR_00_00 where RR ≈ 255.
+        let center = output[(16 * stride + 16) as usize];
+        let a = (center >> 24) & 0xFF;
+        let r = (center >> 16) & 0xFF;
+        let g = (center >> 8) & 0xFF;
+        let b = center & 0xFF;
+        assert_eq!(a, 0xFF, "alpha should be 0xFF");
+        assert!(r > 200, "red channel should be >200, got {r}");
+        assert!(g < 20, "green channel should be <20, got {g}");
+        assert!(b < 20, "blue channel should be <20, got {b}");
+
+        // Corner pixels should also be red (square texture → square screen → no letterbox).
+        let corner = output[0];
+        let r_corner = (corner >> 16) & 0xFF;
+        assert!(r_corner > 200, "corner red should be >200, got {r_corner}");
     }
 }
