@@ -1,12 +1,18 @@
 pub mod flatten;
+pub mod stroke;
 pub mod tile_renderer;
 
 use flatten::{CubicBezier, Curve, Path, Point};
+use stroke::StrokeStyle;
 
 /// Pre-binned vector scene data ready for GPU upload.
 ///
 /// Segments are line segments from flattened curves.
 /// Tile bins map each screen tile to the segments that affect it.
+/// Fill rule constants.
+pub const FILL_EVEN_ODD: u32 = 0;
+pub const FILL_NONZERO: u32 = 1;
+
 pub struct VectorScene {
     /// Line segments as [x0, y0, x1, y1] per segment.
     pub segments: Vec<[f32; 4]>,
@@ -20,6 +26,8 @@ pub struct VectorScene {
     pub tile_indices: Vec<u32>,
     /// Packed ARGB color per path.
     pub path_colors: Vec<u32>,
+    /// Fill rule per path (0 = even-odd, 1 = nonzero).
+    pub path_fill_rules: Vec<u32>,
     /// Tile size in pixels (e.g., 16).
     pub tile_size: u32,
 }
@@ -28,12 +36,36 @@ pub struct VectorScene {
 /// k = (4/3) * (sqrt(2) - 1) ≈ 0.5522847498
 const KAPPA: f32 = 0.5522847498;
 
+/// Flatten a path's curves, then expand into a stroke outline.
+///
+/// Returns a filled `Path` representing the stroke, with the given `stroke_path_id`.
+pub fn stroke_flattened(
+    path: &Path,
+    tolerance: f32,
+    style: &StrokeStyle,
+    stroke_path_id: u32,
+) -> Path {
+    // Flatten the source path into line segments
+    let paths = [Path {
+        curves: path.curves.clone(),
+        path_id: 0, // temporary, not used
+    }];
+    let (segments, _) = flatten::flatten_paths(&paths, tolerance);
+
+    // Expand into stroke outline
+    stroke::stroke_path(&segments, style, stroke_path_id)
+}
+
 /// Generate a multi-shape test scene.
 ///
 /// Back to front:
 /// - Path 0: blue rectangle (partially behind donut, visible through hole)
-/// - Path 1: orange donut (outer CCW + inner CW for hole)
+/// - Path 1: orange donut fill (outer CCW + inner CW for hole)
 /// - Path 2: green diamond overlapping the donut's edge
+/// - Path 3: white stroke on the diamond (90° corners — miter join)
+/// - Path 4: yellow stroke on a triangle (acute angles — tests sharp miter)
+/// - Path 5: cyan stroke on a chevron (very acute angle — tests bevel fallback)
+/// - Path 6: red stroke on the circle (smooth curve — many gentle joins)
 pub fn test_scene(
     tolerance: f32,
     tile_size: u32,
@@ -42,29 +74,106 @@ pub fn test_scene(
 ) -> VectorScene {
     let cx = width as f32 / 2.0;
     let cy = height as f32 / 2.0;
+    let stroke_w = 6.0;
+    let stroke_style = StrokeStyle {
+        width: stroke_w,
+        miter_limit: 4.0,
+    };
 
-    // Path 0: blue rectangle behind the donut, offset right so it's partially visible
+    // Path 0: blue rectangle behind the donut
     let rect = rect_path(cx - 30.0, cy - 80.0, 200.0, 160.0, 0);
 
-    // Path 1: orange donut (outer + inner share path_id 1)
+    // Path 1: orange donut fill
     let outer_r = height as f32 * 0.35;
     let inner_r = height as f32 * 0.18;
     let donut_outer = circle_path(cx, cy, outer_r, false, 1);
     let donut_inner = circle_path(cx, cy, inner_r, true, 1);
 
-    // Path 2: green diamond overlapping the donut's right edge
-    let diamond = diamond_path(cx + outer_r * 0.7, cy, outer_r * 0.4, 2);
+    // Path 2: green diamond (90° corners)
+    let diamond_shape = diamond_path(cx + outer_r * 0.7, cy, outer_r * 0.4, 2);
 
-    let paths = vec![rect, donut_outer, donut_inner, diamond];
+    // Path 3: white stroke on diamond (tests 90° miter joins)
+    let diamond_stroke = stroke_flattened(&diamond_shape, tolerance, &stroke_style, 3);
+
+    // Path 4: yellow stroke on a triangle (acute ~60° angles — miter)
+    let tri = triangle_path(100.0, height as f32 - 50.0, 80.0, 4);
+    let tri_stroke = stroke_flattened(&tri, tolerance, &stroke_style, 4);
+
+    // Path 5: cyan stroke on a chevron (very acute ~20° angle — should trigger bevel fallback)
+    let chevron = chevron_path(250.0, height as f32 - 80.0, 5);
+    let chevron_stroke = stroke_flattened(&chevron, tolerance, &stroke_style, 5);
+
+    // Path 6: red stroke on the outer circle (tests many gentle-angle joins from flattened curve)
+    let circle_for_stroke = circle_path(cx, cy, outer_r + 20.0, false, 6);
+    let circle_stroke = stroke_flattened(&circle_for_stroke, tolerance, &stroke_style, 6);
+
+    let paths = vec![
+        rect,
+        donut_outer,
+        donut_inner,
+        diamond_shape,
+        diamond_stroke,
+        tri_stroke,
+        chevron_stroke,
+        circle_stroke,
+    ];
     let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
 
     let path_colors = vec![
-        0xFF4488FF, // path 0: blue
-        0xFFFF8800, // path 1: orange
-        0xFF44CC44, // path 2: green
+        0xFF4488FF, // path 0: blue rect
+        0xFFFF8800, // path 1: orange donut
+        0xFF44CC44, // path 2: green diamond
+        0xFFFFFFFF, // path 3: white diamond stroke
+        0xFFFFFF00, // path 4: yellow triangle stroke
+        0xFF00FFFF, // path 5: cyan chevron stroke
+        0xFFFF4444, // path 6: red circle stroke
     ];
 
-    bin_tiles(&segments, &seg_path_ids, path_colors, tile_size, width, height)
+    let path_fill_rules = vec![
+        FILL_EVEN_ODD, // path 0: blue rect (fill)
+        FILL_EVEN_ODD, // path 1: orange donut (fill with hole)
+        FILL_EVEN_ODD, // path 2: green diamond (fill)
+        FILL_NONZERO,  // path 3: white diamond stroke
+        FILL_NONZERO,  // path 4: yellow triangle stroke
+        FILL_NONZERO,  // path 5: cyan chevron stroke
+        FILL_NONZERO,  // path 6: red circle stroke
+    ];
+
+    bin_tiles(&segments, &seg_path_ids, path_colors, path_fill_rules, tile_size, width, height)
+}
+
+/// Create an equilateral triangle path (acute ~60° angles).
+fn triangle_path(cx: f32, cy: f32, size: f32, path_id: u32) -> Path {
+    let h = size * (3.0_f32).sqrt() / 2.0;
+    let top = Point::new(cx, cy - h * 2.0 / 3.0);
+    let bl = Point::new(cx - size / 2.0, cy + h / 3.0);
+    let br = Point::new(cx + size / 2.0, cy + h / 3.0);
+
+    Path {
+        curves: vec![
+            Curve::Line(top, br),
+            Curve::Line(br, bl),
+            Curve::Line(bl, top),
+        ],
+        path_id,
+    }
+}
+
+/// Create a chevron (V shape) with a very acute angle at the bottom.
+/// Open path (not closed) — tests butt caps and an acute miter/bevel.
+/// The angle is ~14° which guarantees bevel fallback at miter_limit=4.0.
+fn chevron_path(cx: f32, cy: f32, path_id: u32) -> Path {
+    let top_left = Point::new(cx - 10.0, cy - 60.0);
+    let bottom = Point::new(cx, cy + 40.0);
+    let top_right = Point::new(cx + 10.0, cy - 60.0);
+
+    Path {
+        curves: vec![
+            Curve::Line(top_left, bottom),
+            Curve::Line(bottom, top_right),
+        ],
+        path_id,
+    }
 }
 
 /// Create a rectangle path from line segments.
@@ -180,6 +289,7 @@ fn bin_tiles(
     segments: &[[f32; 4]],
     seg_path_ids: &[u32],
     path_colors: Vec<u32>,
+    path_fill_rules: Vec<u32>,
     tile_size: u32,
     width: u32,
     height: u32,
@@ -239,6 +349,7 @@ fn bin_tiles(
         tile_counts,
         tile_indices,
         path_colors,
+        path_fill_rules,
         tile_size,
     }
 }

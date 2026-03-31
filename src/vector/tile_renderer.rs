@@ -22,6 +22,7 @@ pub struct VectorTileRenderer {
     tile_count_buf: Option<wgpu::Buffer>,
     tile_index_buf: Option<wgpu::Buffer>,
     path_color_buf: Option<wgpu::Buffer>,
+    path_fill_rule_buf: Option<wgpu::Buffer>,
     // Dimensions
     width: u32,
     height: u32,
@@ -86,6 +87,8 @@ impl VectorTileRenderer {
                 bgl_entry(6, wgpu::BufferBindingType::Storage { read_only: true }),
                 // binding 7: pixels (read_write)
                 bgl_entry(7, wgpu::BufferBindingType::Storage { read_only: false }),
+                // binding 8: path_fill_rules (read)
+                bgl_entry(8, wgpu::BufferBindingType::Storage { read_only: true }),
             ],
         });
 
@@ -136,6 +139,7 @@ impl VectorTileRenderer {
             tile_count_buf: None,
             tile_index_buf: None,
             path_color_buf: None,
+            path_fill_rule_buf: None,
             width,
             height,
             stride,
@@ -199,6 +203,14 @@ impl VectorTileRenderer {
             "path_colors",
             bytemuck::cast_slice(&scene.path_colors),
         ));
+
+        // Path fill rules: u32 each
+        self.path_fill_rule_buf = Some(create_and_write_buffer(
+            &self.device,
+            &self.queue,
+            "path_fill_rules",
+            bytemuck::cast_slice(&scene.path_fill_rules),
+        ));
     }
 
     /// Dispatch the tile rasterization kernel and present to screen.
@@ -210,6 +222,7 @@ impl VectorTileRenderer {
         let tile_count_buf = self.tile_count_buf.as_ref().expect("scene not uploaded");
         let tile_index_buf = self.tile_index_buf.as_ref().expect("scene not uploaded");
         let path_color_buf = self.path_color_buf.as_ref().expect("scene not uploaded");
+        let path_fill_rule_buf = self.path_fill_rule_buf.as_ref().expect("scene not uploaded");
 
         // Write uniform params
         let params = Params {
@@ -261,6 +274,10 @@ impl VectorTileRenderer {
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: self.pixel_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: path_fill_rule_buf.as_entire_binding(),
                 },
             ],
         });

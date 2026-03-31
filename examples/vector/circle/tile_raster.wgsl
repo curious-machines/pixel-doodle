@@ -3,7 +3,7 @@
 // One workgroup per tile. Each thread handles one pixel within its tile.
 // Computes per-path winding numbers by counting segment crossings to the
 // left of the pixel. Composites paths back-to-front (painter's algorithm).
-// Applies even-odd fill rule.
+// Supports per-path fill rules: even-odd (0) or nonzero (1).
 
 struct Params {
     width: u32,
@@ -24,10 +24,14 @@ struct Params {
 @group(0) @binding(5) var<storage, read> tile_indices: array<u32>;
 @group(0) @binding(6) var<storage, read> path_colors: array<u32>;
 @group(0) @binding(7) var<storage, read_write> pixels: array<u32>;
+@group(0) @binding(8) var<storage, read> path_fill_rules: array<u32>;
 
 const TILE_SIZE: u32 = 16u;
 const MAX_PATHS: u32 = 32u;
 const BG_COLOR: u32 = 0xFF000000u;
+
+const FILL_EVEN_ODD: u32 = 0u;
+const FILL_NONZERO: u32 = 1u;
 
 @compute @workgroup_size(TILE_SIZE, TILE_SIZE)
 fn main(
@@ -85,8 +89,15 @@ fn main(
     // Composite back-to-front (painter's algorithm)
     var color = BG_COLOR;
     for (var p: u32 = 0u; p < num_paths; p++) {
-        // Even-odd fill rule: filled if winding is odd
-        if (winding[p] & 1) != 0 {
+        let w = winding[p];
+        let rule = path_fill_rules[p];
+        var filled = false;
+        if rule == FILL_NONZERO {
+            filled = w != 0;
+        } else {
+            filled = (w & 1) != 0;
+        }
+        if filled {
             color = path_colors[p];
         }
     }
