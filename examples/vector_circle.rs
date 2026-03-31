@@ -1,7 +1,7 @@
-//! Standalone example: render a filled donut via tile-based vector rasterization.
+//! Standalone example: render multiple filled shapes via tile-based vector rasterization.
 //!
-//! The donut is constructed from cubic bezier curves and adaptively flattened.
-//! Tests winding number correctness (inner circle creates the hole).
+//! Tests multi-path compositing (painter's algorithm), winding number correctness
+//! (donut hole), and bezier curve flattening.
 //!
 //! Usage: cargo run --example vector_circle
 
@@ -20,8 +20,6 @@ const HEIGHT: u32 = 600;
 const TILE_SIZE: u32 = 16;
 const TOLERANCE: f32 = 0.5; // pixels
 
-// Orange on black
-const FILL_COLOR: u32 = 0xFFFF8800;
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
@@ -47,7 +45,7 @@ impl ApplicationHandler for VectorApp {
         }
 
         let win_attrs = Window::default_attributes()
-            .with_title("Vector Donut — Tile Rasterization")
+            .with_title("Vector Scene — Tile Rasterization")
             .with_inner_size(winit::dpi::PhysicalSize::new(WIDTH, HEIGHT));
         let window = Arc::new(event_loop.create_window(win_attrs).unwrap());
 
@@ -59,15 +57,8 @@ impl ApplicationHandler for VectorApp {
         // Create the tile renderer
         let mut renderer = VectorTileRenderer::new(&display, TILE_SIZE, wgsl_source);
 
-        // Generate test scene: donut centered in the window
-        let cx = WIDTH as f32 / 2.0;
-        let cy = HEIGHT as f32 / 2.0;
-        let outer_radius = HEIGHT as f32 * 0.4;
-        let inner_radius = HEIGHT as f32 * 0.2;
-        let scene = vector::test_donut(
-            cx, cy, outer_radius, inner_radius, FILL_COLOR, TOLERANCE,
-            TILE_SIZE, WIDTH, HEIGHT,
-        );
+        // Generate test scene: multi-shape with overlapping paths
+        let scene = vector::test_scene(TOLERANCE, TILE_SIZE, WIDTH, HEIGHT);
 
         // Upload scene to GPU
         renderer.upload_scene(&scene);

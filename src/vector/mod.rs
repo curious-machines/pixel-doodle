@@ -28,30 +28,79 @@ pub struct VectorScene {
 /// k = (4/3) * (sqrt(2) - 1) ≈ 0.5522847498
 const KAPPA: f32 = 0.5522847498;
 
-/// Generate a donut (annulus) test scene using cubic bezier circles.
+/// Generate a multi-shape test scene.
 ///
-/// Outer circle winds counterclockwise, inner circle winds clockwise.
-/// With even-odd fill rule, the inner region is unfilled (hole).
-pub fn test_donut(
-    cx: f32,
-    cy: f32,
-    outer_radius: f32,
-    inner_radius: f32,
-    color: u32,
+/// Back to front:
+/// - Path 0: blue rectangle (partially behind donut, visible through hole)
+/// - Path 1: orange donut (outer CCW + inner CW for hole)
+/// - Path 2: green diamond overlapping the donut's edge
+pub fn test_scene(
     tolerance: f32,
     tile_size: u32,
     width: u32,
     height: u32,
 ) -> VectorScene {
-    // Both sub-paths share path_id 0 — winding cancels in the hole
-    let outer = circle_path(cx, cy, outer_radius, false, 0);
-    let inner = circle_path(cx, cy, inner_radius, true, 0);
+    let cx = width as f32 / 2.0;
+    let cy = height as f32 / 2.0;
 
-    let paths = vec![outer, inner];
+    // Path 0: blue rectangle behind the donut, offset right so it's partially visible
+    let rect = rect_path(cx - 30.0, cy - 80.0, 200.0, 160.0, 0);
+
+    // Path 1: orange donut (outer + inner share path_id 1)
+    let outer_r = height as f32 * 0.35;
+    let inner_r = height as f32 * 0.18;
+    let donut_outer = circle_path(cx, cy, outer_r, false, 1);
+    let donut_inner = circle_path(cx, cy, inner_r, true, 1);
+
+    // Path 2: green diamond overlapping the donut's right edge
+    let diamond = diamond_path(cx + outer_r * 0.7, cy, outer_r * 0.4, 2);
+
+    let paths = vec![rect, donut_outer, donut_inner, diamond];
     let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
-    let path_colors = vec![color];
+
+    let path_colors = vec![
+        0xFF4488FF, // path 0: blue
+        0xFFFF8800, // path 1: orange
+        0xFF44CC44, // path 2: green
+    ];
 
     bin_tiles(&segments, &seg_path_ids, path_colors, tile_size, width, height)
+}
+
+/// Create a rectangle path from line segments.
+fn rect_path(x: f32, y: f32, w: f32, h: f32, path_id: u32) -> Path {
+    let tl = Point::new(x, y);
+    let tr = Point::new(x + w, y);
+    let br = Point::new(x + w, y + h);
+    let bl = Point::new(x, y + h);
+
+    Path {
+        curves: vec![
+            Curve::Line(tl, tr),
+            Curve::Line(tr, br),
+            Curve::Line(br, bl),
+            Curve::Line(bl, tl),
+        ],
+        path_id,
+    }
+}
+
+/// Create a diamond (rotated square) path from line segments.
+fn diamond_path(cx: f32, cy: f32, radius: f32, path_id: u32) -> Path {
+    let top = Point::new(cx, cy - radius);
+    let right = Point::new(cx + radius, cy);
+    let bottom = Point::new(cx, cy + radius);
+    let left = Point::new(cx - radius, cy);
+
+    Path {
+        curves: vec![
+            Curve::Line(top, right),
+            Curve::Line(right, bottom),
+            Curve::Line(bottom, left),
+            Curve::Line(left, top),
+        ],
+        path_id,
+    }
 }
 
 /// Create a circle path from 4 cubic beziers.

@@ -1,7 +1,8 @@
 // Tile-based vector rasterization kernel.
 //
 // One workgroup per tile. Each thread handles one pixel within its tile.
-// Computes winding number by counting segment crossings to the left of the pixel.
+// Computes per-path winding numbers by counting segment crossings to the
+// left of the pixel. Composites paths back-to-front (painter's algorithm).
 // Applies even-odd fill rule.
 
 struct Params {
@@ -25,6 +26,7 @@ struct Params {
 @group(0) @binding(7) var<storage, read_write> pixels: array<u32>;
 
 const TILE_SIZE: u32 = 16u;
+const MAX_PATHS: u32 = 32u;
 const BG_COLOR: u32 = 0xFF000000u;
 
 @compute @workgroup_size(TILE_SIZE, TILE_SIZE)
@@ -47,41 +49,48 @@ fn main(
     let count = tile_counts[tile_id];
     let offset = tile_offsets[tile_id];
 
-    // Compute winding number for path 0 (single path for Phase 1)
-    var winding: i32 = 0;
+    // Per-path winding numbers
+    var winding: array<i32, MAX_PATHS>;
+    let num_paths = min(params.num_paths, MAX_PATHS);
 
     for (var i: u32 = 0u; i < count; i++) {
         let seg_idx = tile_indices[offset + i];
         let seg = segments[seg_idx];
+        let path_id = seg_path_ids[seg_idx];
+
+        if path_id >= num_paths {
+            continue;
+        }
+
         let x0 = seg.x;
         let y0 = seg.y;
         let x1 = seg.z;
         let y1 = seg.w;
 
         // Ray crossing test: horizontal ray from -inf to (px, py)
-        // Segment crosses if one endpoint is above py and the other is at or below
         if (y0 <= py && y1 > py) || (y1 <= py && y0 > py) {
-            // Compute x-coordinate of intersection
             let t = (py - y0) / (y1 - y0);
             let x_cross = x0 + t * (x1 - x0);
 
             if x_cross < px {
-                // Upward crossing: +1, downward crossing: -1
                 if y1 > y0 {
-                    winding += 1;
+                    winding[path_id] += 1;
                 } else {
-                    winding -= 1;
+                    winding[path_id] -= 1;
                 }
             }
         }
     }
 
-    let pixel_idx = pixel_y * params.stride + pixel_x;
-
-    // Even-odd fill rule: filled if winding is odd
-    if (winding & 1) != 0 {
-        pixels[pixel_idx] = path_colors[0u];
-    } else {
-        pixels[pixel_idx] = BG_COLOR;
+    // Composite back-to-front (painter's algorithm)
+    var color = BG_COLOR;
+    for (var p: u32 = 0u; p < num_paths; p++) {
+        // Even-odd fill rule: filled if winding is odd
+        if (winding[p] & 1) != 0 {
+            color = path_colors[p];
+        }
     }
+
+    let pixel_idx = pixel_y * params.stride + pixel_x;
+    pixels[pixel_idx] = color;
 }
