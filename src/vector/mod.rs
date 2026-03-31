@@ -1,4 +1,7 @@
+pub mod flatten;
 pub mod tile_renderer;
+
+use flatten::{CubicBezier, Curve, Path, Point};
 
 /// Pre-binned vector scene data ready for GPU upload.
 ///
@@ -21,37 +24,98 @@ pub struct VectorScene {
     pub tile_size: u32,
 }
 
-/// Generate a test circle as pre-flattened line segments with tile binning.
-pub fn test_circle(
+/// Kappa constant for approximating a quarter-circle with a cubic bezier.
+/// k = (4/3) * (sqrt(2) - 1) ≈ 0.5522847498
+const KAPPA: f32 = 0.5522847498;
+
+/// Generate a donut (annulus) test scene using cubic bezier circles.
+///
+/// Outer circle winds counterclockwise, inner circle winds clockwise.
+/// With even-odd fill rule, the inner region is unfilled (hole).
+pub fn test_donut(
     cx: f32,
     cy: f32,
-    radius: f32,
-    num_segments: u32,
+    outer_radius: f32,
+    inner_radius: f32,
     color: u32,
+    tolerance: f32,
     tile_size: u32,
     width: u32,
     height: u32,
 ) -> VectorScene {
-    // Generate circle as line segments
-    let mut segments = Vec::with_capacity(num_segments as usize);
-    let mut seg_path_ids = Vec::with_capacity(num_segments as usize);
+    // Both sub-paths share path_id 0 — winding cancels in the hole
+    let outer = circle_path(cx, cy, outer_radius, false, 0);
+    let inner = circle_path(cx, cy, inner_radius, true, 0);
 
-    for i in 0..num_segments {
-        let angle0 = 2.0 * std::f32::consts::PI * (i as f32) / (num_segments as f32);
-        let angle1 = 2.0 * std::f32::consts::PI * ((i + 1) as f32) / (num_segments as f32);
-
-        let x0 = cx + radius * angle0.cos();
-        let y0 = cy + radius * angle0.sin();
-        let x1 = cx + radius * angle1.cos();
-        let y1 = cy + radius * angle1.sin();
-
-        segments.push([x0, y0, x1, y1]);
-        seg_path_ids.push(0);
-    }
-
+    let paths = vec![outer, inner];
+    let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
     let path_colors = vec![color];
 
     bin_tiles(&segments, &seg_path_ids, path_colors, tile_size, width, height)
+}
+
+/// Create a circle path from 4 cubic beziers.
+///
+/// If `clockwise` is false, the circle winds counterclockwise (standard).
+/// If `clockwise` is true, the circle winds clockwise (for holes).
+fn circle_path(cx: f32, cy: f32, r: f32, clockwise: bool, path_id: u32) -> Path {
+    let k = r * KAPPA;
+
+    // Quarter-arc control points, counterclockwise from right (3 o'clock)
+    // Arc 1: right → top
+    // Arc 2: top → left
+    // Arc 3: left → bottom
+    // Arc 4: bottom → right
+    let right = Point::new(cx + r, cy);
+    let top = Point::new(cx, cy - r);
+    let left = Point::new(cx - r, cy);
+    let bottom = Point::new(cx, cy + r);
+
+    let mut curves = vec![
+        Curve::Cubic(CubicBezier {
+            p0: right,
+            p1: Point::new(cx + r, cy - k),
+            p2: Point::new(cx + k, cy - r),
+            p3: top,
+        }),
+        Curve::Cubic(CubicBezier {
+            p0: top,
+            p1: Point::new(cx - k, cy - r),
+            p2: Point::new(cx - r, cy - k),
+            p3: left,
+        }),
+        Curve::Cubic(CubicBezier {
+            p0: left,
+            p1: Point::new(cx - r, cy + k),
+            p2: Point::new(cx - k, cy + r),
+            p3: bottom,
+        }),
+        Curve::Cubic(CubicBezier {
+            p0: bottom,
+            p1: Point::new(cx + k, cy + r),
+            p2: Point::new(cx + r, cy + k),
+            p3: right,
+        }),
+    ];
+
+    if clockwise {
+        // Reverse each curve's direction and reverse the order
+        curves = curves
+            .into_iter()
+            .rev()
+            .map(|c| match c {
+                Curve::Cubic(cb) => Curve::Cubic(CubicBezier {
+                    p0: cb.p3,
+                    p1: cb.p2,
+                    p2: cb.p1,
+                    p3: cb.p0,
+                }),
+                other => other,
+            })
+            .collect();
+    }
+
+    Path { curves, path_id }
 }
 
 /// Compute tile bins for a set of segments.
