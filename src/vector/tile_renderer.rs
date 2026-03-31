@@ -213,8 +213,9 @@ impl VectorTileRenderer {
         ));
     }
 
-    /// Dispatch the tile rasterization kernel and present to screen.
-    pub fn render(&self, display: &Display) {
+    /// Dispatch the tile rasterization kernel, wait for GPU completion, and present.
+    /// Returns the GPU execution time in milliseconds.
+    pub fn render(&self, display: &Display) -> f64 {
         // Ensure scene has been uploaded
         let segment_buf = self.segment_buf.as_ref().expect("scene not uploaded");
         let seg_path_id_buf = self.seg_path_id_buf.as_ref().expect("scene not uploaded");
@@ -323,7 +324,13 @@ impl VectorTileRenderer {
             },
         );
 
+        // Submit compute + copy, then present (which also submits the blit).
+        // Time from submission to GPU idle.
+        let t0 = std::time::Instant::now();
         display.present_with_commands(encoder.finish());
+        self.device.poll(wgpu::PollType::Wait).expect("GPU poll failed");
+        let gpu_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        gpu_ms
     }
 }
 

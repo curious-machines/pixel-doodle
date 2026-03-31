@@ -1,8 +1,10 @@
 // Tile-based vector rasterization kernel.
 //
 // One workgroup per tile. Each thread handles one pixel within its tile.
-// Computes per-path winding numbers by counting segment crossings to the
-// left of the pixel. Composites paths back-to-front (painter's algorithm).
+// Segments within each tile are sorted by path_id, so the kernel walks
+// them in a single pass, resolving and compositing each path as it
+// encounters a new path_id. No path count limit.
+//
 // Supports per-path fill rules: even-odd (0) or nonzero (1).
 
 struct Params {
@@ -27,11 +29,13 @@ struct Params {
 @group(0) @binding(8) var<storage, read> path_fill_rules: array<u32>;
 
 const TILE_SIZE: u32 = 16u;
-const MAX_PATHS: u32 = 32u;
 const BG_COLOR: u32 = 0xFF000000u;
 
 const FILL_EVEN_ODD: u32 = 0u;
 const FILL_NONZERO: u32 = 1u;
+
+// Sentinel value for "no current path"
+const NO_PATH: u32 = 0xFFFFFFFFu;
 
 @compute @workgroup_size(TILE_SIZE, TILE_SIZE)
 fn main(
@@ -46,62 +50,71 @@ fn main(
         return;
     }
 
-    // Sample point at pixel center
     let px = f32(pixel_x) + 0.5;
     let py = f32(pixel_y) + 0.5;
 
     let count = tile_counts[tile_id];
     let offset = tile_offsets[tile_id];
 
-    // Per-path winding numbers
-    var winding: array<i32, MAX_PATHS>;
-    let num_paths = min(params.num_paths, MAX_PATHS);
+    var color = BG_COLOR;
+    var winding: i32 = 0;
+    var current_path: u32 = NO_PATH;
 
+    // Walk segments in path_id order (sorted by CPU).
+    // When the path changes, resolve the previous path and composite.
     for (var i: u32 = 0u; i < count; i++) {
         let seg_idx = tile_indices[offset + i];
-        let seg = segments[seg_idx];
         let path_id = seg_path_ids[seg_idx];
 
-        if path_id >= num_paths {
-            continue;
+        // Path boundary: resolve previous path
+        if path_id != current_path {
+            if current_path != NO_PATH {
+                color = resolve_path(color, winding, current_path);
+            }
+            current_path = path_id;
+            winding = 0;
         }
 
+        let seg = segments[seg_idx];
         let x0 = seg.x;
         let y0 = seg.y;
         let x1 = seg.z;
         let y1 = seg.w;
 
-        // Ray crossing test: horizontal ray from -inf to (px, py)
         if (y0 <= py && y1 > py) || (y1 <= py && y0 > py) {
             let t = (py - y0) / (y1 - y0);
             let x_cross = x0 + t * (x1 - x0);
 
             if x_cross < px {
                 if y1 > y0 {
-                    winding[path_id] += 1;
+                    winding += 1;
                 } else {
-                    winding[path_id] -= 1;
+                    winding -= 1;
                 }
             }
         }
     }
 
-    // Composite back-to-front (painter's algorithm)
-    var color = BG_COLOR;
-    for (var p: u32 = 0u; p < num_paths; p++) {
-        let w = winding[p];
-        let rule = path_fill_rules[p];
-        var filled = false;
-        if rule == FILL_NONZERO {
-            filled = w != 0;
-        } else {
-            filled = (w & 1) != 0;
-        }
-        if filled {
-            color = path_colors[p];
-        }
+    // Resolve the last path
+    if current_path != NO_PATH {
+        color = resolve_path(color, winding, current_path);
     }
 
     let pixel_idx = pixel_y * params.stride + pixel_x;
     pixels[pixel_idx] = color;
+}
+
+/// Apply fill rule and composite over the current color.
+fn resolve_path(bg: u32, winding: i32, path_id: u32) -> u32 {
+    let rule = path_fill_rules[path_id];
+    var filled = false;
+    if rule == FILL_NONZERO {
+        filled = winding != 0;
+    } else {
+        filled = (winding & 1) != 0;
+    }
+    if filled {
+        return path_colors[path_id];
+    }
+    return bg;
 }

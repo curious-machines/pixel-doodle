@@ -276,15 +276,119 @@ fn circle_path(cx: f32, cy: f32, r: f32, clockwise: bool, path_id: u32) -> Path 
     Path { curves, path_id }
 }
 
+/// Generate a stress test scene with many filled and stroked circles.
+///
+/// Each circle gets a fill path and a stroke path, for `2 * count` total paths.
+/// Circles are placed pseudo-randomly using a deterministic hash.
+pub fn test_stress(
+    count: u32,
+    tolerance: f32,
+    tile_size: u32,
+    width: u32,
+    height: u32,
+) -> VectorScene {
+    use rayon::prelude::*;
+
+    let stroke_style = StrokeStyle {
+        width: 2.0,
+        miter_limit: 4.0,
+    };
+
+    // Generate paths in parallel: each circle produces a fill path + stroke path
+    let t_gen = std::time::Instant::now();
+    let path_data: Vec<(Path, Path, u32, u32)> = (0..count)
+        .into_par_iter()
+        .map(|i| {
+            // Deterministic pseudo-random placement
+            let hash = hash_u32(i);
+            let cx = (hash % width) as f32;
+            let cy = ((hash / 7) % height) as f32;
+            let r = 5.0 + (hash % 30) as f32;
+
+            let fill_id = i * 2;
+            let stroke_id = i * 2 + 1;
+
+            let fill = circle_path(cx, cy, r, false, fill_id);
+            let stroke_src = circle_path(cx, cy, r, false, 0); // temp id
+            let stroke = stroke_flattened(&stroke_src, tolerance, &stroke_style, stroke_id);
+
+            let fill_color = color_from_hash(hash);
+            let stroke_color = 0xFF000000; // black strokes
+
+            (fill, stroke, fill_color, stroke_color)
+        })
+        .collect();
+    let gen_ms = t_gen.elapsed().as_secs_f64() * 1000.0;
+
+    // Collect all paths and colors in order
+    let mut paths = Vec::with_capacity(count as usize * 2);
+    let mut path_colors = Vec::with_capacity(count as usize * 2);
+    let mut path_fill_rules = Vec::with_capacity(count as usize * 2);
+
+    for (fill, stroke, fill_color, stroke_color) in path_data {
+        paths.push(fill);
+        path_colors.push(fill_color);
+        path_fill_rules.push(FILL_EVEN_ODD);
+
+        paths.push(stroke);
+        path_colors.push(stroke_color);
+        path_fill_rules.push(FILL_NONZERO);
+    }
+
+    let t_flatten = std::time::Instant::now();
+    let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
+    let flatten_ms = t_flatten.elapsed().as_secs_f64() * 1000.0;
+
+    let t_bin = std::time::Instant::now();
+    let scene = bin_tiles(
+        &segments,
+        &seg_path_ids,
+        path_colors,
+        path_fill_rules,
+        tile_size,
+        width,
+        height,
+    );
+    let bin_ms = t_bin.elapsed().as_secs_f64() * 1000.0;
+
+    eprintln!(
+        "[stress] gen+stroke: {gen_ms:.1}ms, flatten: {flatten_ms:.1}ms, bin: {bin_ms:.1}ms"
+    );
+
+    scene
+}
+
+/// Simple deterministic hash for pseudo-random values.
+fn hash_u32(mut x: u32) -> u32 {
+    x = x.wrapping_mul(0x9E3779B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x21F0AAAD);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x735A2D97);
+    x ^= x >> 15;
+    x
+}
+
+/// Generate a color from a hash value.
+fn color_from_hash(hash: u32) -> u32 {
+    let r = 80 + (hash % 176);
+    let g = 80 + ((hash >> 8) % 176);
+    let b = 80 + ((hash >> 16) % 176);
+    0xFF000000 | (r << 16) | (g << 8) | b
+}
+
 /// Compute tile bins for a set of segments.
 ///
-/// Conservative binning: a segment is added to every tile in rows where the
-/// segment's y-range overlaps the tile row's y-range. This ensures winding
-/// number correctness (all crossings to the left of a pixel are counted).
+/// A segment is added to a tile if:
+/// 1. The segment's y-range overlaps the tile row's y-range, AND
+/// 2. The segment's maximum x is >= the tile's left edge (x-range filtering).
 ///
-/// TODO: Optimize — this is O(segments × tiles_per_row) and won't scale to
-/// complex scenes. Future options: x-range filtering, prefix-sum of crossings
-/// across tile columns, or coarse rasterization pass.
+/// Condition 2 is the key optimization: segments entirely to the right of a
+/// tile can't contribute crossings to pixels in that tile (the ray goes left
+/// from the pixel). Segments to the left CAN contribute crossings.
+///
+/// TODO: Further optimization with sorted segments (Option 3) for GPU-side
+/// path skipping.
 fn bin_tiles(
     segments: &[[f32; 4]],
     seg_path_ids: &[u32],
@@ -294,52 +398,98 @@ fn bin_tiles(
     width: u32,
     height: u32,
 ) -> VectorScene {
+    use rayon::prelude::*;
+
     let tiles_x = (width + tile_size - 1) / tile_size;
     let tiles_y = (height + tile_size - 1) / tile_size;
-    let num_tiles = (tiles_x * tiles_y) as usize;
 
-    // Build per-tile segment lists
-    let mut tile_lists: Vec<Vec<u32>> = vec![Vec::new(); num_tiles];
+    // Pre-compute segment metadata to avoid recomputing per tile row
+    struct SegInfo {
+        seg_idx: u32,
+        path_id: u32,
+        y_min: f32,
+        y_max: f32,
+        tx_min: u32,
+    }
 
-    for (seg_idx, seg) in segments.iter().enumerate() {
-        let y0 = seg[1];
-        let y1 = seg[3];
-        let seg_y_min = y0.min(y1);
-        let seg_y_max = y0.max(y1);
+    let seg_infos: Vec<SegInfo> = segments
+        .iter()
+        .enumerate()
+        .filter_map(|(seg_idx, seg)| {
+            let y0 = seg[1];
+            let y1 = seg[3];
+            let y_min = y0.min(y1);
+            let y_max = y0.max(y1);
 
-        // Skip horizontal segments (they don't contribute to winding)
-        if seg_y_min == seg_y_max {
-            continue;
-        }
+            // Skip horizontal segments
+            if y_min == y_max {
+                return None;
+            }
 
-        // Find tile rows that overlap this segment's y-range
-        let ty_min = ((seg_y_min.max(0.0) as u32) / tile_size).min(tiles_y - 1);
-        let ty_max = ((seg_y_max.max(0.0) as u32) / tile_size).min(tiles_y - 1);
+            let x_min = seg[0].min(seg[2]);
 
-        for ty in ty_min..=ty_max {
+            // Skip segments entirely to the right of the screen
+            if x_min >= width as f32 {
+                return None;
+            }
+
+            let tx_min = if x_min < 0.0 {
+                0
+            } else {
+                ((x_min as u32) / tile_size).min(tiles_x - 1)
+            };
+
+            Some(SegInfo {
+                seg_idx: seg_idx as u32,
+                path_id: seg_path_ids[seg_idx],
+                y_min,
+                y_max,
+                tx_min,
+            })
+        })
+        .collect();
+
+    // Bin and sort per tile row in parallel
+    let row_results: Vec<Vec<Vec<u32>>> = (0..tiles_y)
+        .into_par_iter()
+        .map(|ty| {
             let tile_y_min = (ty * tile_size) as f32;
             let tile_y_max = ((ty + 1) * tile_size) as f32;
 
-            // Check y-range overlap
-            if seg_y_max > tile_y_min && seg_y_min < tile_y_max {
-                // Add to all tiles in this row (conservative, correct for winding)
-                for tx in 0..tiles_x {
-                    let tile_id = ty * tiles_x + tx;
-                    tile_lists[tile_id as usize].push(seg_idx as u32);
+            // Build lists for each tile in this row
+            let mut row_tiles: Vec<Vec<(u32, u32)>> = vec![Vec::new(); tiles_x as usize];
+
+            for info in &seg_infos {
+                if info.y_max > tile_y_min && info.y_min < tile_y_max {
+                    for tx in info.tx_min..tiles_x {
+                        row_tiles[tx as usize].push((info.path_id, info.seg_idx));
+                    }
                 }
             }
-        }
-    }
 
-    // Flatten tile lists into offset/count/indices arrays
+            // Sort each tile by path_id and extract segment indices
+            row_tiles
+                .into_iter()
+                .map(|mut list| {
+                    list.sort_unstable_by_key(|(path_id, _)| *path_id);
+                    list.into_iter().map(|(_, seg_idx)| seg_idx).collect()
+                })
+                .collect()
+        })
+        .collect();
+
+    // Flatten row results into offset/count/indices arrays
+    let num_tiles = (tiles_x * tiles_y) as usize;
     let mut tile_offsets = Vec::with_capacity(num_tiles);
     let mut tile_counts = Vec::with_capacity(num_tiles);
     let mut tile_indices = Vec::new();
 
-    for list in &tile_lists {
-        tile_offsets.push(tile_indices.len() as u32);
-        tile_counts.push(list.len() as u32);
-        tile_indices.extend_from_slice(list);
+    for row in &row_results {
+        for list in row {
+            tile_offsets.push(tile_indices.len() as u32);
+            tile_counts.push(list.len() as u32);
+            tile_indices.extend_from_slice(list);
+        }
     }
 
     VectorScene {

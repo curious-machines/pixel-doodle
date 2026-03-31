@@ -57,17 +57,33 @@ pub struct Path {
 
 const MAX_RECURSION_DEPTH: u32 = 20;
 
-/// Flatten a set of paths into line segments.
+/// Flatten a set of paths into line segments, parallelized across paths.
 ///
 /// Returns `(segments, seg_path_ids)` where segments are `[x0, y0, x1, y1]`.
+/// Path ordering is preserved for correct painter's algorithm compositing.
 pub fn flatten_paths(paths: &[Path], tolerance: f32) -> (Vec<[f32; 4]>, Vec<u32>) {
-    let mut segments = Vec::new();
-    let mut seg_path_ids = Vec::new();
+    use rayon::prelude::*;
 
-    for path in paths {
-        for curve in &path.curves {
-            flatten_curve(curve, tolerance, path.path_id, &mut segments, &mut seg_path_ids);
-        }
+    // Flatten each path in parallel, collecting per-path results
+    let per_path: Vec<(Vec<[f32; 4]>, Vec<u32>)> = paths
+        .par_iter()
+        .map(|path| {
+            let mut segments = Vec::new();
+            let mut seg_path_ids = Vec::new();
+            for curve in &path.curves {
+                flatten_curve(curve, tolerance, path.path_id, &mut segments, &mut seg_path_ids);
+            }
+            (segments, seg_path_ids)
+        })
+        .collect();
+
+    // Concatenate in order
+    let total_segs: usize = per_path.iter().map(|(s, _)| s.len()).sum();
+    let mut segments = Vec::with_capacity(total_segs);
+    let mut seg_path_ids = Vec::with_capacity(total_segs);
+    for (segs, ids) in per_path {
+        segments.extend(segs);
+        seg_path_ids.extend(ids);
     }
 
     (segments, seg_path_ids)
