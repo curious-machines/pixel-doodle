@@ -1,13 +1,6 @@
 mod bench;
-#[allow(dead_code)]
-mod display;
-mod gpu;
-mod jit;
-mod pdp;
-mod progressive;
-pub mod texture;
 
-use display::Display;
+use pixel_doodle::display::Display;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -202,12 +195,12 @@ fn run_pdp(source: &ConfigSource, args: &CliArgs) {
         .to_path_buf();
     let display_name = path.clone();
 
-    let config = pdp::parse(&src, &base_dir).unwrap_or_else(|e| {
+    let config = pixel_doodle::pdp::parse(&src, &base_dir).unwrap_or_else(|e| {
         eprintln!("Config error in '{}':\n{}", display_name, e);
         std::process::exit(1);
     });
 
-    let mut runtime = pdp::runtime::Runtime::new(config, WIDTH, HEIGHT, &base_dir);
+    let mut runtime = pixel_doodle::pdp::runtime::Runtime::new(config, WIDTH, HEIGHT, &base_dir);
     runtime.set_config_path(&display_name);
     runtime.apply_settings();
 
@@ -351,7 +344,7 @@ fn parse_pds(src: &str) -> Vec<(String, String)> {
 // ── PDP-driven app ──
 
 struct PdpApp {
-    runtime: pdp::runtime::Runtime,
+    runtime: pixel_doodle::pdp::runtime::Runtime,
     thread_pool: Option<rayon::ThreadPool>,
     window: Option<Arc<Window>>,
     display: Option<Display>,
@@ -409,7 +402,7 @@ impl ApplicationHandler for PdpApp {
                         if !self.keys_down.contains(&code) {
                             self.keys_down.push(code);
                             // Fire keypress on initial press (single-fire)
-                            if let Some(name) = pdp::runtime::key_code_to_name(code) {
+                            if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(code) {
                                 if self.runtime.handle_keypress(name) {
                                     event_loop.exit();
                                     return;
@@ -423,7 +416,7 @@ impl ApplicationHandler for PdpApp {
                     } else {
                         self.keys_down.retain(|k| *k != code);
                         // Fire keyup on release
-                        if let Some(name) = pdp::runtime::key_code_to_name(code) {
+                        if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(code) {
                             if self.runtime.handle_keyup(name) {
                                 event_loop.exit();
                                 return;
@@ -452,7 +445,7 @@ impl ApplicationHandler for PdpApp {
             WindowEvent::RedrawRequested => {
                 // Fire keydown for all held keys every frame
                 for code in &self.keys_down.clone() {
-                    if let Some(name) = pdp::runtime::key_code_to_name(*code) {
+                    if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(*code) {
                         if self.runtime.handle_keydown(name) {
                             event_loop.exit();
                             return;

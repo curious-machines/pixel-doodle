@@ -56,7 +56,13 @@
       "Read(//tmp/**)",
       "Bash(for pdp:*)",
       "Bash(./test_regression)",
-      "Bash(xargs rm:*)"
+      "Bash(xargs rm:*)",
+      "Read(//home/kevin/Documents/Projects/**)",
+      "Read(//home/kevin/.cargo/registry/src/**)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:linebender.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:fontforge.org)"
     ]
   }
 }

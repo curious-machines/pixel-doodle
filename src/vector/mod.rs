@@ -1,0 +1,131 @@
+pub mod tile_renderer;
+
+/// Pre-binned vector scene data ready for GPU upload.
+///
+/// Segments are line segments from flattened curves.
+/// Tile bins map each screen tile to the segments that affect it.
+pub struct VectorScene {
+    /// Line segments as [x0, y0, x1, y1] per segment.
+    pub segments: Vec<[f32; 4]>,
+    /// Path ID per segment.
+    pub seg_path_ids: Vec<u32>,
+    /// Per-tile start offset into `tile_indices`.
+    pub tile_offsets: Vec<u32>,
+    /// Per-tile segment count.
+    pub tile_counts: Vec<u32>,
+    /// Concatenated segment indices per tile.
+    pub tile_indices: Vec<u32>,
+    /// Packed ARGB color per path.
+    pub path_colors: Vec<u32>,
+    /// Tile size in pixels (e.g., 16).
+    pub tile_size: u32,
+}
+
+/// Generate a test circle as pre-flattened line segments with tile binning.
+pub fn test_circle(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    num_segments: u32,
+    color: u32,
+    tile_size: u32,
+    width: u32,
+    height: u32,
+) -> VectorScene {
+    // Generate circle as line segments
+    let mut segments = Vec::with_capacity(num_segments as usize);
+    let mut seg_path_ids = Vec::with_capacity(num_segments as usize);
+
+    for i in 0..num_segments {
+        let angle0 = 2.0 * std::f32::consts::PI * (i as f32) / (num_segments as f32);
+        let angle1 = 2.0 * std::f32::consts::PI * ((i + 1) as f32) / (num_segments as f32);
+
+        let x0 = cx + radius * angle0.cos();
+        let y0 = cy + radius * angle0.sin();
+        let x1 = cx + radius * angle1.cos();
+        let y1 = cy + radius * angle1.sin();
+
+        segments.push([x0, y0, x1, y1]);
+        seg_path_ids.push(0);
+    }
+
+    let path_colors = vec![color];
+
+    bin_tiles(&segments, &seg_path_ids, path_colors, tile_size, width, height)
+}
+
+/// Compute tile bins for a set of segments.
+///
+/// Conservative binning: a segment is added to every tile in rows where the
+/// segment's y-range overlaps the tile row's y-range. This ensures winding
+/// number correctness (all crossings to the left of a pixel are counted).
+///
+/// TODO: Optimize — this is O(segments × tiles_per_row) and won't scale to
+/// complex scenes. Future options: x-range filtering, prefix-sum of crossings
+/// across tile columns, or coarse rasterization pass.
+fn bin_tiles(
+    segments: &[[f32; 4]],
+    seg_path_ids: &[u32],
+    path_colors: Vec<u32>,
+    tile_size: u32,
+    width: u32,
+    height: u32,
+) -> VectorScene {
+    let tiles_x = (width + tile_size - 1) / tile_size;
+    let tiles_y = (height + tile_size - 1) / tile_size;
+    let num_tiles = (tiles_x * tiles_y) as usize;
+
+    // Build per-tile segment lists
+    let mut tile_lists: Vec<Vec<u32>> = vec![Vec::new(); num_tiles];
+
+    for (seg_idx, seg) in segments.iter().enumerate() {
+        let y0 = seg[1];
+        let y1 = seg[3];
+        let seg_y_min = y0.min(y1);
+        let seg_y_max = y0.max(y1);
+
+        // Skip horizontal segments (they don't contribute to winding)
+        if seg_y_min == seg_y_max {
+            continue;
+        }
+
+        // Find tile rows that overlap this segment's y-range
+        let ty_min = ((seg_y_min.max(0.0) as u32) / tile_size).min(tiles_y - 1);
+        let ty_max = ((seg_y_max.max(0.0) as u32) / tile_size).min(tiles_y - 1);
+
+        for ty in ty_min..=ty_max {
+            let tile_y_min = (ty * tile_size) as f32;
+            let tile_y_max = ((ty + 1) * tile_size) as f32;
+
+            // Check y-range overlap
+            if seg_y_max > tile_y_min && seg_y_min < tile_y_max {
+                // Add to all tiles in this row (conservative, correct for winding)
+                for tx in 0..tiles_x {
+                    let tile_id = ty * tiles_x + tx;
+                    tile_lists[tile_id as usize].push(seg_idx as u32);
+                }
+            }
+        }
+    }
+
+    // Flatten tile lists into offset/count/indices arrays
+    let mut tile_offsets = Vec::with_capacity(num_tiles);
+    let mut tile_counts = Vec::with_capacity(num_tiles);
+    let mut tile_indices = Vec::new();
+
+    for list in &tile_lists {
+        tile_offsets.push(tile_indices.len() as u32);
+        tile_counts.push(list.len() as u32);
+        tile_indices.extend_from_slice(list);
+    }
+
+    VectorScene {
+        segments: segments.to_vec(),
+        seg_path_ids: seg_path_ids.to_vec(),
+        tile_offsets,
+        tile_counts,
+        tile_indices,
+        path_colors,
+        tile_size,
+    }
+}
