@@ -97,6 +97,7 @@ impl Parser {
             }
             TokenKind::Return => self.parse_return(start),
             TokenKind::Import => self.parse_import(start),
+            TokenKind::Struct => self.parse_struct_def(start),
             TokenKind::Fn => self.parse_fn_def(start),
             _ => {
                 // Expression statement or assignment
@@ -287,6 +288,30 @@ impl Parser {
         ))
     }
 
+    fn parse_struct_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'struct'
+        let (name, _) = self.expect_ident()?;
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let (fname, _) = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            let fty = self.parse_type()?;
+            fields.push(StructField { name: fname, ty: fty });
+            if *self.peek() == TokenKind::Comma {
+                self.advance();
+            }
+        }
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(
+            Stmt::StructDef(StructDef { name, fields }),
+            span,
+        ))
+    }
+
     fn parse_import(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'import'
 
@@ -343,12 +368,8 @@ impl Parser {
                 "u32" => PdcType::U32,
                 "bool" => PdcType::Bool,
                 "Path" => PdcType::PathHandle,
-                _ => {
-                    return Err(PdcError::Parse {
-                        span: self.span(),
-                        message: format!("unknown type '{name}'"),
-                    })
-                }
+                // User-defined struct types (starts with uppercase by convention)
+                _ => PdcType::Struct(name),
             };
             self.advance();
             Ok(ty)
@@ -530,15 +551,15 @@ impl Parser {
                             span,
                         );
                     } else {
+                        // Field access: expr.name (no parens)
                         let span = Span::new(
                             expr.span.start,
                             self.tokens[self.pos - 1].span.end,
                         );
                         expr = self.ids.spanned(
-                            Expr::MethodCall {
+                            Expr::FieldAccess {
                                 object: Box::new(expr),
-                                method,
-                                args: Vec::new(),
+                                field: method,
                             },
                             span,
                         );
@@ -568,10 +589,20 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
                 if *self.peek() == TokenKind::LParen {
-                    self.advance();
-                    let args = self.parse_call_args()?;
-                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-                    Ok(self.ids.spanned(Expr::Call { name, args }, span))
+                    self.advance(); // consume '('
+                    // Check if this is a struct constructor (named args: `name: expr`)
+                    if self.is_named_arg_start() {
+                        let fields = self.parse_named_args()?;
+                        let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                        Ok(self.ids.spanned(
+                            Expr::StructConstruct { name, fields },
+                            span,
+                        ))
+                    } else {
+                        let args = self.parse_call_args()?;
+                        let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                        Ok(self.ids.spanned(Expr::Call { name, args }, span))
+                    }
                 } else {
                     Ok(self.ids.spanned(Expr::Variable(name), start))
                 }
@@ -587,6 +618,39 @@ impl Parser {
                 message: format!("unexpected token {:?}", self.peek()),
             }),
         }
+    }
+
+    /// Check if the current position looks like `ident:` (named argument).
+    fn is_named_arg_start(&self) -> bool {
+        if let TokenKind::Ident(_) = self.peek() {
+            if self.pos + 1 < self.tokens.len() {
+                return self.tokens[self.pos + 1].kind == TokenKind::Colon;
+            }
+        }
+        false
+    }
+
+    /// Parse named arguments: `name: expr, name: expr, ...)`
+    fn parse_named_args(&mut self) -> Result<Vec<(String, Spanned<Expr>)>, PdcError> {
+        let mut fields = Vec::new();
+        if *self.peek() != TokenKind::RParen {
+            loop {
+                let (name, _) = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                let value = self.parse_expr()?;
+                fields.push((name, value));
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                    if *self.peek() == TokenKind::RParen {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(fields)
     }
 
     fn parse_call_args(&mut self) -> Result<Vec<Spanned<Expr>>, PdcError> {

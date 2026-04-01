@@ -10,6 +10,8 @@ pub enum PdcType {
     Bool,
     /// Opaque path handle (u32 internally). Becomes a struct in later phases.
     PathHandle,
+    /// User-defined struct type, referenced by name.
+    Struct(String),
     /// Type not yet determined (for inference).
     Unknown,
     /// No return value.
@@ -39,6 +41,7 @@ impl std::fmt::Display for PdcType {
             PdcType::U32 => write!(f, "u32"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
+            PdcType::Struct(name) => write!(f, "{name}"),
             PdcType::Unknown => write!(f, "unknown"),
             PdcType::Void => write!(f, "void"),
         }
@@ -99,6 +102,16 @@ pub enum Expr {
         method: String,
         args: Vec<Spanned<Expr>>,
     },
+    /// Field access: `expr.field` (resolved during type checking)
+    FieldAccess {
+        object: Box<Spanned<Expr>>,
+        field: String,
+    },
+    /// Struct constructor with named args: `TypeName(field: value, ...)`
+    StructConstruct {
+        name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
 }
 
 /// A statement within a block or at top level.
@@ -151,6 +164,8 @@ pub enum Stmt {
     Return(Option<Spanned<Expr>>),
     /// `fn name(params) [-> type] { body }`
     FnDef(FnDef),
+    /// `struct Name { field: type, ... }`
+    StructDef(StructDef),
     /// `import module_name` or `import { names } from module_name`
     Import {
         module: String,
@@ -180,6 +195,20 @@ pub struct FnDef {
     pub params: Vec<Param>,
     pub return_type: PdcType,
     pub body: Block,
+}
+
+/// Struct field definition.
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub ty: PdcType,
+}
+
+/// Struct definition.
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<StructField>,
 }
 
 /// A complete PDC program (list of top-level statements).

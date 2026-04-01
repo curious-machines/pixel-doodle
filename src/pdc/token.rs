@@ -28,6 +28,7 @@ pub enum TokenKind {
     Match,
     Import,
     From,
+    Struct,
 
     // Operators
     Plus,
@@ -97,6 +98,7 @@ pub fn keyword_lookup(s: &str) -> Option<TokenKind> {
         "continue" => Some(TokenKind::Continue),
         "match" => Some(TokenKind::Match),
         "import" => Some(TokenKind::Import),
+        "struct" => Some(TokenKind::Struct),
         "from" => Some(TokenKind::From),
         "true" => Some(TokenKind::BoolLit(true)),
         "false" => Some(TokenKind::BoolLit(false)),

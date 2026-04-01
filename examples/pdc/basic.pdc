@@ -1,18 +1,27 @@
-// PDC Phase 3 example: imports + standard library
+// PDC Phase 4 example: structs
 import { Circle, Rect, RoundedRect } from geometry
 import { lerp } from math
 
 builtin const width: f32
 builtin const height: f32
 
-// Checkerboard grid of circles using stdlib Circle()
+// Define a Vec2 struct
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+// Use Vec2 for center position
+const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)
+
+// Checkerboard grid of circles
 const spacing = 60.0
 var col = 0
 while col < 10 {
     var row = 0
     while row < 8 {
-        const x = f32(col) * spacing + 50.0
-        const y = f32(row) * spacing + 50.0
+        const x = f64(col) * spacing + 50.0
+        const y = f64(row) * spacing + 50.0
         const c = Circle(x, y, 20.0)
         if (col + row) % 2 == 0 {
             fill(c, 0xFFFF8800)
@@ -24,7 +33,7 @@ while col < 10 {
     col = col + 1
 }
 
-// Rounded rectangle in the center using stdlib RoundedRect()
-const rr = RoundedRect(width / 2.0 - 100.0, height / 2.0 - 75.0, 200.0, 150.0, 20.0)
+// Use struct field access for positioning
+const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
 fill(rr, 0xCC44CC44)
 stroke(rr, 3.0, 0xFFFFFFFF)

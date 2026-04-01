@@ -13,7 +13,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
-use super::type_check::UserFnSig;
+use super::type_check::{StructInfo, UserFnSig};
 
 /// Compiled PDC function type.
 pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
@@ -34,6 +34,7 @@ pub fn compile(
     types: &[PdcType],
     builtins_layout: &[(&str, PdcType)],
     user_fns: &HashMap<String, UserFnSig>,
+    structs: &HashMap<String, StructInfo>,
 ) -> Result<CompiledProgram, PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -138,6 +139,8 @@ pub fn compile(
             pointer_type,
             user_fn_ids: &user_fn_ids,
             user_fns,
+            structs,
+            struct_vars: HashMap::new(),
             block_terminated: false,
         };
 
@@ -216,11 +219,13 @@ pub fn compile(
             pointer_type,
             user_fn_ids: &user_fn_ids,
             user_fns,
+            structs,
+            struct_vars: HashMap::new(),
             block_terminated: false,
         };
 
         for stmt in &program.stmts {
-            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. }) {
+            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_)) {
                 continue;
             }
             cg.emit_stmt(stmt)?;
@@ -282,6 +287,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::Bool => I8,
         PdcType::PathHandle => I32,
+        PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
         PdcType::Void => I32,
         PdcType::Unknown => pointer_type,
     }
@@ -292,6 +298,9 @@ struct CodegenCtx<'a, 'b> {
     module: &'a mut JITModule,
     ctx_ptr: cranelift_codegen::ir::Value,
     variables: HashMap<String, (Variable, PdcType)>,
+    /// Struct variables stored as stack slot pointers (reserved for future use).
+    #[allow(dead_code)]
+    struct_vars: HashMap<String, (cranelift_codegen::ir::StackSlot, String)>,
     builtin_map: HashMap<String, BuiltinInfo>,
     type_table: &'a [PdcType],
     call_conv: CallConv,
@@ -299,6 +308,7 @@ struct CodegenCtx<'a, 'b> {
     user_fn_ids: &'a HashMap<String, cranelift_module::FuncId>,
     #[allow(dead_code)]
     user_fns: &'a HashMap<String, UserFnSig>,
+    structs: &'a HashMap<String, StructInfo>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
 }
@@ -368,9 +378,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
-                let converted = self.convert_value(val, &expr_ty, &final_ty);
-                let var = self.new_variable(name, &final_ty);
-                self.builder.def_var(var, converted);
+                // Struct values are pointers to stack slots — store as pointer-type Variable
+                if let PdcType::Struct(ref _sname) = final_ty {
+                    let var = self.builder.declare_var(self.pointer_type);
+                    self.builder.def_var(var, val);
+                    self.variables.insert(name.clone(), (var, final_ty));
+                } else {
+                    let converted = self.convert_value(val, &expr_ty, &final_ty);
+                    let var = self.new_variable(name, &final_ty);
+                    self.builder.def_var(var, converted);
+                }
             }
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
@@ -425,7 +442,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 }
                 self.block_terminated = true;
             }
-            Stmt::FnDef(_) | Stmt::Import { .. } => {
+            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) => {
                 // Already handled
             }
         }
@@ -653,6 +670,66 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 all_args.extend(args.iter().cloned());
                 self.emit_call(method, &all_args, expr.id)
             }
+            Expr::StructConstruct { name, fields } => {
+                let info = self.structs.get(name).ok_or_else(|| PdcError::Codegen {
+                    message: format!("undefined struct '{name}'"),
+                })?.clone();
+
+                // Allocate stack slot: 8 bytes per field
+                let size = (info.fields.len() * 8) as u32;
+                let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    size,
+                    0,
+                ));
+
+                // Store each field
+                for (fname, fexpr) in fields {
+                    let val = self.emit_expr(fexpr)?;
+                    let fexpr_ty = self.node_type(fexpr.id).clone();
+
+                    // Find field offset
+                    let field_idx = info.fields.iter().position(|(n, _)| n == fname)
+                        .ok_or_else(|| PdcError::Codegen {
+                            message: format!("struct '{name}' has no field '{fname}'"),
+                        })?;
+                    let offset = (field_idx * 8) as i32;
+                    let field_ty = &info.fields[field_idx].1;
+                    let converted = self.convert_value(val, &fexpr_ty, field_ty);
+
+                    // Store as f64 (all fields use 8 bytes)
+                    let store_val = self.widen_to_f64(converted, field_ty);
+                    self.builder.ins().stack_store(store_val, slot, offset);
+                }
+
+                // Return pointer to slot
+                Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+            }
+            Expr::FieldAccess { object, field } => {
+                let obj_val = self.emit_expr(object)?;
+                let obj_ty = self.node_type(object.id).clone();
+
+                if let PdcType::Struct(ref sname) = obj_ty {
+                    let info = self.structs.get(sname).ok_or_else(|| PdcError::Codegen {
+                        message: format!("undefined struct '{sname}'"),
+                    })?.clone();
+
+                    let field_idx = info.fields.iter().position(|(n, _)| n == field)
+                        .ok_or_else(|| PdcError::Codegen {
+                            message: format!("struct '{sname}' has no field '{field}'"),
+                        })?;
+                    let offset = (field_idx * 8) as i32;
+                    let field_ty = &info.fields[field_idx].1;
+
+                    // Load f64 from struct memory, then narrow if needed
+                    let raw = self.builder.ins().load(F64, MemFlags::trusted(), obj_val, offset);
+                    Ok(self.narrow_from_f64(raw, field_ty))
+                } else {
+                    Err(PdcError::Codegen {
+                        message: format!("cannot access field '{field}' on non-struct type"),
+                    })
+                }
+            }
         }
     }
 
@@ -792,6 +869,38 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
 
         val
+    }
+
+    /// Widen any scalar value to f64 for storage in struct memory (8 bytes per field).
+    fn widen_to_f64(&mut self, val: cranelift_codegen::ir::Value, ty: &PdcType) -> cranelift_codegen::ir::Value {
+        match ty {
+            PdcType::F64 => val,
+            PdcType::F32 => self.builder.ins().fpromote(F64, val),
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+                self.builder.ins().fcvt_from_sint(F64, val)
+            }
+            PdcType::Bool => {
+                let i32_val = self.builder.ins().uextend(I32, val);
+                self.builder.ins().fcvt_from_sint(F64, i32_val)
+            }
+            _ => val,
+        }
+    }
+
+    /// Narrow f64 from struct memory to the actual field type.
+    fn narrow_from_f64(&mut self, val: cranelift_codegen::ir::Value, ty: &PdcType) -> cranelift_codegen::ir::Value {
+        match ty {
+            PdcType::F64 => val,
+            PdcType::F32 => self.builder.ins().fdemote(F32, val),
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+                self.builder.ins().fcvt_to_sint_sat(I32, val)
+            }
+            PdcType::Bool => {
+                let i32_val = self.builder.ins().fcvt_to_sint_sat(I32, val);
+                self.builder.ins().ireduce(I8, i32_val)
+            }
+            _ => val,
+        }
     }
 
     fn convert_value(

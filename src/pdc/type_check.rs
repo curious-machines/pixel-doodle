@@ -19,11 +19,19 @@ pub struct UserFnSig {
     pub ret: PdcType,
 }
 
+/// Struct definition info for type checking.
+#[derive(Clone)]
+pub struct StructInfo {
+    pub fields: Vec<(String, PdcType)>,
+}
+
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
     builtins: HashMap<String, BuiltinFn>,
     /// User-defined function signatures.
     pub user_fns: HashMap<String, UserFnSig>,
+    /// User-defined struct definitions.
+    pub structs: HashMap<String, StructInfo>,
     /// Type assigned to each AST node, indexed by node ID.
     pub types: Vec<PdcType>,
 }
@@ -34,6 +42,7 @@ impl TypeChecker {
             scopes: vec![HashMap::new()],
             builtins: HashMap::new(),
             user_fns: HashMap::new(),
+            structs: HashMap::new(),
             types: Vec::new(),
         };
         tc.register_builtins();
@@ -127,13 +136,21 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), PdcError> {
-        // First pass: register all function signatures
+        // First pass: register all struct and function signatures
         for stmt in &program.stmts {
-            if let Stmt::FnDef(fndef) = &stmt.node {
-                self.user_fns.insert(fndef.name.clone(), UserFnSig {
-                    params: fndef.params.iter().map(|p| p.ty.clone()).collect(),
-                    ret: fndef.return_type.clone(),
-                });
+            match &stmt.node {
+                Stmt::FnDef(fndef) => {
+                    self.user_fns.insert(fndef.name.clone(), UserFnSig {
+                        params: fndef.params.iter().map(|p| p.ty.clone()).collect(),
+                        ret: fndef.return_type.clone(),
+                    });
+                }
+                Stmt::StructDef(sdef) => {
+                    self.structs.insert(sdef.name.clone(), StructInfo {
+                        fields: sdef.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -244,8 +261,8 @@ impl TypeChecker {
                     self.check_expr(expr)?;
                 }
             }
-            Stmt::Import { .. } => {
-                // Already resolved before type checking
+            Stmt::Import { .. } | Stmt::StructDef(_) => {
+                // Already registered in first pass
             }
             Stmt::FnDef(fndef) => {
                 // Function bodies see all outer scope variables (top-level consts, builtins)
@@ -416,6 +433,46 @@ impl TypeChecker {
                         message: format!("undefined method '{method}'"),
                     });
                 }
+            }
+            Expr::FieldAccess { object, field } => {
+                let obj_ty = self.check_expr(object)?;
+                if let PdcType::Struct(name) = &obj_ty {
+                    let info = self.structs.get(name).cloned().ok_or_else(|| PdcError::Type {
+                        span: expr.span,
+                        message: format!("undefined struct '{name}'"),
+                    })?;
+                    let field_ty = info.fields.iter()
+                        .find(|(n, _)| n == field)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| PdcError::Type {
+                            span: expr.span,
+                            message: format!("struct '{name}' has no field '{field}'"),
+                        })?;
+                    field_ty
+                } else {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("cannot access field '{field}' on type {obj_ty}"),
+                    });
+                }
+            }
+            Expr::StructConstruct { name, fields } => {
+                let info = self.structs.get(name).cloned().ok_or_else(|| PdcError::Type {
+                    span: expr.span,
+                    message: format!("undefined struct '{name}'"),
+                })?;
+                for (fname, fexpr) in fields {
+                    let val_ty = self.check_expr(fexpr)?;
+                    let expected = info.fields.iter()
+                        .find(|(n, _)| n == fname)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| PdcError::Type {
+                            span: fexpr.span,
+                            message: format!("struct '{name}' has no field '{fname}'"),
+                        })?;
+                    self.check_compatible(&val_ty, &expected, fexpr.span)?;
+                }
+                PdcType::Struct(name.clone())
             }
         };
 
