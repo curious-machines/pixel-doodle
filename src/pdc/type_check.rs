@@ -433,7 +433,30 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::Call { name, args } => {
+            Expr::Call { name, args, arg_names } => {
+                // Struct construction: named args + known struct name
+                let has_named_args = arg_names.iter().any(|n| n.is_some());
+                if has_named_args {
+                    if let Some(info) = self.structs.get(name).cloned() {
+                        // Struct construction
+                        for (i, arg) in args.iter().enumerate() {
+                            let val_ty = self.check_expr(arg)?;
+                            let fname = arg_names[i].as_ref().unwrap();
+                            let expected = info.fields.iter()
+                                .find(|(n, _)| n == fname)
+                                .map(|(_, t)| t.clone())
+                                .ok_or_else(|| PdcError::Type {
+                                    span: arg.span,
+                                    message: format!("struct '{name}' has no field '{fname}'"),
+                                })?;
+                            self.check_compatible(&val_ty, &expected, arg.span)?;
+                        }
+                        self.set_type(expr.id, PdcType::Struct(name.clone()));
+                        return Ok(PdcType::Struct(name.clone()));
+                    }
+                    // Not a struct — check as named function call below
+                }
+
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {

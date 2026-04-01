@@ -104,6 +104,8 @@ impl Parser {
             _ => {
                 // Expression statement or assignment
                 let expr = self.parse_expr()?;
+
+                // Simple assignment: name = expr
                 if *self.peek() == TokenKind::Eq {
                     if let Expr::Variable(name) = &expr.node {
                         let name = name.clone();
@@ -113,6 +115,37 @@ impl Parser {
                         return Ok(self.ids.spanned(Stmt::Assign { name, value }, span));
                     }
                 }
+
+                // Compound assignment: name += expr → name = name + expr
+                let compound_op = match self.peek() {
+                    TokenKind::PlusEq => Some(BinOp::Add),
+                    TokenKind::MinusEq => Some(BinOp::Sub),
+                    TokenKind::StarEq => Some(BinOp::Mul),
+                    TokenKind::SlashEq => Some(BinOp::Div),
+                    TokenKind::PercentEq => Some(BinOp::Mod),
+                    _ => None,
+                };
+                if let Some(op) = compound_op {
+                    if let Expr::Variable(name) = &expr.node {
+                        let name = name.clone();
+                        self.advance(); // consume the compound operator
+                        let rhs = self.parse_expr()?;
+                        let rhs_span = rhs.span;
+                        // Desugar: x += e → x = x + e
+                        let var_ref = self.ids.spanned(Expr::Variable(name.clone()), expr.span);
+                        let binop = self.ids.spanned(
+                            Expr::BinaryOp {
+                                op,
+                                left: Box::new(var_ref),
+                                right: Box::new(rhs),
+                            },
+                            Span::new(expr.span.start, rhs_span.end),
+                        );
+                        let span = Span::new(start.start, rhs_span.end);
+                        return Ok(self.ids.spanned(Stmt::Assign { name, value: binop }, span));
+                    }
+                }
+
                 let span = Span::new(start.start, expr.span.end);
                 Ok(self.ids.spanned(Stmt::ExprStmt(expr), span))
             }
@@ -709,18 +742,20 @@ impl Parser {
                 self.advance();
                 if *self.peek() == TokenKind::LParen {
                     self.advance(); // consume '('
-                    // Check if this is a struct constructor (named args: `name: expr`)
                     if self.is_named_arg_start() {
-                        let fields = self.parse_named_args()?;
+                        // Named args: could be struct construct or named function call
+                        let named = self.parse_named_args()?;
                         let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-                        Ok(self.ids.spanned(
-                            Expr::StructConstruct { name, fields },
-                            span,
-                        ))
+                        let arg_names: Vec<Option<String>> = named.iter().map(|(n, _)| Some(n.clone())).collect();
+                        let args: Vec<Spanned<Expr>> = named.into_iter().map(|(_, e)| e).collect();
+                        // Parser emits Call with arg_names; type checker resolves
+                        // as struct construction or named function call
+                        Ok(self.ids.spanned(Expr::Call { name, args, arg_names }, span))
                     } else {
                         let args = self.parse_call_args()?;
+                        let arg_names = vec![None; args.len()];
                         let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-                        Ok(self.ids.spanned(Expr::Call { name, args }, span))
+                        Ok(self.ids.spanned(Expr::Call { name, args, arg_names }, span))
                     }
                 } else {
                     Ok(self.ids.spanned(Expr::Variable(name), start))

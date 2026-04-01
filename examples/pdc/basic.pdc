@@ -53,7 +53,7 @@ while col < 10 {
             },
         }
     }
-    col = col + 1
+    col += 1
 }
 
 // Semi-transparent overlay (using UFCS method syntax)

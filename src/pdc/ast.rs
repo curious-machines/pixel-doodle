@@ -93,10 +93,12 @@ pub enum Expr {
         op: UnaryOp,
         operand: Box<Spanned<Expr>>,
     },
-    /// Function or constructor call: `name(args)`
+    /// Function or constructor call: `name(args)` or `name(arg_name: expr, ...)`
     Call {
         name: String,
         args: Vec<Spanned<Expr>>,
+        /// Optional argument names (empty = positional, non-empty = named).
+        arg_names: Vec<Option<String>>,
     },
     /// UFCS method call: `expr.name(args)` — desugared to Call during type checking
     MethodCall {

@@ -565,6 +565,40 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     /// Construct a data variant enum value. Allocates a stack slot with
     /// [tag: i32 (4 bytes), pad (4 bytes), field0: f64, field1: f64, ...]
+    /// Emit struct construction from a Call with named args.
+    fn emit_struct_construct_from_call(
+        &mut self,
+        name: &str,
+        args: &[Spanned<Expr>],
+        arg_names: &[Option<String>],
+        info: &StructInfo,
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let size = (info.fields.len() * 8) as u32;
+        let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+            size,
+            0,
+        ));
+
+        for (i, arg) in args.iter().enumerate() {
+            let val = self.emit_expr(arg)?;
+            let arg_ty = self.node_type(arg.id).clone();
+
+            let fname = arg_names[i].as_ref().unwrap();
+            let field_idx = info.fields.iter().position(|(n, _)| n == fname)
+                .ok_or_else(|| PdcError::Codegen {
+                    message: format!("struct '{name}' has no field '{fname}'"),
+                })?;
+            let offset = (field_idx * 8) as i32;
+            let field_ty = &info.fields[field_idx].1;
+            let converted = self.convert_value(val, &arg_ty, field_ty);
+            let store_val = self.widen_to_f64(converted, field_ty);
+            self.builder.ins().stack_store(store_val, slot, offset);
+        }
+
+        Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+    }
+
     fn emit_enum_construct(
         &mut self,
         enum_name: &str,
@@ -816,7 +850,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     }
                 }
             }
-            Expr::Call { name, args } => self.emit_call(name, args, expr.id),
+            Expr::Call { name, args, arg_names } => {
+                let has_named = arg_names.iter().any(|n| n.is_some());
+                // Struct construction with named args
+                if has_named {
+                    if let Some(info) = self.structs.get(name).cloned() {
+                        return self.emit_struct_construct_from_call(name, args, arg_names, &info);
+                    }
+                }
+                self.emit_call(name, args, expr.id)
+            }
             Expr::MethodCall {
                 object,
                 method,
