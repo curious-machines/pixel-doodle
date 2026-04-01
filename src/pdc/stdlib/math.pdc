@@ -50,3 +50,114 @@ pub fn radians(deg: f64) -> f64 {
 pub fn inversesqrt(x: f64) -> f64 {
     return 1.0 / sqrt(x)
 }
+
+// ── Tests ──
+
+test "lerp at 0 returns start" {
+    assert_eq(lerp(0.0, 10.0, 0.0), 0.0)
+}
+
+test "lerp at 1 returns end" {
+    assert_eq(lerp(0.0, 10.0, 1.0), 10.0)
+}
+
+test "lerp midpoint" {
+    assert_near(lerp(0.0, 10.0, 0.5), 5.0, 1.0e-10)
+}
+
+test "lerp negative range" {
+    assert_near(lerp(-10.0, 10.0, 0.5), 0.0, 1.0e-10)
+}
+
+test "clamp within range" {
+    assert_eq(clamp(5.0, 0.0, 10.0), 5.0)
+}
+
+test "clamp below range" {
+    assert_eq(clamp(-5.0, 0.0, 10.0), 0.0)
+}
+
+test "clamp above range" {
+    assert_eq(clamp(15.0, 0.0, 10.0), 10.0)
+}
+
+test "clamp at boundaries" {
+    assert_eq(clamp(0.0, 0.0, 10.0), 0.0)
+    assert_eq(clamp(10.0, 0.0, 10.0), 10.0)
+}
+
+test "saturate clamps to 0..1" {
+    assert_eq(saturate(0.5), 0.5)
+    assert_eq(saturate(-1.0), 0.0)
+    assert_eq(saturate(2.0), 1.0)
+}
+
+test "sign positive" {
+    assert_eq(sign(5.0), 1.0)
+}
+
+test "sign negative" {
+    assert_eq(sign(-5.0), -1.0)
+}
+
+test "sign zero" {
+    assert_eq(sign(0.0), 0.0)
+}
+
+test "step below edge" {
+    assert_eq(step(0.5, 0.3), 0.0)
+}
+
+test "step at edge" {
+    assert_eq(step(0.5, 0.5), 1.0)
+}
+
+test "step above edge" {
+    assert_eq(step(0.5, 0.7), 1.0)
+}
+
+test "smoothstep boundaries" {
+    assert_eq(smoothstep(0.0, 1.0, 0.0), 0.0)
+    assert_eq(smoothstep(0.0, 1.0, 1.0), 1.0)
+}
+
+test "smoothstep midpoint" {
+    assert_eq(smoothstep(0.0, 1.0, 0.5), 0.5)
+}
+
+test "smoothstep below range" {
+    assert_eq(smoothstep(0.0, 1.0, -1.0), 0.0)
+}
+
+test "smoothstep above range" {
+    assert_eq(smoothstep(0.0, 1.0, 2.0), 1.0)
+}
+
+test "degrees conversion" {
+    assert_near(degrees(PI), 180.0, 1.0e-10)
+    assert_near(degrees(PI / 2.0), 90.0, 1.0e-10)
+    assert_near(degrees(0.0), 0.0, 1.0e-10)
+}
+
+test "radians conversion" {
+    assert_near(radians(180.0), PI, 1.0e-10)
+    assert_near(radians(90.0), PI / 2.0, 1.0e-10)
+    assert_near(radians(0.0), 0.0, 1.0e-10)
+}
+
+test "degrees and radians are inverse" {
+    assert_near(degrees(radians(45.0)), 45.0, 1.0e-10)
+    assert_near(radians(degrees(1.0)), 1.0, 1.0e-10)
+}
+
+test "inversesqrt" {
+    assert_near(inversesqrt(4.0), 0.5, 1.0e-10)
+    assert_near(inversesqrt(1.0), 1.0, 1.0e-10)
+}
+
+test "constants are correct" {
+    assert_near(PI, 3.14159265358979, 1.0e-11)
+    assert_near(TAU, 6.28318530717958, 1.0e-11)
+    assert_near(E, 2.71828182845904, 1.0e-11)
+    assert_near(TAU, 2.0 * PI, 1.0e-14)
+}

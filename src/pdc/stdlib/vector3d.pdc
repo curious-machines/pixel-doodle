@@ -115,3 +115,123 @@ pub fn angle_between(a: Vector3D, b: Vector3D) -> f64 {
 pub fn lerp(a: Vector3D, b: Vector3D, t: f64) -> Vector3D {
     return a + (b - a) * t
 }
+
+// ── Tests ──
+
+test "addition" {
+    const c = Vector3D(x: 1.0, y: 2.0, z: 3.0) + Vector3D(x: 4.0, y: 5.0, z: 6.0)
+    assert_eq(c.x, 5.0)
+    assert_eq(c.y, 7.0)
+    assert_eq(c.z, 9.0)
+}
+
+test "subtraction" {
+    const c = Vector3D(x: 5.0, y: 4.0, z: 3.0) - Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(c.x, 4.0)
+    assert_eq(c.y, 2.0)
+    assert_eq(c.z, 0.0)
+}
+
+test "negation" {
+    const v = -Vector3D(x: 1.0, y: -2.0, z: 3.0)
+    assert_eq(v.x, -1.0)
+    assert_eq(v.y, 2.0)
+    assert_eq(v.z, -3.0)
+}
+
+test "scalar multiply" {
+    const v = Vector3D(x: 1.0, y: 2.0, z: 3.0) * 3.0
+    assert_eq(v.x, 3.0)
+    assert_eq(v.y, 6.0)
+    assert_eq(v.z, 9.0)
+}
+
+test "scalar divide" {
+    const v = Vector3D(x: 6.0, y: 9.0, z: 12.0) / 3.0
+    assert_eq(v.x, 2.0)
+    assert_eq(v.y, 3.0)
+    assert_eq(v.z, 4.0)
+}
+
+test "equality and inequality" {
+    const a = Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    const b = Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    const c = Vector3D(x: 4.0, y: 5.0, z: 6.0)
+    assert_true(a == b)
+    assert_true(a != c)
+}
+
+test "dot product orthogonal" {
+    assert_eq(dot(Vector3D(x: 1.0, y: 0.0, z: 0.0), Vector3D(x: 0.0, y: 1.0, z: 0.0)), 0.0)
+}
+
+test "dot product parallel" {
+    const v = Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(dot(v, v), 14.0)
+}
+
+test "cross product basis vectors" {
+    const x = Vector3D(x: 1.0, y: 0.0, z: 0.0)
+    const y = Vector3D(x: 0.0, y: 1.0, z: 0.0)
+    const z = cross(x, y)
+    assert_eq(z.x, 0.0)
+    assert_eq(z.y, 0.0)
+    assert_eq(z.z, 1.0)
+}
+
+test "cross product anticommutative" {
+    const a = Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    const b = Vector3D(x: 4.0, y: 5.0, z: 6.0)
+    const c1 = cross(a, b)
+    const c2 = cross(b, a)
+    assert_near(c1.x, -c2.x, 1.0e-10)
+    assert_near(c1.y, -c2.y, 1.0e-10)
+    assert_near(c1.z, -c2.z, 1.0e-10)
+}
+
+test "length" {
+    assert_near(length(Vector3D(x: 1.0, y: 2.0, z: 2.0)), 3.0, 1.0e-10)
+}
+
+test "length_squared" {
+    assert_eq(length_squared(Vector3D(x: 1.0, y: 2.0, z: 2.0)), 9.0)
+}
+
+test "normalize" {
+    const v = normalize(Vector3D(x: 0.0, y: 0.0, z: 5.0))
+    assert_near(v.x, 0.0, 1.0e-10)
+    assert_near(v.y, 0.0, 1.0e-10)
+    assert_near(v.z, 1.0, 1.0e-10)
+}
+
+test "normalize zero" {
+    const v = normalize(Vector3D(x: 0.0, y: 0.0, z: 0.0))
+    assert_eq(v.x, 0.0)
+    assert_eq(v.y, 0.0)
+    assert_eq(v.z, 0.0)
+}
+
+test "reflect off xz plane" {
+    const v = Vector3D(x: 1.0, y: -1.0, z: 0.0)
+    const n = Vector3D(x: 0.0, y: 1.0, z: 0.0)
+    const r = reflect(v, n)
+    assert_near(r.x, 1.0, 1.0e-10)
+    assert_near(r.y, 1.0, 1.0e-10)
+    assert_near(r.z, 0.0, 1.0e-10)
+}
+
+test "angle_between parallel" {
+    const a = Vector3D(x: 1.0, y: 0.0, z: 0.0)
+    const b = Vector3D(x: 2.0, y: 0.0, z: 0.0)
+    assert_near(angle_between(a, b), 0.0, 1.0e-10)
+}
+
+test "lerp endpoints" {
+    const a = Vector3D(x: 0.0, y: 0.0, z: 0.0)
+    const b = Vector3D(x: 10.0, y: 20.0, z: 30.0)
+    const r0 = lerp(a, b, 0.0)
+    const r1 = lerp(a, b, 1.0)
+    assert_eq(r0.x, 0.0)
+    assert_eq(r1.x, 10.0)
+    assert_eq(r1.z, 30.0)
+}

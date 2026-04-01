@@ -99,3 +99,91 @@ pub fn reflect(v: Vector4D, normal: Vector4D) -> Vector4D {
 pub fn lerp(a: Vector4D, b: Vector4D, t: f64) -> Vector4D {
     return a + (b - a) * t
 }
+
+// ── Tests ──
+
+test "addition" {
+    const c = Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0) + Vector4D(x: 5.0, y: 6.0, z: 7.0, w: 8.0)
+    assert_eq(c.x, 6.0)
+    assert_eq(c.y, 8.0)
+    assert_eq(c.z, 10.0)
+    assert_eq(c.w, 12.0)
+}
+
+test "subtraction" {
+    const c = Vector4D(x: 5.0, y: 6.0, z: 7.0, w: 8.0) - Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    assert_eq(c.x, 4.0)
+    assert_eq(c.y, 4.0)
+    assert_eq(c.z, 4.0)
+    assert_eq(c.w, 4.0)
+}
+
+test "negation" {
+    const v = -Vector4D(x: 1.0, y: -2.0, z: 3.0, w: -4.0)
+    assert_eq(v.x, -1.0)
+    assert_eq(v.y, 2.0)
+    assert_eq(v.z, -3.0)
+    assert_eq(v.w, 4.0)
+}
+
+test "scalar multiply" {
+    const v = Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0) * 2.0
+    assert_eq(v.x, 2.0)
+    assert_eq(v.y, 4.0)
+    assert_eq(v.z, 6.0)
+    assert_eq(v.w, 8.0)
+}
+
+test "equality and inequality" {
+    const a = Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    const b = Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    const c = Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    assert_true(a == b)
+    assert_true(a != c)
+}
+
+test "dot product" {
+    const a = Vector4D(x: 1.0, y: 0.0, z: 0.0, w: 0.0)
+    const b = Vector4D(x: 0.0, y: 1.0, z: 0.0, w: 0.0)
+    assert_eq(dot(a, b), 0.0)
+    assert_eq(dot(a, a), 1.0)
+}
+
+test "length" {
+    assert_eq(length(Vector4D(x: 2.0, y: 0.0, z: 0.0, w: 0.0)), 2.0)
+}
+
+test "length_squared" {
+    assert_eq(length_squared(Vector4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)), 30.0)
+}
+
+test "normalize" {
+    const v = normalize(Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 5.0))
+    assert_near(v.w, 1.0, 1.0e-10)
+    assert_near(length(v), 1.0, 1.0e-10)
+}
+
+test "normalize zero" {
+    const v = normalize(Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0))
+    assert_eq(v.x, 0.0)
+    assert_eq(v.w, 0.0)
+}
+
+test "lerp endpoints" {
+    const a = Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    const b = Vector4D(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    const r0 = lerp(a, b, 0.0)
+    const r1 = lerp(a, b, 1.0)
+    assert_eq(r0.x, 0.0)
+    assert_eq(r1.w, 40.0)
+}
+
+test "lerp midpoint" {
+    const a = Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    const b = Vector4D(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    const r = lerp(a, b, 0.5)
+    assert_eq(r.x, 5.0)
+    assert_eq(r.y, 10.0)
+    assert_eq(r.z, 15.0)
+    assert_eq(r.w, 20.0)
+}

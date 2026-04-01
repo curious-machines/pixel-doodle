@@ -34,6 +34,7 @@ pub enum TokenKind {
     Type,
     Pub,
     Operator,
+    Test,
 
     // Operators
     Plus,
@@ -124,6 +125,7 @@ pub fn keyword_lookup(s: &str) -> Option<TokenKind> {
         "type" => Some(TokenKind::Type),
         "pub" => Some(TokenKind::Pub),
         "operator" => Some(TokenKind::Operator),
+        "test" => Some(TokenKind::Test),
         "true" => Some(TokenKind::BoolLit(true)),
         "false" => Some(TokenKind::BoolLit(false)),
         _ => None,

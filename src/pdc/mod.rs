@@ -23,12 +23,28 @@ use span::{IdAlloc, Span, Spanned};
 /// Embedded standard library modules.
 const STDLIB_GEOMETRY: &str = include_str!("stdlib/geometry.pdc");
 const STDLIB_MATH: &str = include_str!("stdlib/math.pdc");
+const STDLIB_VECTOR2D: &str = include_str!("stdlib/vector2d.pdc");
+const STDLIB_VECTOR3D: &str = include_str!("stdlib/vector3d.pdc");
+const STDLIB_VECTOR4D: &str = include_str!("stdlib/vector4d.pdc");
+const STDLIB_POINT2D: &str = include_str!("stdlib/point2d.pdc");
+const STDLIB_POINT3D: &str = include_str!("stdlib/point3d.pdc");
+const STDLIB_POINT4D: &str = include_str!("stdlib/point4d.pdc");
+const STDLIB_AFFINE2D: &str = include_str!("stdlib/affine2d.pdc");
+const STDLIB_AFFINE3D: &str = include_str!("stdlib/affine3d.pdc");
 
 /// Resolve a module name to source code. Checks stdlib first, then filesystem.
 fn resolve_module(name: &str, base_dir: Option<&FsPath>) -> Result<String, PdcError> {
     match name {
         "geometry" => Ok(STDLIB_GEOMETRY.to_string()),
         "math" => Ok(STDLIB_MATH.to_string()),
+        "vector2d" => Ok(STDLIB_VECTOR2D.to_string()),
+        "vector3d" => Ok(STDLIB_VECTOR3D.to_string()),
+        "vector4d" => Ok(STDLIB_VECTOR4D.to_string()),
+        "point2d" => Ok(STDLIB_POINT2D.to_string()),
+        "point3d" => Ok(STDLIB_POINT3D.to_string()),
+        "point4d" => Ok(STDLIB_POINT4D.to_string()),
+        "affine2d" => Ok(STDLIB_AFFINE2D.to_string()),
+        "affine3d" => Ok(STDLIB_AFFINE3D.to_string()),
         _ => {
             // File-based import: resolve relative to the importing file's directory
             let base = base_dir.unwrap_or_else(|| FsPath::new("."));
@@ -112,6 +128,73 @@ fn load_modules(
     Ok(())
 }
 
+/// Topologically sort modules so dependencies come before dependents.
+fn toposort_modules(modules: &HashMap<String, String>) -> Vec<String> {
+    // Build dependency graph: module → set of modules it imports
+    let mut deps: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, source) in modules {
+        let mut module_deps = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("import ") {
+                let dep_name = extract_module_name(trimmed);
+                if modules.contains_key(dep_name) {
+                    module_deps.push(dep_name);
+                }
+            }
+        }
+        deps.insert(name.as_str(), module_deps);
+    }
+
+    // Kahn's algorithm
+    let mut in_degree: HashMap<&str, usize> = modules.keys().map(|k| (k.as_str(), 0)).collect();
+    for dep_list in deps.values() {
+        for dep in dep_list {
+            *in_degree.entry(dep).or_insert(0) += 1;
+        }
+    }
+
+    // Wait — in_degree should count how many modules depend on each module.
+    // Actually, Kahn's: in_degree[X] = number of modules X depends on.
+    // Then process modules with in_degree 0 first.
+    let mut in_deg: HashMap<&str, usize> = HashMap::new();
+    for (name, dep_list) in &deps {
+        in_deg.insert(name, dep_list.len());
+    }
+
+    let mut queue: Vec<&str> = in_deg.iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(&n, _)| n)
+        .collect();
+    queue.sort(); // deterministic order for same-level modules
+
+    let mut result = Vec::new();
+    while let Some(name) = queue.pop() {
+        result.push(name.to_string());
+        // Find modules that depend on `name` and decrement their in-degree
+        for (dependent, dep_list) in &deps {
+            if dep_list.contains(&name) {
+                if let Some(d) = in_deg.get_mut(dependent) {
+                    *d -= 1;
+                    if *d == 0 {
+                        queue.push(dependent);
+                        queue.sort();
+                    }
+                }
+            }
+        }
+    }
+
+    // Any remaining modules (cycles) — shouldn't happen due to circular import detection
+    for name in modules.keys() {
+        if !result.contains(name) {
+            result.push(name.clone());
+        }
+    }
+
+    result
+}
+
 /// Load and parse all modules and the main source into a Program.
 fn load_and_parse(
     source: &str,
@@ -122,11 +205,15 @@ fn load_and_parse(
     let mut import_stack = Vec::new();
     load_modules(source, base_dir, &mut module_sources, &mut import_stack)?;
 
-    // 2. Parse each module with a shared IdAlloc
+    // 2. Topologically sort modules so dependencies come first
+    let sorted_names = toposort_modules(&module_sources);
+
+    // 3. Parse each module with a shared IdAlloc
     let mut ids = IdAlloc::new();
     let mut modules = Vec::new();
 
-    for (name, mod_source) in &module_sources {
+    for name in &sorted_names {
+        let mod_source = &module_sources[name];
         let tokens = lexer::lex(mod_source)?;
         let stmts = parser::parse(tokens, &mut ids)?;
         modules.push(ModuleUnit {
@@ -225,6 +312,7 @@ fn collect_stmt_refs(stmt: &Spanned<Stmt>, refs: &mut HashSet<String>) {
             for arm in arms { collect_block_refs(&arm.body, refs); }
         }
         Stmt::Return(Some(expr)) => collect_expr_refs(expr, refs),
+        Stmt::TestDef { body, .. } => collect_block_refs(body, refs),
         _ => {}
     }
 }
@@ -354,6 +442,51 @@ fn eliminate_dead_code(program: &mut Program) {
     }
 }
 
+/// Strip test blocks from a program (for production builds).
+fn strip_tests(program: &mut Program) {
+    for module in &mut program.modules {
+        module.stmts.retain(|stmt| !matches!(&stmt.node, Stmt::TestDef { .. }));
+    }
+    program.stmts.retain(|stmt| !matches!(&stmt.node, Stmt::TestDef { .. }));
+}
+
+/// Run all PDC test blocks in a source file, returning per-test results.
+///
+/// Each `test "name" { ... }` block is compiled and executed independently.
+/// Assert failures are collected per test (all asserts run, not just the first).
+pub fn run_pdc_tests(
+    source: &str,
+    source_path: Option<&FsPath>,
+) -> Result<Vec<runtime::PdcTestResult>, PdcError> {
+    let compiled = compile_only(source, source_path)?;
+    let builtins = [200.0f64, 200.0f64];
+
+    let mut results = Vec::new();
+    for (test_name, test_fn) in &compiled.test_fns {
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+        };
+        // Clear any previous failures
+        runtime::take_assert_failures();
+        unsafe { test_fn(&mut ctx); }
+        let failures = runtime::take_assert_failures();
+        let passed = failures.is_empty();
+        let message = if passed {
+            String::new()
+        } else {
+            failures.iter().map(|f| f.message.as_str()).collect::<Vec<_>>().join("; ")
+        };
+        results.push(runtime::PdcTestResult {
+            name: test_name.clone(),
+            passed,
+            message,
+        });
+    }
+    Ok(results)
+}
+
 /// Compile a PDC source without executing. Returns the compiled program
 /// for inspection and individual function calls from test code.
 ///
@@ -421,8 +554,9 @@ pub fn compile_and_run(
     let base_dir = source_path.and_then(|p| p.parent());
     let mut program = load_and_parse(source, base_dir)?;
 
-    // 2. Dead code elimination (before type checking)
+    // 2. Dead code elimination and strip test blocks (before type checking)
     eliminate_dead_code(&mut program);
+    strip_tests(&mut program);
 
     // 3. Type check
     let mut checker = type_check::TypeChecker::new();
@@ -896,4 +1030,170 @@ mod tests {
         );
         assert_eq!(result, PdcValue::I32(-1));
     }
+
+    // ── PDC test framework tests ──
+
+    fn run_pdc_tests_and_assert(source: &str) {
+        let source = format!("{}{}", pdc_header(), source);
+        let results = run_pdc_tests(&source, None).expect("run_pdc_tests failed");
+        let mut failures = Vec::new();
+        for r in &results {
+            if !r.passed {
+                failures.push(format!("  '{}': {}", r.name, r.message));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "PDC tests failed ({}/{} passed):\n{}",
+            results.len() - failures.len(),
+            results.len(),
+            failures.join("\n"),
+        );
+        assert!(!results.is_empty(), "no PDC tests found in source");
+    }
+
+    #[test]
+    fn pdc_test_framework_basic() {
+        run_pdc_tests_and_assert(r#"
+            test "one equals one" {
+                assert_eq(1.0, 1.0)
+            }
+            test "true is true" {
+                assert_true(true)
+            }
+            test "near works" {
+                assert_near(1.0000001, 1.0, 0.001)
+            }
+        "#);
+    }
+
+    #[test]
+    fn pdc_test_framework_assert_eq_integer() {
+        run_pdc_tests_and_assert(r#"
+            test "integer equality" {
+                assert_eq(42, 42)
+            }
+        "#);
+    }
+
+    #[test]
+    fn pdc_test_framework_assert_eq_bool() {
+        run_pdc_tests_and_assert(r#"
+            test "bool equality" {
+                assert_eq(true, true)
+                assert_eq(false, false)
+            }
+        "#);
+    }
+
+    #[test]
+    fn pdc_test_framework_failure_reports() {
+        let source = format!(
+            "{}test \"should fail\" {{ assert_eq(1.0, 2.0) }}",
+            pdc_header()
+        );
+        let results = run_pdc_tests(&source, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+        assert!(results[0].message.contains("assert_eq failed"));
+    }
+
+    #[test]
+    fn pdc_test_framework_multiple_failures_collected() {
+        let source = format!(
+            "{}test \"multi fail\" {{ assert_eq(1.0, 2.0)\nassert_eq(3.0, 4.0) }}",
+            pdc_header()
+        );
+        let results = run_pdc_tests(&source, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+        // Both failures should be collected
+        assert!(results[0].message.contains("1") && results[0].message.contains("2"));
+        assert!(results[0].message.contains("3") && results[0].message.contains("4"));
+    }
+
+    #[test]
+    fn pdc_test_imported_module_tests_not_collected() {
+        // math module has many tests, but importing it should not run them
+        let source = format!(
+            "{}\nimport math\ntest \"only this runs\" {{ assert_eq(1.0, 1.0) }}",
+            pdc_header()
+        );
+        let results = run_pdc_tests(&source, None).unwrap();
+        assert_eq!(results.len(), 1, "expected 1 test, got {}: {:?}",
+            results.len(), results.iter().map(|r| &r.name).collect::<Vec<_>>());
+        assert_eq!(results[0].name, "only this runs");
+        assert!(results[0].passed);
+    }
+
+    #[test]
+    fn pdc_test_strip_from_production() {
+        let source = format!(
+            "{}test \"should not run\" {{ assert_eq(1.0, 2.0) }}",
+            pdc_header()
+        );
+        // compile_and_run should succeed (tests stripped, not executed)
+        compile_and_run(&source, 200, 200, 0.5, 16, None).expect("should compile without error");
+    }
+
+    #[test]
+    fn pdc_test_can_call_functions() {
+        run_pdc_tests_and_assert(r#"
+            fn add(a: f64, b: f64) -> f64 {
+                return a + b
+            }
+            test "add works" {
+                assert_eq(add(2.0, 3.0), 5.0)
+            }
+        "#);
+    }
+
+    // ── Stdlib PDC tests ──
+
+    fn run_stdlib_tests(module_source: &str, module_name: &str) {
+        let source = format!("{}\n{}", pdc_header(), module_source);
+        let results = run_pdc_tests(&source, None)
+            .unwrap_or_else(|e| panic!("{module_name} stdlib tests failed to compile: {e}"));
+        let mut failures = Vec::new();
+        for r in &results {
+            if !r.passed {
+                failures.push(format!("  '{}': {}", r.name, r.message));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{module_name} stdlib tests failed ({}/{} passed):\n{}",
+            results.len() - failures.len(),
+            results.len(),
+            failures.join("\n"),
+        );
+        assert!(!results.is_empty(), "no tests found in {module_name} stdlib");
+    }
+
+    #[test]
+    fn pdc_stdlib_math() { run_stdlib_tests(STDLIB_MATH, "math"); }
+
+    #[test]
+    fn pdc_stdlib_vector2d() { run_stdlib_tests(STDLIB_VECTOR2D, "vector2d"); }
+
+    #[test]
+    fn pdc_stdlib_vector3d() { run_stdlib_tests(STDLIB_VECTOR3D, "vector3d"); }
+
+    #[test]
+    fn pdc_stdlib_vector4d() { run_stdlib_tests(STDLIB_VECTOR4D, "vector4d"); }
+
+    #[test]
+    fn pdc_stdlib_point2d() { run_stdlib_tests(STDLIB_POINT2D, "point2d"); }
+
+    #[test]
+    fn pdc_stdlib_point3d() { run_stdlib_tests(STDLIB_POINT3D, "point3d"); }
+
+    #[test]
+    fn pdc_stdlib_point4d() { run_stdlib_tests(STDLIB_POINT4D, "point4d"); }
+
+    #[test]
+    fn pdc_stdlib_affine2d() { run_stdlib_tests(STDLIB_AFFINE2D, "affine2d"); }
+
+    #[test]
+    fn pdc_stdlib_affine3d() { run_stdlib_tests(STDLIB_AFFINE3D, "affine3d"); }
 }

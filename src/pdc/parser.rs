@@ -124,6 +124,7 @@ impl<'a> Parser<'a> {
             TokenKind::Type => self.parse_type_alias(start, vis),
             TokenKind::Fn => self.parse_fn_def(start, vis),
             TokenKind::Operator => self.parse_operator_def(start, vis),
+            TokenKind::Test => self.parse_test_def(start),
             _ => {
                 // Expression statement or assignment
                 let expr = self.parse_expr()?;
@@ -549,6 +550,29 @@ impl<'a> Parser<'a> {
             }),
             span,
         ))
+    }
+
+    fn parse_test_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'test'
+
+        // Expect a string literal for the test name
+        let name = match self.peek().clone() {
+            TokenKind::StringLit(s) => {
+                self.advance();
+                s
+            }
+            _ => {
+                return Err(PdcError::Parse {
+                    span: self.span(),
+                    message: format!("expected string literal for test name, got {:?}", self.peek()),
+                });
+            }
+        };
+
+        let body = self.parse_block()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(Stmt::TestDef { name, body }, span))
     }
 
     fn parse_struct_def(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {

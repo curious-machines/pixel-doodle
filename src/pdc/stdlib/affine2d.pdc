@@ -260,3 +260,123 @@ pub fn inverse(t: AffineTransform2D) -> AffineTransform2D {
         ty: (t.c * t.tx - t.a * t.ty) * inv_det
     )
 }
+
+// ── Tests ──
+
+test "identity has no effect" {
+    const t = identity()
+    assert_eq(t.a, 1.0)
+    assert_eq(t.d, 1.0)
+    assert_eq(t.tx, 0.0)
+    assert_eq(t.ty, 0.0)
+}
+
+test "identity transforms point unchanged" {
+    const p = identity() * Point2D(x: 5.0, y: 7.0)
+    assert_eq(p.x, 5.0)
+    assert_eq(p.y, 7.0)
+}
+
+test "translation moves point" {
+    const p = translation(10.0, 20.0) * Point2D(x: 1.0, y: 2.0)
+    assert_eq(p.x, 11.0)
+    assert_eq(p.y, 22.0)
+}
+
+test "translation does not affect vector" {
+    const v = translation(10.0, 20.0) * Vector2D(x: 1.0, y: 2.0)
+    assert_eq(v.x, 1.0)
+    assert_eq(v.y, 2.0)
+}
+
+test "scaling" {
+    const p = scaling(2.0, 3.0) * Point2D(x: 5.0, y: 4.0)
+    assert_eq(p.x, 10.0)
+    assert_eq(p.y, 12.0)
+}
+
+test "rotation 90 degrees" {
+    const p = rotation(PI / 2.0) * Point2D(x: 1.0, y: 0.0)
+    assert_near(p.x, 0.0, 1.0e-10)
+    assert_near(p.y, 1.0, 1.0e-10)
+}
+
+test "rotation 180 degrees" {
+    const p = rotation(PI) * Point2D(x: 1.0, y: 0.0)
+    assert_near(p.x, -1.0, 1.0e-10)
+    assert_near(p.y, 0.0, 1.0e-10)
+}
+
+test "compose translation then scale" {
+    const t = scaling(2.0, 2.0) * translation(5.0, 3.0)
+    const p = t * Point2D(x: 0.0, y: 0.0)
+    assert_near(p.x, 10.0, 1.0e-10)
+    assert_near(p.y, 6.0, 1.0e-10)
+}
+
+test "determinant of identity" {
+    assert_eq(determinant(identity()), 1.0)
+}
+
+test "determinant of scaling" {
+    assert_eq(determinant(scaling(2.0, 3.0)), 6.0)
+}
+
+test "inverse of translation" {
+    const t = translation(5.0, 7.0)
+    const inv = inverse(t)
+    const p = inv * Point2D(x: 5.0, y: 7.0)
+    assert_near(p.x, 0.0, 1.0e-10)
+    assert_near(p.y, 0.0, 1.0e-10)
+}
+
+test "inverse roundtrip" {
+    const t = translation(3.0, 4.0).rotate(PI / 4.0).scale(2.0, 0.5)
+    const inv = inverse(t)
+    const result = t * inv
+    assert_near(result.a, 1.0, 1.0e-10)
+    assert_near(result.b, 0.0, 1.0e-10)
+    assert_near(result.c, 0.0, 1.0e-10)
+    assert_near(result.d, 1.0, 1.0e-10)
+    assert_near(result.tx, 0.0, 1.0e-10)
+    assert_near(result.ty, 0.0, 1.0e-10)
+}
+
+test "scalar multiply" {
+    const t = identity() * 3.0
+    assert_eq(t.a, 3.0)
+    assert_eq(t.d, 3.0)
+}
+
+test "equality" {
+    assert_true(identity() == identity())
+    assert_true(identity() != translation(1.0, 0.0))
+}
+
+test "translate method" {
+    const t = identity().translate(5.0, 3.0)
+    const p = t * Point2D(x: 0.0, y: 0.0)
+    assert_eq(p.x, 5.0)
+    assert_eq(p.y, 3.0)
+}
+
+test "scale method" {
+    const t = identity().scale(2.0, 3.0)
+    const p = t * Point2D(x: 5.0, y: 4.0)
+    assert_eq(p.x, 10.0)
+    assert_eq(p.y, 12.0)
+}
+
+test "flip_x negates x" {
+    const t = identity().flip_x()
+    const p = t * Point2D(x: 5.0, y: 3.0)
+    assert_eq(p.x, -5.0)
+    assert_eq(p.y, 3.0)
+}
+
+test "flip_y negates y" {
+    const t = identity().flip_y()
+    const p = t * Point2D(x: 5.0, y: 3.0)
+    assert_eq(p.x, 5.0)
+    assert_eq(p.y, -3.0)
+}

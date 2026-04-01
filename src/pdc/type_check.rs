@@ -815,10 +815,47 @@ impl TypeChecker {
                 }
             }
             Stmt::Import { module, names } => {
-                // Namespaced import: `import math` → define `math` as a module namespace
                 if names.is_empty() {
+                    // Namespaced import: `import math` → define `math` as a module namespace
                     self.define_var(module, PdcType::Module(module.clone()));
+                } else {
+                    // Selective import: `import { PI, lerp } from math`
+                    for name in names {
+                        let qualified = format!("{module}::{name}");
+
+                        if self.user_fns.contains_key(&qualified) {
+                            let overloads = self.user_fns.get(&qualified).cloned().unwrap();
+                            self.user_fns.entry(name.clone())
+                                .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                                .sigs.extend(overloads.sigs);
+                            self.fn_aliases.insert(name.clone(), qualified.clone());
+                        }
+
+                        if let Some(info) = self.structs.get(&qualified).cloned() {
+                            self.structs.insert(name.clone(), info);
+                        }
+
+                        if let Some(info) = self.enums.get(&qualified).cloned() {
+                            self.enums.insert(name.clone(), info);
+                            self.define_var(name, PdcType::Enum(name.clone()));
+                        }
+
+                        if let Some(ty) = self.type_aliases.get(&qualified).cloned() {
+                            self.type_aliases.insert(name.clone(), ty);
+                        }
+
+                        if let Some(ty) = self.lookup_var(&qualified).cloned() {
+                            self.define_var(name, ty);
+                        }
+                    }
                 }
+            }
+            Stmt::TestDef { body, .. } => {
+                self.push_scope();
+                for s in &body.stmts {
+                    self.check_stmt(s)?;
+                }
+                self.pop_scope();
             }
             Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } => {
                 // Already registered in first pass
@@ -988,6 +1025,47 @@ impl TypeChecker {
                 if name == "stroke" && args.len() == 5 {
                     // stroke(path, width, color, cap, join) → stroke_styled
                     for arg in args.iter() { self.check_expr(arg)?; }
+                    self.set_type(expr.id, PdcType::Void);
+                    return Ok(PdcType::Void);
+                }
+
+                // Test assertion intrinsics
+                if name == "assert_eq" {
+                    if args.len() != 2 {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("assert_eq expects 2 arguments, got {}", args.len()),
+                        });
+                    }
+                    let ty_a = self.check_expr(&args[0])?;
+                    let ty_b = self.check_expr(&args[1])?;
+                    self.check_compatible(&ty_a, &ty_b, args[1].span)?;
+                    self.set_type(expr.id, PdcType::Void);
+                    return Ok(PdcType::Void);
+                }
+                if name == "assert_near" {
+                    if args.len() != 3 {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("assert_near expects 3 arguments, got {}", args.len()),
+                        });
+                    }
+                    for arg in args.iter() {
+                        let ty = self.check_expr(arg)?;
+                        self.check_compatible(&ty, &PdcType::F64, arg.span)?;
+                    }
+                    self.set_type(expr.id, PdcType::Void);
+                    return Ok(PdcType::Void);
+                }
+                if name == "assert_true" {
+                    if args.len() != 1 {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("assert_true expects 1 argument, got {}", args.len()),
+                        });
+                    }
+                    let ty = self.check_expr(&args[0])?;
+                    self.check_compatible(&ty, &PdcType::Bool, args[0].span)?;
                     self.set_type(expr.id, PdcType::Void);
                     return Ok(PdcType::Void);
                 }

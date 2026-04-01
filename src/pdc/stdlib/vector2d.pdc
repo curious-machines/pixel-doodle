@@ -134,3 +134,171 @@ pub fn angle_between(a: Vector2D, b: Vector2D) -> f64 {
 pub fn lerp(a: Vector2D, b: Vector2D, t: f64) -> Vector2D {
     return a + (b - a) * t
 }
+
+// ── Tests ──
+
+test "addition" {
+    const a = Vector2D(x: 1.0, y: 2.0)
+    const b = Vector2D(x: 3.0, y: 4.0)
+    const c = a + b
+    assert_eq(c.x, 4.0)
+    assert_eq(c.y, 6.0)
+}
+
+test "subtraction" {
+    const a = Vector2D(x: 5.0, y: 3.0)
+    const b = Vector2D(x: 2.0, y: 1.0)
+    const c = a - b
+    assert_eq(c.x, 3.0)
+    assert_eq(c.y, 2.0)
+}
+
+test "negation" {
+    const v = -Vector2D(x: 3.0, y: -4.0)
+    assert_eq(v.x, -3.0)
+    assert_eq(v.y, 4.0)
+}
+
+test "scalar multiply" {
+    const v = Vector2D(x: 2.0, y: 3.0) * 4.0
+    assert_eq(v.x, 8.0)
+    assert_eq(v.y, 12.0)
+}
+
+test "scalar multiply commutative" {
+    const v = 4.0 * Vector2D(x: 2.0, y: 3.0)
+    assert_eq(v.x, 8.0)
+    assert_eq(v.y, 12.0)
+}
+
+test "scalar divide" {
+    const v = Vector2D(x: 6.0, y: 8.0) / 2.0
+    assert_eq(v.x, 3.0)
+    assert_eq(v.y, 4.0)
+}
+
+test "equality" {
+    const a = Vector2D(x: 1.0, y: 2.0)
+    const b = Vector2D(x: 1.0, y: 2.0)
+    assert_true(a == b)
+}
+
+test "inequality" {
+    const a = Vector2D(x: 1.0, y: 2.0)
+    const b = Vector2D(x: 3.0, y: 4.0)
+    assert_true(a != b)
+}
+
+test "dot product" {
+    const a = Vector2D(x: 1.0, y: 0.0)
+    const b = Vector2D(x: 0.0, y: 1.0)
+    assert_eq(dot(a, b), 0.0)
+}
+
+test "dot product parallel" {
+    const a = Vector2D(x: 3.0, y: 4.0)
+    assert_near(dot(a, a), 25.0, 1.0e-10)
+}
+
+test "cross product" {
+    const a = Vector2D(x: 1.0, y: 0.0)
+    const b = Vector2D(x: 0.0, y: 1.0)
+    assert_eq(cross(a, b), 1.0)
+}
+
+test "cross product antiparallel" {
+    const a = Vector2D(x: 1.0, y: 0.0)
+    const b = Vector2D(x: 0.0, y: 1.0)
+    assert_eq(cross(b, a), -1.0)
+}
+
+test "length" {
+    const v = Vector2D(x: 3.0, y: 4.0)
+    assert_eq(length(v), 5.0)
+}
+
+test "length_squared" {
+    const v = Vector2D(x: 3.0, y: 4.0)
+    assert_eq(length_squared(v), 25.0)
+}
+
+test "length of zero vector" {
+    const v = Vector2D(x: 0.0, y: 0.0)
+    assert_eq(length(v), 0.0)
+}
+
+test "normalize" {
+    const v = normalize(Vector2D(x: 3.0, y: 4.0))
+    assert_near(v.x, 0.6, 1.0e-10)
+    assert_near(v.y, 0.8, 1.0e-10)
+    assert_near(length(v), 1.0, 1.0e-10)
+}
+
+test "normalize zero vector" {
+    const v = normalize(Vector2D(x: 0.0, y: 0.0))
+    assert_eq(v.x, 0.0)
+    assert_eq(v.y, 0.0)
+}
+
+test "reflect off horizontal surface" {
+    const v = Vector2D(x: 1.0, y: -1.0)
+    const n = Vector2D(x: 0.0, y: 1.0)
+    const r = reflect(v, n)
+    assert_near(r.x, 1.0, 1.0e-10)
+    assert_near(r.y, 1.0, 1.0e-10)
+}
+
+test "perp is 90 degrees" {
+    const v = Vector2D(x: 1.0, y: 0.0)
+    const p = perp(v)
+    assert_eq(p.x, 0.0)
+    assert_eq(p.y, 1.0)
+    assert_eq(dot(v, p), 0.0)
+}
+
+test "angle of unit x" {
+    const a = angle(Vector2D(x: 1.0, y: 0.0))
+    assert_near(a, 0.0, 1.0e-10)
+}
+
+test "angle of unit y" {
+    const a = angle(Vector2D(x: 0.0, y: 1.0))
+    assert_near(a, PI / 2.0, 1.0e-10)
+}
+
+test "rotate 90 degrees" {
+    const v = Vector2D(x: 1.0, y: 0.0)
+    const r = rotate(v, PI / 2.0)
+    assert_near(r.x, 0.0, 1.0e-10)
+    assert_near(r.y, 1.0, 1.0e-10)
+}
+
+test "angle_between perpendicular" {
+    const a = Vector2D(x: 1.0, y: 0.0)
+    const b = Vector2D(x: 0.0, y: 1.0)
+    assert_near(angle_between(a, b), PI / 2.0, 1.0e-10)
+}
+
+test "lerp at 0" {
+    const a = Vector2D(x: 0.0, y: 0.0)
+    const b = Vector2D(x: 10.0, y: 20.0)
+    const r = lerp(a, b, 0.0)
+    assert_eq(r.x, 0.0)
+    assert_eq(r.y, 0.0)
+}
+
+test "lerp at 1" {
+    const a = Vector2D(x: 0.0, y: 0.0)
+    const b = Vector2D(x: 10.0, y: 20.0)
+    const r = lerp(a, b, 1.0)
+    assert_eq(r.x, 10.0)
+    assert_eq(r.y, 20.0)
+}
+
+test "lerp midpoint" {
+    const a = Vector2D(x: 0.0, y: 0.0)
+    const b = Vector2D(x: 10.0, y: 20.0)
+    const r = lerp(a, b, 0.5)
+    assert_eq(r.x, 5.0)
+    assert_eq(r.y, 10.0)
+}

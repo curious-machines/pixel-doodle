@@ -502,6 +502,77 @@ pub extern "C" fn pdc_string_char_at(ctx: *mut PdcContext, handle: i32, index: i
     new_handle as i32
 }
 
+/// Result of running a single PDC test.
+#[derive(Debug)]
+pub struct PdcTestResult {
+    pub name: String,
+    pub passed: bool,
+    pub message: String,
+}
+
+/// A collected assertion failure from a PDC test.
+#[derive(Debug)]
+pub struct AssertFailure {
+    pub message: String,
+}
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Accumulates assertion failures for the currently running PDC test.
+    static ASSERT_FAILURES: RefCell<Vec<AssertFailure>> = RefCell::new(Vec::new());
+}
+
+/// Clear accumulated assertion failures and return them.
+pub fn take_assert_failures() -> Vec<AssertFailure> {
+    ASSERT_FAILURES.with(|f| f.borrow_mut().drain(..).collect())
+}
+
+/// Push an assertion failure message.
+fn push_assert_failure(message: String) {
+    ASSERT_FAILURES.with(|f| f.borrow_mut().push(AssertFailure { message }));
+}
+
+// ── Assert runtime functions (called from JIT'd test code) ──
+
+/// assert_eq for f64 values.
+unsafe extern "C" fn pdc_assert_eq_f64(_ctx: *mut PdcContext, a: f64, b: f64) {
+    if a != b {
+        push_assert_failure(format!("assert_eq failed: left = {a}, right = {b}"));
+    }
+}
+
+/// assert_eq for i64 values (covers i32, u32, bool promoted to i64).
+unsafe extern "C" fn pdc_assert_eq_i64(_ctx: *mut PdcContext, a: i64, b: i64) {
+    if a != b {
+        push_assert_failure(format!("assert_eq failed: left = {a}, right = {b}"));
+    }
+}
+
+/// assert_eq for f32 values.
+unsafe extern "C" fn pdc_assert_eq_f32(_ctx: *mut PdcContext, a: f32, b: f32) {
+    if a != b {
+        push_assert_failure(format!("assert_eq failed: left = {a}, right = {b}"));
+    }
+}
+
+/// assert_near for f64 values with epsilon tolerance.
+unsafe extern "C" fn pdc_assert_near(_ctx: *mut PdcContext, a: f64, b: f64, epsilon: f64) {
+    if (a - b).abs() > epsilon {
+        push_assert_failure(format!(
+            "assert_near failed: left = {a}, right = {b}, diff = {}, epsilon = {epsilon}",
+            (a - b).abs()
+        ));
+    }
+}
+
+/// assert_true for boolean values (passed as i64).
+unsafe extern "C" fn pdc_assert_true(_ctx: *mut PdcContext, cond: i64) {
+    if cond == 0 {
+        push_assert_failure("assert_true failed: condition was false".to_string());
+    }
+}
+
 /// Return all runtime symbols for JIT registration.
 pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
@@ -568,5 +639,11 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_string_eq", pdc_string_eq as *const u8),
         ("pdc_string_slice", pdc_string_slice as *const u8),
         ("pdc_string_char_at", pdc_string_char_at as *const u8),
+        // Test assertions
+        ("pdc_assert_eq_f64", pdc_assert_eq_f64 as *const u8),
+        ("pdc_assert_eq_i64", pdc_assert_eq_i64 as *const u8),
+        ("pdc_assert_eq_f32", pdc_assert_eq_f32 as *const u8),
+        ("pdc_assert_near", pdc_assert_near as *const u8),
+        ("pdc_assert_true", pdc_assert_true as *const u8),
     ]
 }

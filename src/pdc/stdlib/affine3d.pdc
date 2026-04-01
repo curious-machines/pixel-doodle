@@ -343,3 +343,92 @@ pub fn inverse(t: AffineTransform3D) -> AffineTransform3D {
         tz: -(rg * t.tx + rh * t.ty + ri * t.tz)
     )
 }
+
+// ── Tests ──
+
+test "identity transforms point unchanged" {
+    const p = identity() * Point3D(x: 5.0, y: 7.0, z: 9.0)
+    assert_eq(p.x, 5.0)
+    assert_eq(p.y, 7.0)
+    assert_eq(p.z, 9.0)
+}
+
+test "translation moves point" {
+    const p = translation(10.0, 20.0, 30.0) * Point3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(p.x, 11.0)
+    assert_eq(p.y, 22.0)
+    assert_eq(p.z, 33.0)
+}
+
+test "translation does not affect vector" {
+    const v = translation(10.0, 20.0, 30.0) * Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(v.x, 1.0)
+    assert_eq(v.y, 2.0)
+    assert_eq(v.z, 3.0)
+}
+
+test "scaling" {
+    const p = scaling(2.0, 3.0, 4.0) * Point3D(x: 5.0, y: 4.0, z: 3.0)
+    assert_eq(p.x, 10.0)
+    assert_eq(p.y, 12.0)
+    assert_eq(p.z, 12.0)
+}
+
+test "rotation_z 90 degrees" {
+    const p = rotation_z(3.14159265358979 / 2.0) * Point3D(x: 1.0, y: 0.0, z: 0.0)
+    assert_near(p.x, 0.0, 1.0e-10)
+    assert_near(p.y, 1.0, 1.0e-10)
+    assert_near(p.z, 0.0, 1.0e-10)
+}
+
+test "rotation_x 90 degrees" {
+    const p = rotation_x(3.14159265358979 / 2.0) * Point3D(x: 0.0, y: 1.0, z: 0.0)
+    assert_near(p.x, 0.0, 1.0e-10)
+    assert_near(p.y, 0.0, 1.0e-10)
+    assert_near(p.z, 1.0, 1.0e-10)
+}
+
+test "rotation_y 90 degrees" {
+    const p = rotation_y(3.14159265358979 / 2.0) * Point3D(x: 0.0, y: 0.0, z: 1.0)
+    assert_near(p.x, 1.0, 1.0e-10)
+    assert_near(p.y, 0.0, 1.0e-10)
+    assert_near(p.z, 0.0, 1.0e-10)
+}
+
+test "determinant of identity" {
+    assert_eq(determinant(identity()), 1.0)
+}
+
+test "determinant of scaling" {
+    assert_eq(determinant(scaling(2.0, 3.0, 4.0)), 24.0)
+}
+
+test "inverse of translation" {
+    const inv = inverse(translation(5.0, 7.0, 9.0))
+    const p = inv * Point3D(x: 5.0, y: 7.0, z: 9.0)
+    assert_near(p.x, 0.0, 1.0e-10)
+    assert_near(p.y, 0.0, 1.0e-10)
+    assert_near(p.z, 0.0, 1.0e-10)
+}
+
+test "inverse roundtrip" {
+    const t = translation(3.0, 4.0, 5.0).rotate_z(0.5).scale(2.0, 0.5, 1.5)
+    const result = t * inverse(t)
+    assert_near(result.a, 1.0, 1.0e-10)
+    assert_near(result.e, 1.0, 1.0e-10)
+    assert_near(result.i, 1.0, 1.0e-10)
+    assert_near(result.tx, 0.0, 1.0e-10)
+    assert_near(result.ty, 0.0, 1.0e-10)
+    assert_near(result.tz, 0.0, 1.0e-10)
+}
+
+test "equality" {
+    assert_true(identity() == identity())
+    assert_true(identity() != translation(1.0, 0.0, 0.0))
+}
+
+test "compose preserves order" {
+    const t = scaling(2.0, 2.0, 2.0) * translation(5.0, 0.0, 0.0)
+    const p = t * Point3D(x: 0.0, y: 0.0, z: 0.0)
+    assert_near(p.x, 10.0, 1.0e-10)
+}

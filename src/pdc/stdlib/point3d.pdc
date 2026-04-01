@@ -60,3 +60,55 @@ pub fn midpoint(a: Point3D, b: Point3D) -> Point3D {
 pub fn lerp(a: Point3D, b: Point3D, t: f64) -> Point3D {
     return Point3D(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t)
 }
+
+// ── Tests ──
+
+test "point subtraction yields vector" {
+    const v = Point3D(x: 5.0, y: 4.0, z: 3.0) - Point3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(v.x, 4.0)
+    assert_eq(v.y, 2.0)
+    assert_eq(v.z, 0.0)
+}
+
+test "point plus vector" {
+    const r = Point3D(x: 1.0, y: 2.0, z: 3.0) + Vector3D(x: 4.0, y: 5.0, z: 6.0)
+    assert_eq(r.x, 5.0)
+    assert_eq(r.y, 7.0)
+    assert_eq(r.z, 9.0)
+}
+
+test "point minus vector" {
+    const r = Point3D(x: 5.0, y: 5.0, z: 5.0) - Vector3D(x: 1.0, y: 2.0, z: 3.0)
+    assert_eq(r.x, 4.0)
+    assert_eq(r.y, 3.0)
+    assert_eq(r.z, 2.0)
+}
+
+test "equality and inequality" {
+    const a = Point3D(x: 1.0, y: 2.0, z: 3.0)
+    const b = Point3D(x: 1.0, y: 2.0, z: 3.0)
+    const c = Point3D(x: 0.0, y: 0.0, z: 0.0)
+    assert_true(a == b)
+    assert_true(a != c)
+}
+
+test "distance" {
+    const d = distance(Point3D(x: 0.0, y: 0.0, z: 0.0), Point3D(x: 1.0, y: 2.0, z: 2.0))
+    assert_near(d, 3.0, 1.0e-10)
+}
+
+test "midpoint" {
+    const m = midpoint(Point3D(x: 0.0, y: 0.0, z: 0.0), Point3D(x: 10.0, y: 20.0, z: 30.0))
+    assert_eq(m.x, 5.0)
+    assert_eq(m.y, 10.0)
+    assert_eq(m.z, 15.0)
+}
+
+test "lerp endpoints" {
+    const a = Point3D(x: 0.0, y: 0.0, z: 0.0)
+    const b = Point3D(x: 10.0, y: 20.0, z: 30.0)
+    const r0 = lerp(a, b, 0.0)
+    const r1 = lerp(a, b, 1.0)
+    assert_eq(r0.x, 0.0)
+    assert_eq(r1.z, 30.0)
+}

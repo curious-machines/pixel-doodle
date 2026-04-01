@@ -354,6 +354,11 @@ pub enum Stmt {
         name: String,
         ty: PdcType,
     },
+    /// `test "name" { body }` — PDC-level unit test
+    TestDef {
+        name: String,
+        body: Block,
+    },
     /// `import module_name` or `import { names } from module_name`
     Import {
         module: String,

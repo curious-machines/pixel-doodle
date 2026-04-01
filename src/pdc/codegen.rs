@@ -47,6 +47,9 @@ pub struct CompiledProgram {
     /// User-defined function pointers, keyed by qualified name (e.g., "add", "math::lerp").
     /// Each entry is (fn_pointer, param_types, return_type).
     pub user_fns: HashMap<String, (*const u8, Vec<PdcType>, PdcType)>,
+    /// Test function pointers: (test_name, fn_pointer).
+    /// Each test is a void function taking only a PdcContext pointer.
+    pub test_fns: Vec<(String, PdcSceneFn)>,
     _module: JITModule,
 }
 
@@ -373,6 +376,48 @@ pub fn compile(
         user_fn_ids.insert(mangled, func_id);
     }
 
+    // Build operator dispatch table: map (op_name, overload_idx) → FuncId.
+    // The op_overloads map uses unqualified op names with signatures accumulated
+    // across all modules, in the order they were registered during type checking.
+    // We match each signature to the correct qualified function in fn_defs.
+    let mut op_fn_ids: HashMap<(String, usize), cranelift_module::FuncId> = HashMap::new();
+    for (op_name, overloads) in op_overloads {
+        for (sig_idx, sig) in overloads.sigs.iter().enumerate() {
+            // Find the matching function in fn_defs by operator name and parameter types
+            for (qualified_name, fndef) in &fn_defs {
+                let short = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+                if short != op_name {
+                    continue;
+                }
+                let params_match = fndef.params.len() == sig.params.len()
+                    && fndef.params.iter().zip(&sig.params).all(|(p, s)| p.ty == *s);
+                if params_match {
+                    // Find the mangled name for this specific function
+                    let base = mangle_name(qualified_name);
+                    // Count overloads of this qualified name that appear before this one in fn_defs
+                    let mut qual_idx = 0;
+                    for (qn2, fd2) in &fn_defs {
+                        if qn2 == qualified_name {
+                            if std::ptr::eq(*fd2, *fndef) {
+                                break;
+                            }
+                            qual_idx += 1;
+                        }
+                    }
+                    let mangled = if qual_idx == 0 {
+                        format!("pdc_userfn_{base}")
+                    } else {
+                        format!("pdc_userfn_{base}_{qual_idx}")
+                    };
+                    if let Some(&fid) = user_fn_ids.get(&mangled) {
+                        op_fn_ids.insert((op_name.clone(), sig_idx), fid);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // Build per-module intra-module alias maps: "Rect" → "geometry::Rect" for all module fns
     let mut module_aliases: HashMap<String, HashMap<String, String>> = HashMap::new();
     for (qualified_name, _) in &fn_defs {
@@ -445,6 +490,7 @@ pub fn compile(
             enums,
             fn_aliases: effective_aliases,
             op_overloads,
+            op_fn_ids: &op_fn_ids,
             struct_vars: HashMap::new(),
             block_terminated: false,
             loop_stack: Vec::new(),
@@ -529,6 +575,7 @@ pub fn compile(
             enums,
             fn_aliases,
             op_overloads,
+            op_fn_ids: &op_fn_ids,
             struct_vars: HashMap::new(),
             block_terminated: false,
             loop_stack: Vec::new(),
@@ -537,7 +584,7 @@ pub fn compile(
         // Emit module-level statements (const/var init) before main code
         for module in &program.modules {
             for stmt in &module.stmts {
-                if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. }) {
+                if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } | Stmt::TestDef { .. }) {
                     continue;
                 }
                 cg.emit_stmt(stmt)?;
@@ -549,7 +596,7 @@ pub fn compile(
 
         // Emit main program statements
         for stmt in &program.stmts {
-            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::TypeAlias { .. }) {
+            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::TypeAlias { .. } | Stmt::TestDef { .. }) {
                 continue;
             }
             cg.emit_stmt(stmt)?;
@@ -575,12 +622,105 @@ pub fn compile(
             }
         })?;
 
+    // Compile test functions (only from the main program, not imported modules)
+    let mut test_defs: Vec<(String, &Block)> = Vec::new();
+    for stmt in &program.stmts {
+        if let Stmt::TestDef { name, body } = &stmt.node {
+            test_defs.push((name.clone(), body));
+        }
+    }
+
+    let mut test_fn_ids: Vec<(String, cranelift_module::FuncId)> = Vec::new();
+    for (i, (test_name, _)) in test_defs.iter().enumerate() {
+        let mut sig = jit_module.make_signature();
+        sig.call_conv = call_conv;
+        sig.params.push(AbiParam::new(pointer_type)); // ctx pointer
+
+        let mangled = format!("pdc_test_{i}");
+        let func_id = jit_module
+            .declare_function(&mangled, Linkage::Local, &sig)
+            .map_err(|e| PdcError::Codegen {
+                message: format!("declare test fn '{}': {e}", test_name),
+            })?;
+        test_fn_ids.push((test_name.clone(), func_id));
+    }
+
+    for (i, (_test_name, body)) in test_defs.iter().enumerate() {
+        let (ref name, func_id) = test_fn_ids[i];
+        let mut ctx = jit_module.make_context();
+        let sig = jit_module.declarations().get_function_decl(func_id).signature.clone();
+        ctx.func.signature = sig;
+        ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let ctx_ptr = builder.block_params(entry)[0];
+        let builtin_map = build_builtin_map(builtins_layout);
+
+        let mut cg = CodegenCtx {
+            builder: &mut builder,
+            module: &mut jit_module,
+            ctx_ptr,
+            variables: HashMap::new(),
+            builtin_map,
+            type_table: types,
+            call_conv,
+            pointer_type,
+            user_fn_ids: &user_fn_ids,
+            user_fns,
+            structs,
+            enums,
+            fn_aliases,
+            op_overloads,
+            op_fn_ids: &op_fn_ids,
+            struct_vars: HashMap::new(),
+            block_terminated: false,
+            loop_stack: Vec::new(),
+        };
+
+        // Emit top-level constants so they're accessible in test functions
+        for const_stmt in &top_level_consts {
+            cg.emit_stmt(const_stmt)?;
+        }
+
+        cg.emit_block(body)?;
+
+        if !cg.block_terminated {
+            cg.builder.ins().return_(&[]);
+        }
+
+        drop(cg);
+        builder.finalize();
+
+        jit_module
+            .define_function(func_id, &mut ctx)
+            .map_err(|e| {
+                eprintln!("--- Cranelift IR for test '{}' ---\n{}", name, ctx.func.display());
+                PdcError::Codegen {
+                    message: format!("define test fn '{}': {e}", name),
+                }
+            })?;
+    }
+
     jit_module.finalize_definitions().map_err(|e| PdcError::Codegen {
         message: format!("finalize: {e}"),
     })?;
 
     let code_ptr = jit_module.get_finalized_function(main_id);
     let fn_ptr: PdcSceneFn = unsafe { std::mem::transmute(code_ptr) };
+
+    // Collect finalized test function pointers
+    let mut test_fn_ptrs: Vec<(String, PdcSceneFn)> = Vec::new();
+    for (test_name, func_id) in &test_fn_ids {
+        let test_code_ptr = jit_module.get_finalized_function(*func_id);
+        let test_fn: PdcSceneFn = unsafe { std::mem::transmute(test_code_ptr) };
+        test_fn_ptrs.push((test_name.clone(), test_fn));
+    }
 
     // Collect finalized function pointers for all user functions.
     // Non-overloaded functions are keyed by their qualified name (e.g., "add", "math::lerp").
@@ -610,6 +750,7 @@ pub fn compile(
     Ok(CompiledProgram {
         fn_ptr,
         user_fns: user_fn_ptrs,
+        test_fns: test_fn_ptrs,
         _module: jit_module,
     })
 }
@@ -671,6 +812,8 @@ struct CodegenCtx<'a, 'b> {
     fn_aliases: &'a HashMap<String, String>,
     /// Operator overloads for user-defined operator dispatch.
     op_overloads: &'a HashMap<String, OverloadSet>,
+    /// Operator function dispatch table: (op_name, overload_idx) → FuncId.
+    op_fn_ids: &'a HashMap<(String, usize), cranelift_module::FuncId>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
     /// Stack of loop contexts for break/continue targets.
@@ -961,8 +1104,8 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             Stmt::Match { scrutinee, arms } => {
                 self.emit_match(scrutinee, arms)?;
             }
-            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } => {
-                // Already handled
+            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } | Stmt::TestDef { .. } => {
+                // Already handled (tests compiled separately, others registered in earlier passes)
             }
         }
         Ok(())
@@ -1736,7 +1879,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     }) {
                         let lval = self.emit_expr(left)?;
                         let rval = self.emit_expr(right)?;
-                        return self.emit_operator_call(op_name, idx, &[lval, rval]);
+                        return self.emit_operator_call(op_name, idx, &[lval, rval], &result_ty);
                     }
                 }
 
@@ -1758,8 +1901,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     if let Some((idx, _sig)) = overloads.sigs.iter().enumerate().find(|(_, sig)| {
                         sig.params.len() == 1 && sig.params[0] == operand_ty
                     }) {
+                        let result_ty = self.node_type(expr.id).clone();
                         let val = self.emit_expr(operand)?;
-                        return self.emit_operator_call(uop_name, idx, &[val]);
+                        return self.emit_operator_call(uop_name, idx, &[val], &result_ty);
                     }
                 }
 
@@ -2100,6 +2244,31 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         args: &[Spanned<Expr>],
         _call_id: u32,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        // Test assertion intrinsics
+        if name == "assert_eq" && args.len() == 2 {
+            let a = self.emit_expr(&args[0])?;
+            let b = self.emit_expr(&args[1])?;
+            let ty = self.node_type(args[0].id).clone();
+            let runtime_name = match abi_class(&ty) {
+                'd' => "pdc_assert_eq_f64",
+                's' => "pdc_assert_eq_f32",
+                _ => "pdc_assert_eq_i64",
+            };
+            return self.emit_runtime_call_raw(runtime_name, &[self.ctx_ptr, a, b], None);
+        }
+        if name == "assert_near" && args.len() == 3 {
+            let a = self.emit_expr(&args[0])?;
+            let b = self.emit_expr(&args[1])?;
+            let eps = self.emit_expr(&args[2])?;
+            return self.emit_runtime_call_raw("pdc_assert_near", &[self.ctx_ptr, a, b, eps], None);
+        }
+        if name == "assert_true" && args.len() == 1 {
+            let cond = self.emit_expr(&args[0])?;
+            // Promote bool (i8) to i64 for the runtime call
+            let val = self.builder.ins().sextend(I64, cond);
+            return self.emit_runtime_call_raw("pdc_assert_true", &[self.ctx_ptr, val], None);
+        }
+
         // Array functions called as push(arr, val), get(arr, idx), etc.
         if matches!(name, "push" | "get" | "set" | "len") && !args.is_empty() {
             let first_ty = self.node_type(args[0].id).clone();
@@ -2189,7 +2358,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             if results.is_empty() {
                 return Ok(self.builder.ins().iconst(I32, 0));
             }
-            return Ok(results[0]);
+            let val = results[0];
+            // Copy struct/tuple return values into the caller's frame so the
+            // pointer remains valid after the callee's stack is reclaimed.
+            let ret_ty = self.node_type(_call_id).clone();
+            if let Some(size) = self.compound_type_size(&ret_ty) {
+                return Ok(self.copy_struct_to_caller(val, size));
+            }
+            return Ok(val);
         }
 
         // Array constructor: Array<type>() — pass element_size to pdc_array_new
@@ -2392,21 +2568,53 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         val
     }
 
+    /// Copy a struct/tuple from a callee's stack frame into the caller's frame.
+    ///
+    /// Function return values that are struct pointers point into the callee's
+    /// stack frame, which is dead after the call returns. This method copies
+    /// the data into a fresh stack slot owned by the current function so the
+    /// pointer remains valid.
+    fn copy_struct_to_caller(
+        &mut self,
+        src_ptr: cranelift_codegen::ir::Value,
+        size_bytes: u32,
+    ) -> cranelift_codegen::ir::Value {
+        let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+            size_bytes,
+            0,
+        ));
+        let num_words = size_bytes / 8;
+        for i in 0..num_words {
+            let offset = (i * 8) as i32;
+            let val = self.builder.ins().load(F64, MemFlags::trusted(), src_ptr, offset);
+            self.builder.ins().stack_store(val, slot, offset);
+        }
+        self.builder.ins().stack_addr(self.pointer_type, slot, 0)
+    }
+
+    /// Get the size in bytes for a struct or tuple type, or None if not compound.
+    fn compound_type_size(&self, ty: &PdcType) -> Option<u32> {
+        match ty {
+            PdcType::Struct(name) => {
+                self.structs.get(name).map(|info| (info.fields.len() * 8) as u32)
+            }
+            PdcType::Tuple(elems) => Some((elems.len() * 8) as u32),
+            _ => None,
+        }
+    }
+
     fn emit_operator_call(
         &mut self,
         op_name: &str,
         overload_idx: usize,
         args: &[cranelift_codegen::ir::Value],
+        result_type: &PdcType,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
-        let base = mangle_name(op_name);
-        let mangled = if overload_idx == 0 {
-            format!("pdc_userfn_{base}")
-        } else {
-            format!("pdc_userfn_{base}_{overload_idx}")
-        };
-        let func_id = *self.user_fn_ids.get(&mangled)
+        // Look up the FuncId from the operator dispatch table
+        let func_id = *self.op_fn_ids.get(&(op_name.to_string(), overload_idx))
             .ok_or_else(|| PdcError::Codegen {
-                message: format!("operator function '{}' not found", mangled),
+                message: format!("operator function '{}' overload {} not found", op_name, overload_idx),
             })?;
 
         let mut call_args = vec![self.ctx_ptr];
@@ -2418,7 +2626,12 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         if results.is_empty() {
             Ok(self.builder.ins().iconst(I32, 0))
         } else {
-            Ok(results[0])
+            let val = results[0];
+            if let Some(size) = self.compound_type_size(result_type) {
+                Ok(self.copy_struct_to_caller(val, size))
+            } else {
+                Ok(val)
+            }
         }
     }
 

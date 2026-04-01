@@ -61,3 +61,47 @@ pub fn midpoint(a: Point4D, b: Point4D) -> Point4D {
 pub fn lerp(a: Point4D, b: Point4D, t: f64) -> Point4D {
     return Point4D(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: a.w + (b.w - a.w) * t)
 }
+
+// ── Tests ──
+
+test "point subtraction yields vector" {
+    const v = Point4D(x: 5.0, y: 4.0, z: 3.0, w: 2.0) - Point4D(x: 1.0, y: 1.0, z: 1.0, w: 1.0)
+    assert_eq(v.x, 4.0)
+    assert_eq(v.y, 3.0)
+    assert_eq(v.z, 2.0)
+    assert_eq(v.w, 1.0)
+}
+
+test "point plus vector" {
+    const r = Point4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0) + Vector4D(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    assert_eq(r.x, 11.0)
+    assert_eq(r.w, 44.0)
+}
+
+test "equality and inequality" {
+    const a = Point4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    const b = Point4D(x: 1.0, y: 2.0, z: 3.0, w: 4.0)
+    const c = Point4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    assert_true(a == b)
+    assert_true(a != c)
+}
+
+test "distance" {
+    const d = distance(Point4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0), Point4D(x: 2.0, y: 0.0, z: 0.0, w: 0.0))
+    assert_eq(d, 2.0)
+}
+
+test "midpoint" {
+    const m = midpoint(Point4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0), Point4D(x: 10.0, y: 20.0, z: 30.0, w: 40.0))
+    assert_eq(m.x, 5.0)
+    assert_eq(m.w, 20.0)
+}
+
+test "lerp endpoints" {
+    const a = Point4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    const b = Point4D(x: 10.0, y: 20.0, z: 30.0, w: 40.0)
+    const r0 = lerp(a, b, 0.0)
+    const r1 = lerp(a, b, 1.0)
+    assert_eq(r0.x, 0.0)
+    assert_eq(r1.w, 40.0)
+}
