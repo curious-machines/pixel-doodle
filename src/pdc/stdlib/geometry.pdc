@@ -5,34 +5,74 @@
 // 4 * (sqrt(2) - 1) / 3
 const KAPPA = 0.5522847498
 
+const PI = 3.14159265358979323846
+const TAU = 6.28318530717958647692
+
+// Circle approximated by four cubic Bézier arcs.
+//   cx, cy: center position
+//   r: radius
 pub fn Circle(cx: f64, cy: f64, r: f64) -> Path {
     const k = r * KAPPA
     var p = Path()
+
     p.move_to(cx + r, cy)
     p.cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
     p.cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
     p.cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
     p.cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
     p.close()
+
     return p
 }
 
+// Ellipse approximated by four cubic Bézier arcs.
+//   cx, cy: center position
+//   rx: horizontal radius
+//   ry: vertical radius
+pub fn Ellipse(cx: f64, cy: f64, rx: f64, ry: f64) -> Path {
+    const kx = rx * KAPPA
+    const ky = ry * KAPPA
+    var p = Path()
+
+    p.move_to(cx + rx, cy)
+    p.cubic_to(cx + rx, cy - ky, cx + kx, cy - ry, cx, cy - ry)
+    p.cubic_to(cx - kx, cy - ry, cx - rx, cy - ky, cx - rx, cy)
+    p.cubic_to(cx - rx, cy + ky, cx - kx, cy + ry, cx, cy + ry)
+    p.cubic_to(cx + kx, cy + ry, cx + rx, cy + ky, cx + rx, cy)
+    p.close()
+
+    return p
+}
+
+// Axis-aligned rectangle.
+//   x, y: top-left corner
+//   w: width
+//   h: height
 pub fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     var p = Path()
+
     p.move_to(x, y)
     p.line_to(x + w, y)
     p.line_to(x + w, y + h)
     p.line_to(x, y + h)
     p.close()
+
     return p
 }
 
+// Rectangle with circular arc corners. Falls back to Rect when r is 0.
+//   x, y: top-left corner
+//   w: width
+//   h: height
+//   r: corner radius (default 0)
 pub fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64 = 0.0) -> Path {
     if r == 0.0 {
         return Rect(x, y, w, h)
     }
+
     const k = r * KAPPA
     var p = Path()
+
     p.move_to(x + r, y)
     p.line_to(x + w - r, y)
     p.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r)
@@ -43,21 +83,234 @@ pub fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64 = 0.0) -> Path {
     p.line_to(x, y + r)
     p.cubic_to(x, y + r - k, x + r - k, y, x + r, y)
     p.close()
+
     return p
 }
 
+// Open line segment between two points.
+//   x0, y0: start point
+//   x1, y1: end point
 pub fn Line(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
     var p = Path()
+
     p.move_to(x0, y0)
     p.line_to(x1, y1)
+
     return p
 }
 
-pub fn Triangle(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> Path {
+// Open path through a series of points. Requires at least 2 points.
+//   points: flat array of [x0, y0, x1, y1, ...] coordinates
+pub fn Polyline(points: [f64]) -> Path {
     var p = Path()
-    p.move_to(x0, y0)
-    p.line_to(x1, y1)
-    p.line_to(x2, y2)
+    const n = len(points)
+
+    if n < 4 {
+        return p
+    }
+
+    p.move_to(points[0], points[1])
+
+    var i = 2
+    while i < n - 1 {
+        p.line_to(points[i], points[i + 1])
+        i = i + 2
+    }
+
+    return p
+}
+
+// Closed polygon through a series of points. Requires at least 2 points.
+//   points: flat array of [x0, y0, x1, y1, ...] coordinates
+pub fn Polygon(points: [f64]) -> Path {
+    var p = Polyline(points)
+
+    if len(points) >= 4 {
+        p.close()
+    }
+
+    return p
+}
+
+// Open circular arc, approximated by cubic Bézier segments (≤90° each).
+//   cx, cy: center position
+//   r: radius
+//   start: start angle in radians
+//   end: end angle in radians
+pub fn Arc(cx: f64, cy: f64, r: f64, start: f64, end: f64) -> Path {
+    var p = Path()
+    var angle = start
+    const sweep = end - start
+    const steps = ceil(abs(sweep) / (PI / 2.0))
+    const step_angle = sweep / steps
+
+    p.move_to(cx + r * cos(start), cy + r * sin(start))
+
+    var i = 0
+    while i < steps {
+        const a0 = angle
+        const a1 = angle + step_angle
+        const alpha = 4.0 * tan((a1 - a0) / 4.0) / 3.0
+
+        const cos0 = cos(a0)
+        const sin0 = sin(a0)
+        const cos1 = cos(a1)
+        const sin1 = sin(a1)
+
+        p.cubic_to(
+            cx + r * (cos0 - alpha * sin0),
+            cy + r * (sin0 + alpha * cos0),
+            cx + r * (cos1 + alpha * sin1),
+            cy + r * (sin1 - alpha * cos1),
+            cx + r * cos1,
+            cy + r * sin1
+        )
+
+        angle = a1
+        i = i + 1
+    }
+
+    return p
+}
+
+// Closed wedge (annular sector). Traces the outer arc forward, then the inner
+// arc in reverse. When r_inner is 0, produces a pie slice through the center.
+//   cx, cy: center position
+//   r_inner: inner radius (0 for a pie slice)
+//   r_outer: outer radius
+//   start: start angle in radians
+//   end: end angle in radians
+pub fn Wedge(cx: f64, cy: f64, r_inner: f64, r_outer: f64, start: f64, end: f64) -> Path {
+    var p = Path()
+    const sweep = end - start
+    const steps = ceil(abs(sweep) / (PI / 2.0))
+    const step_angle = sweep / steps
+
+    // Outer arc, forward
+    p.move_to(cx + r_outer * cos(start), cy + r_outer * sin(start))
+
+    var angle = start
+    var i = 0
+    while i < steps {
+        const a0 = angle
+        const a1 = angle + step_angle
+        const alpha = 4.0 * tan((a1 - a0) / 4.0) / 3.0
+
+        const cos0 = cos(a0)
+        const sin0 = sin(a0)
+        const cos1 = cos(a1)
+        const sin1 = sin(a1)
+
+        p.cubic_to(
+            cx + r_outer * (cos0 - alpha * sin0),
+            cy + r_outer * (sin0 + alpha * cos0),
+            cx + r_outer * (cos1 + alpha * sin1),
+            cy + r_outer * (sin1 - alpha * cos1),
+            cx + r_outer * cos1,
+            cy + r_outer * sin1
+        )
+
+        angle = a1
+        i = i + 1
+    }
+
+    if r_inner <= 0.0 {
+        // Pie slice: close through center
+        p.line_to(cx, cy)
+    } else {
+        // Inner arc, reverse
+        p.line_to(cx + r_inner * cos(end), cy + r_inner * sin(end))
+
+        angle = end
+        i = 0
+        while i < steps {
+            const a0 = angle
+            const a1 = angle - step_angle
+            const alpha = 4.0 * tan((a1 - a0) / 4.0) / 3.0
+
+            const cos0 = cos(a0)
+            const sin0 = sin(a0)
+            const cos1 = cos(a1)
+            const sin1 = sin(a1)
+
+            p.cubic_to(
+                cx + r_inner * (cos0 - alpha * sin0),
+                cy + r_inner * (sin0 + alpha * cos0),
+                cx + r_inner * (cos1 + alpha * sin1),
+                cy + r_inner * (sin1 - alpha * cos1),
+                cx + r_inner * cos1,
+                cy + r_inner * sin1
+            )
+
+            angle = a1
+            i = i + 1
+        }
+    }
+
     p.close()
+
+    return p
+}
+
+// Regular n-sided polygon inscribed in a circle. First vertex points up.
+//   cx, cy: center position
+//   r: circumradius (center to vertex distance)
+//   n: number of sides (minimum 3)
+pub fn RegularPolygon(cx: f64, cy: f64, r: f64, n: i64) -> Path {
+    var p = Path()
+
+    if n < 3 {
+        return p
+    }
+
+    const angle_step = TAU / n
+    // Start at top (- PI/2 rotation)
+    const start_angle = -PI / 2.0
+
+    p.move_to(cx + r * cos(start_angle), cy + r * sin(start_angle))
+
+    var i = 1
+    while i < n {
+        const angle = start_angle + i * angle_step
+        p.line_to(cx + r * cos(angle), cy + r * sin(angle))
+        i = i + 1
+    }
+
+    p.close()
+
+    return p
+}
+
+// Star polygon with alternating outer and inner vertices. First point up.
+//   cx, cy: center position
+//   r_outer: tip radius (center to outer point)
+//   r_inner: valley radius (center to inner point)
+//   n: number of points (minimum 2)
+pub fn Star(cx: f64, cy: f64, r_outer: f64, r_inner: f64, n: i64) -> Path {
+    var p = Path()
+
+    if n < 2 {
+        return p
+    }
+
+    const angle_step = PI / n
+    // Start at top (- PI/2 rotation)
+    const start_angle = -PI / 2.0
+
+    p.move_to(cx + r_outer * cos(start_angle), cy + r_outer * sin(start_angle))
+
+    var i = 1
+    while i < n * 2 {
+        const angle = start_angle + i * angle_step
+        if i % 2 == 1 {
+            p.line_to(cx + r_inner * cos(angle), cy + r_inner * sin(angle))
+        } else {
+            p.line_to(cx + r_outer * cos(angle), cy + r_outer * sin(angle))
+        }
+        i = i + 1
+    }
+
+    p.close()
+
     return p
 }
