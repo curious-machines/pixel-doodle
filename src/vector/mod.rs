@@ -34,7 +34,7 @@ pub struct VectorScene {
 
 /// Kappa constant for approximating a quarter-circle with a cubic bezier.
 /// k = (4/3) * (sqrt(2) - 1) ≈ 0.5522847498
-const KAPPA: f32 = 0.5522847498;
+const KAPPA: f64 = 0.5522847498;
 
 /// Flatten a path's curves, then expand into a stroke outline.
 ///
@@ -72,8 +72,8 @@ pub fn test_scene(
     width: u32,
     height: u32,
 ) -> VectorScene {
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
+    let cx = width as f64 / 2.0;
+    let cy = height as f64 / 2.0;
     let stroke_w = 6.0;
     let stroke_style = StrokeStyle {
         width: stroke_w,
@@ -84,8 +84,8 @@ pub fn test_scene(
     let rect = rect_path(cx - 30.0, cy - 80.0, 200.0, 160.0, 0);
 
     // Path 1: orange donut fill
-    let outer_r = height as f32 * 0.35;
-    let inner_r = height as f32 * 0.18;
+    let outer_r = height as f64 * 0.35;
+    let inner_r = height as f64 * 0.18;
     let donut_outer = circle_path(cx, cy, outer_r, false, 1);
     let donut_inner = circle_path(cx, cy, inner_r, true, 1);
 
@@ -96,11 +96,11 @@ pub fn test_scene(
     let diamond_stroke = stroke_flattened(&diamond_shape, tolerance, &stroke_style, 3);
 
     // Path 4: yellow stroke on a triangle (acute ~60° angles — miter)
-    let tri = triangle_path(100.0, height as f32 - 50.0, 80.0, 4);
+    let tri = triangle_path(100.0, height as f64 - 50.0, 80.0, 4);
     let tri_stroke = stroke_flattened(&tri, tolerance, &stroke_style, 4);
 
     // Path 5: cyan stroke on a chevron (very acute ~20° angle — should trigger bevel fallback)
-    let chevron = chevron_path(250.0, height as f32 - 80.0, 5);
+    let chevron = chevron_path(250.0, height as f64 - 80.0, 5);
     let chevron_stroke = stroke_flattened(&chevron, tolerance, &stroke_style, 5);
 
     // Path 6: red stroke on the outer circle (tests many gentle-angle joins from flattened curve)
@@ -143,8 +143,8 @@ pub fn test_scene(
 }
 
 /// Create an equilateral triangle path (acute ~60° angles).
-fn triangle_path(cx: f32, cy: f32, size: f32, path_id: u32) -> Path {
-    let h = size * (3.0_f32).sqrt() / 2.0;
+fn triangle_path(cx: f64, cy: f64, size: f64, path_id: u32) -> Path {
+    let h = size * 3.0_f64.sqrt() / 2.0;
     let top = Point::new(cx, cy - h * 2.0 / 3.0);
     let bl = Point::new(cx - size / 2.0, cy + h / 3.0);
     let br = Point::new(cx + size / 2.0, cy + h / 3.0);
@@ -162,7 +162,7 @@ fn triangle_path(cx: f32, cy: f32, size: f32, path_id: u32) -> Path {
 /// Create a chevron (V shape) with a very acute angle at the bottom.
 /// Open path (not closed) — tests butt caps and an acute miter/bevel.
 /// The angle is ~14° which guarantees bevel fallback at miter_limit=4.0.
-fn chevron_path(cx: f32, cy: f32, path_id: u32) -> Path {
+fn chevron_path(cx: f64, cy: f64, path_id: u32) -> Path {
     let top_left = Point::new(cx - 10.0, cy - 60.0);
     let bottom = Point::new(cx, cy + 40.0);
     let top_right = Point::new(cx + 10.0, cy - 60.0);
@@ -177,7 +177,7 @@ fn chevron_path(cx: f32, cy: f32, path_id: u32) -> Path {
 }
 
 /// Create a rectangle path from line segments.
-fn rect_path(x: f32, y: f32, w: f32, h: f32, path_id: u32) -> Path {
+fn rect_path(x: f64, y: f64, w: f64, h: f64, path_id: u32) -> Path {
     let tl = Point::new(x, y);
     let tr = Point::new(x + w, y);
     let br = Point::new(x + w, y + h);
@@ -195,7 +195,7 @@ fn rect_path(x: f32, y: f32, w: f32, h: f32, path_id: u32) -> Path {
 }
 
 /// Create a diamond (rotated square) path from line segments.
-fn diamond_path(cx: f32, cy: f32, radius: f32, path_id: u32) -> Path {
+fn diamond_path(cx: f64, cy: f64, radius: f64, path_id: u32) -> Path {
     let top = Point::new(cx, cy - radius);
     let right = Point::new(cx + radius, cy);
     let bottom = Point::new(cx, cy + radius);
@@ -216,7 +216,7 @@ fn diamond_path(cx: f32, cy: f32, radius: f32, path_id: u32) -> Path {
 ///
 /// If `clockwise` is false, the circle winds counterclockwise (standard).
 /// If `clockwise` is true, the circle winds clockwise (for holes).
-fn circle_path(cx: f32, cy: f32, r: f32, clockwise: bool, path_id: u32) -> Path {
+fn circle_path(cx: f64, cy: f64, r: f64, clockwise: bool, path_id: u32) -> Path {
     let k = r * KAPPA;
 
     // Quarter-arc control points, counterclockwise from right (3 o'clock)
@@ -301,9 +301,9 @@ pub fn test_stress(
         .map(|i| {
             // Deterministic pseudo-random placement
             let hash = hash_u32(i);
-            let cx = (hash % width) as f32;
-            let cy = ((hash / 7) % height) as f32;
-            let r = 5.0 + (hash % 30) as f32;
+            let cx = (hash % width) as f64;
+            let cy = ((hash / 7) % height) as f64;
+            let r = 5.0 + (hash % 30) as f64;
 
             let fill_id = i * 2;
             let stroke_id = i * 2 + 1;
@@ -391,7 +391,7 @@ fn color_from_hash(hash: u32) -> u32 {
 /// path skipping.
 /// Public wrapper for bin_tiles, used by PDC integration.
 pub fn bin_tiles_pub(
-    segments: &[[f32; 4]],
+    segments: &[[f64; 4]],
     seg_path_ids: &[u32],
     path_colors: Vec<u32>,
     path_fill_rules: Vec<u32>,
@@ -403,7 +403,7 @@ pub fn bin_tiles_pub(
 }
 
 fn bin_tiles(
-    segments: &[[f32; 4]],
+    segments: &[[f64; 4]],
     seg_path_ids: &[u32],
     path_colors: Vec<u32>,
     path_fill_rules: Vec<u32>,
@@ -429,8 +429,8 @@ fn bin_tiles(
         .iter()
         .enumerate()
         .filter_map(|(seg_idx, seg)| {
-            let y0 = seg[1];
-            let y1 = seg[3];
+            let y0 = seg[1] as f32;
+            let y1 = seg[3] as f32;
             let y_min = y0.min(y1);
             let y_max = y0.max(y1);
 
@@ -439,7 +439,7 @@ fn bin_tiles(
                 return None;
             }
 
-            let x_min = seg[0].min(seg[2]);
+            let x_min = (seg[0] as f32).min(seg[2] as f32);
 
             // Skip segments entirely to the right of the screen
             if x_min >= width as f32 {
@@ -506,7 +506,7 @@ fn bin_tiles(
     }
 
     VectorScene {
-        segments: segments.to_vec(),
+        segments: segments.iter().map(|s| [s[0] as f32, s[1] as f32, s[2] as f32, s[3] as f32]).collect(),
         seg_path_ids: seg_path_ids.to_vec(),
         tile_offsets,
         tile_counts,

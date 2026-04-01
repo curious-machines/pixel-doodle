@@ -3,10 +3,10 @@ use super::flatten::{Curve, Path, Point};
 /// Stroke expansion options.
 pub struct StrokeStyle {
     /// Stroke width in pixels.
-    pub width: f32,
+    pub width: f64,
     /// Maximum miter ratio (miter_length / half_width).
     /// When exceeded, falls back to bevel join. SVG default is 4.0.
-    pub miter_limit: f32,
+    pub miter_limit: f64,
 }
 
 impl Default for StrokeStyle {
@@ -22,7 +22,7 @@ impl Default for StrokeStyle {
 ///
 /// The resulting path should be rendered with **nonzero** fill rule to handle
 /// self-intersecting outlines at acute angle bevels correctly.
-pub fn stroke_path(segments: &[[f32; 4]], style: &StrokeStyle, path_id: u32) -> Path {
+pub fn stroke_path(segments: &[[f64; 4]], style: &StrokeStyle, path_id: u32) -> Path {
     if segments.is_empty() {
         return Path {
             curves: Vec::new(),
@@ -40,7 +40,7 @@ pub fn stroke_path(segments: &[[f32; 4]], style: &StrokeStyle, path_id: u32) -> 
         && (first_start[1] - last_end[1]).abs() < 1e-4;
 
     // Compute unit normals for each segment
-    let normals: Vec<[f32; 2]> = segments.iter().map(|s| seg_normal(s)).collect();
+    let normals: Vec<[f64; 2]> = segments.iter().map(|s| seg_normal(s)).collect();
 
     if closed {
         stroke_closed(segments, &normals, style, half_w, path_id)
@@ -51,10 +51,10 @@ pub fn stroke_path(segments: &[[f32; 4]], style: &StrokeStyle, path_id: u32) -> 
 
 /// Stroke a closed path. Outputs two separate closed contours.
 fn stroke_closed(
-    segments: &[[f32; 4]],
-    normals: &[[f32; 2]],
+    segments: &[[f64; 4]],
+    normals: &[[f64; 2]],
     style: &StrokeStyle,
-    half_w: f32,
+    half_w: f64,
     path_id: u32,
 ) -> Path {
     let n = segments.len();
@@ -88,10 +88,10 @@ fn stroke_closed(
 
 /// Stroke an open path. Single closed contour with butt caps.
 fn stroke_open(
-    segments: &[[f32; 4]],
-    normals: &[[f32; 2]],
+    segments: &[[f64; 4]],
+    normals: &[[f64; 2]],
     style: &StrokeStyle,
-    half_w: f32,
+    half_w: f64,
     path_id: u32,
 ) -> Path {
     let n = segments.len();
@@ -152,9 +152,9 @@ fn stroke_open(
 /// Uses bisector of normals. Falls back to bevel when miter limit exceeded.
 fn miter_offset(
     p: Point,
-    n0: [f32; 2],
-    n1: [f32; 2],
-    half_w: f32,
+    n0: [f64; 2],
+    n1: [f64; 2],
+    half_w: f64,
     style: &StrokeStyle,
 ) -> (Vec<Point>, Vec<Point>) {
     let mx = n0[0] + n1[0];
@@ -194,9 +194,9 @@ fn miter_offset(
 /// Self-intersection on inner side is handled by nonzero fill rule.
 fn bevel_points(
     p: Point,
-    n0: [f32; 2],
-    n1: [f32; 2],
-    half_w: f32,
+    n0: [f64; 2],
+    n1: [f64; 2],
+    half_w: f64,
 ) -> (Vec<Point>, Vec<Point>) {
     (
         vec![
@@ -211,7 +211,7 @@ fn bevel_points(
 }
 
 /// Compute unit normal for a segment (points left of travel direction).
-fn seg_normal(seg: &[f32; 4]) -> [f32; 2] {
+fn seg_normal(seg: &[f64; 4]) -> [f64; 2] {
     let dx = seg[2] - seg[0];
     let dy = seg[3] - seg[1];
     let len = (dx * dx + dy * dy).sqrt();
@@ -221,3 +221,4 @@ fn seg_normal(seg: &[f32; 4]) -> [f32; 2] {
         [-dy / len, dx / len]
     }
 }
+

@@ -1,0 +1,56 @@
+// PDC Standard Library: geometry
+// Shape constructors that return Path handles.
+
+fn Circle(cx: f64, cy: f64, r: f64) -> Path {
+    const k = r * 0.5522847498
+    var p = Path()
+    p.move_to(cx + r, cy)
+    p.cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
+    p.cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
+    p.cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
+    p.cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
+    p.close()
+    return p
+}
+
+fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
+    var p = Path()
+    p.move_to(x, y)
+    p.line_to(x + w, y)
+    p.line_to(x + w, y + h)
+    p.line_to(x, y + h)
+    p.close()
+    return p
+}
+
+fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
+    const k = r * 0.5522847498
+    var p = Path()
+    p.move_to(x + r, y)
+    p.line_to(x + w - r, y)
+    p.cubic_to(x + w - r + k, y, x + w, y + r - k, x + w, y + r)
+    p.line_to(x + w, y + h - r)
+    p.cubic_to(x + w, y + h - r + k, x + w - r + k, y + h, x + w - r, y + h)
+    p.line_to(x + r, y + h)
+    p.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r)
+    p.line_to(x, y + r)
+    p.cubic_to(x, y + r - k, x + r - k, y, x + r, y)
+    p.close()
+    return p
+}
+
+fn Line(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
+    var p = Path()
+    p.move_to(x0, y0)
+    p.line_to(x1, y1)
+    return p
+}
+
+fn Triangle(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> Path {
+    var p = Path()
+    p.move_to(x0, y0)
+    p.line_to(x1, y1)
+    p.line_to(x2, y2)
+    p.close()
+    return p
+}

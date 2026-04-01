@@ -96,6 +96,7 @@ impl Parser {
                 Ok(self.ids.spanned(Stmt::Continue, start))
             }
             TokenKind::Return => self.parse_return(start),
+            TokenKind::Import => self.parse_import(start),
             TokenKind::Fn => self.parse_fn_def(start),
             _ => {
                 // Expression statement or assignment
@@ -284,6 +285,43 @@ impl Parser {
             }),
             span,
         ))
+    }
+
+    fn parse_import(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'import'
+
+        if *self.peek() == TokenKind::LBrace {
+            // import { Name1, Name2 } from module
+            self.advance(); // consume '{'
+            let mut names = Vec::new();
+            loop {
+                let (name, _) = self.expect_ident()?;
+                names.push(name);
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBrace)?;
+            self.expect(&TokenKind::From)?;
+            let (module, _) = self.expect_ident()?;
+            let end = self.tokens[self.pos - 1].span.end;
+            let span = Span::new(start.start, end);
+            Ok(self.ids.spanned(Stmt::Import { module, names }, span))
+        } else {
+            // import module
+            let (module, _) = self.expect_ident()?;
+            let end = self.tokens[self.pos - 1].span.end;
+            let span = Span::new(start.start, end);
+            Ok(self.ids.spanned(
+                Stmt::Import {
+                    module,
+                    names: Vec::new(),
+                },
+                span,
+            ))
+        }
     }
 
     fn parse_block(&mut self) -> Result<Block, PdcError> {

@@ -62,7 +62,7 @@ pub extern "C" fn pdc_path(ctx: *mut PdcContext) -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_move_to(ctx: *mut PdcContext, handle: u32, x: f32, y: f32) {
+pub extern "C" fn pdc_move_to(ctx: *mut PdcContext, handle: u32, x: f64, y: f64) {
     let scene = unsafe { &mut *(*ctx).scene };
     let path = scene.path_mut(handle);
     let pt = Point::new(x, y);
@@ -71,7 +71,7 @@ pub extern "C" fn pdc_move_to(ctx: *mut PdcContext, handle: u32, x: f32, y: f32)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_line_to(ctx: *mut PdcContext, handle: u32, x: f32, y: f32) {
+pub extern "C" fn pdc_line_to(ctx: *mut PdcContext, handle: u32, x: f64, y: f64) {
     let scene = unsafe { &mut *(*ctx).scene };
     let path = scene.path_mut(handle);
     let to = Point::new(x, y);
@@ -85,10 +85,10 @@ pub extern "C" fn pdc_line_to(ctx: *mut PdcContext, handle: u32, x: f32, y: f32)
 pub extern "C" fn pdc_quad_to(
     ctx: *mut PdcContext,
     handle: u32,
-    cx: f32,
-    cy: f32,
-    x: f32,
-    y: f32,
+    cx: f64,
+    cy: f64,
+    x: f64,
+    y: f64,
 ) {
     let scene = unsafe { &mut *(*ctx).scene };
     let path = scene.path_mut(handle);
@@ -107,12 +107,12 @@ pub extern "C" fn pdc_quad_to(
 pub extern "C" fn pdc_cubic_to(
     ctx: *mut PdcContext,
     handle: u32,
-    c1x: f32,
-    c1y: f32,
-    c2x: f32,
-    c2y: f32,
-    x: f32,
-    y: f32,
+    c1x: f64,
+    c1y: f64,
+    c2x: f64,
+    c2y: f64,
+    x: f64,
+    y: f64,
 ) {
     let scene = unsafe { &mut *(*ctx).scene };
     let path = scene.path_mut(handle);

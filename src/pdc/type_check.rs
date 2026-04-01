@@ -49,18 +49,18 @@ impl TypeChecker {
 
         for name in &["move_to", "line_to"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
-                params: vec![PdcType::PathHandle, PdcType::F32, PdcType::F32],
+                params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64],
                 ret: PdcType::Void,
                 takes_ctx: true,
             });
         }
         self.builtins.insert("quad_to".into(), BuiltinFn {
-            params: vec![PdcType::PathHandle, PdcType::F32, PdcType::F32, PdcType::F32, PdcType::F32],
+            params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("cubic_to".into(), BuiltinFn {
-            params: vec![PdcType::PathHandle, PdcType::F32, PdcType::F32, PdcType::F32, PdcType::F32, PdcType::F32, PdcType::F32],
+            params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
@@ -239,10 +239,16 @@ impl TypeChecker {
                 self.check_block(body)?;
             }
             Stmt::Break | Stmt::Continue => {}
-            Stmt::Return(_value) => {
-                // TODO: check return type matches function signature
+            Stmt::Return(value) => {
+                if let Some(expr) = value {
+                    self.check_expr(expr)?;
+                }
+            }
+            Stmt::Import { .. } => {
+                // Already resolved before type checking
             }
             Stmt::FnDef(fndef) => {
+                // Function bodies see all outer scope variables (top-level consts, builtins)
                 self.push_scope();
                 for param in &fndef.params {
                     self.define_var(&param.name, param.ty.clone());

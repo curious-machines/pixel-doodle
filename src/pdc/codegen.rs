@@ -59,13 +59,32 @@ pub fn compile(
 
     let mut jit_module = JITModule::new(jit_builder);
 
-    // First pass: compile user-defined functions
-    let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
+    // Collect top-level constants (will be emitted at the start of each function)
+    let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
     let mut fn_defs: Vec<&FnDef> = Vec::new();
+    let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
+
+    // Only collect constants whose values are pure literals or literal
+    // expressions (no variable references). These are safe to emit in any
+    // function since they don't depend on runtime state.
+    fn is_pure_literal(expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(_) => true,
+            Expr::UnaryOp { operand, .. } => is_pure_literal(&operand.node),
+            Expr::BinaryOp { left, right, .. } => {
+                is_pure_literal(&left.node) && is_pure_literal(&right.node)
+            }
+            _ => false,
+        }
+    }
 
     for stmt in &program.stmts {
-        if let Stmt::FnDef(fndef) = &stmt.node {
-            fn_defs.push(fndef);
+        match &stmt.node {
+            Stmt::FnDef(fndef) => fn_defs.push(fndef),
+            Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
+                top_level_consts.push(stmt);
+            }
+            _ => {}
         }
     }
 
@@ -119,6 +138,7 @@ pub fn compile(
             pointer_type,
             user_fn_ids: &user_fn_ids,
             user_fns,
+            block_terminated: false,
         };
 
         // Define parameters as variables
@@ -126,6 +146,11 @@ pub fn compile(
             let val = cg.builder.block_params(entry)[i + 1]; // +1 for ctx_ptr
             let var = cg.new_variable(&param.name, &param.ty);
             cg.builder.def_var(var, val);
+        }
+
+        // Emit top-level constants so they're accessible in this function
+        for const_stmt in &top_level_consts {
+            cg.emit_stmt(const_stmt)?;
         }
 
         cg.emit_block(&fndef.body)?;
@@ -191,16 +216,22 @@ pub fn compile(
             pointer_type,
             user_fn_ids: &user_fn_ids,
             user_fns,
+            block_terminated: false,
         };
 
         for stmt in &program.stmts {
-            if matches!(&stmt.node, Stmt::FnDef(_)) {
-                continue; // already compiled
+            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. }) {
+                continue;
             }
             cg.emit_stmt(stmt)?;
+            if cg.block_terminated {
+                break;
+            }
         }
 
-        cg.builder.ins().return_(&[]);
+        if !cg.block_terminated {
+            cg.builder.ins().return_(&[]);
+        }
 
         drop(cg);
         builder.finalize();
@@ -268,6 +299,8 @@ struct CodegenCtx<'a, 'b> {
     user_fn_ids: &'a HashMap<String, cranelift_module::FuncId>,
     #[allow(dead_code)]
     user_fns: &'a HashMap<String, UserFnSig>,
+    /// Set to true after a terminator instruction (return, break, continue).
+    block_terminated: bool,
 }
 
 impl<'a, 'b> CodegenCtx<'a, 'b> {
@@ -279,6 +312,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     }
 
     fn node_type(&self, id: u32) -> &PdcType {
+        if (id as usize) >= self.type_table.len() {
+            eprintln!("WARNING: node id {} out of type table (len {})", id, self.type_table.len());
+            return &PdcType::Unknown;
+        }
         &self.type_table[id as usize]
     }
 
@@ -295,7 +332,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     fn emit_block(&mut self, block: &Block) -> Result<(), PdcError> {
         for stmt in &block.stmts {
             self.emit_stmt(stmt)?;
-            if self.builder.is_unreachable() {
+            if self.block_terminated {
                 break;
             }
         }
@@ -386,9 +423,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 } else {
                     self.builder.ins().return_(&[]);
                 }
+                self.block_terminated = true;
             }
-            Stmt::FnDef(_) => {
-                // Already compiled in the first pass
+            Stmt::FnDef(_) | Stmt::Import { .. } => {
+                // Already handled
             }
         }
         Ok(())
@@ -418,8 +456,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         // Then block
         self.builder.switch_to_block(then_block);
         self.builder.seal_block(then_block);
+        self.block_terminated = false;
         self.emit_block(then_body)?;
-        if !self.builder.is_unreachable() {
+        if !self.block_terminated {
             self.builder.ins().jump(merge_block, &[]);
         }
 
@@ -434,8 +473,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let is_last = i == elsif_clauses.len() - 1;
             next_block = if is_last && else_body.is_none() {
                 merge_block
-            } else if is_last {
-                self.builder.create_block()
             } else {
                 self.builder.create_block()
             };
@@ -444,8 +481,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
             self.builder.switch_to_block(elsif_block);
             self.builder.seal_block(elsif_block);
+            self.block_terminated = false;
             self.emit_block(body)?;
-            if !self.builder.is_unreachable() {
+            if !self.block_terminated {
                 self.builder.ins().jump(merge_block, &[]);
             }
         }
@@ -454,14 +492,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         if let Some(else_b) = else_body {
             self.builder.switch_to_block(next_block);
             self.builder.seal_block(next_block);
+            self.block_terminated = false;
             self.emit_block(else_b)?;
-            if !self.builder.is_unreachable() {
+            if !self.block_terminated {
                 self.builder.ins().jump(merge_block, &[]);
             }
         }
 
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
+        self.block_terminated = false;
         Ok(())
     }
 
@@ -484,8 +524,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         // Body
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
+        self.block_terminated = false;
         self.emit_block(body)?;
-        if !self.builder.is_unreachable() {
+        if !self.block_terminated {
             self.builder.ins().jump(header_block, &[]);
         }
 
@@ -494,6 +535,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         self.builder.switch_to_block(exit_block);
         self.builder.seal_block(exit_block);
+        self.block_terminated = false;
         Ok(())
     }
 
@@ -525,8 +567,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         // Body
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
+        self.block_terminated = false;
         self.emit_block(body)?;
-        if !self.builder.is_unreachable() {
+        if !self.block_terminated {
             // Increment
             let i_val = self.builder.use_var(var);
             let one = self.builder.ins().iconst(I32, 1);
@@ -538,6 +581,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         self.builder.seal_block(header_block);
         self.builder.switch_to_block(exit_block);
         self.builder.seal_block(exit_block);
+        self.block_terminated = false;
         Ok(())
     }
 
@@ -548,8 +592,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         self.builder.ins().jump(body_block, &[]);
 
         self.builder.switch_to_block(body_block);
+        self.block_terminated = false;
         self.emit_block(body)?;
-        if !self.builder.is_unreachable() {
+        if !self.block_terminated {
             self.builder.ins().jump(body_block, &[]);
         }
 
@@ -740,22 +785,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         from: &PdcType,
         func_name: &str,
     ) -> cranelift_codegen::ir::Value {
-        // Path/draw coordinate parameters need f32
-        let needs_f32 = matches!(
-            func_name,
-            "move_to" | "line_to" | "quad_to" | "cubic_to"
-        );
-
-        // stroke's width param (f32) but NOT the color param (u32)
-        // We detect by checking if the value is a float type
+        // stroke's width param needs f32 (but NOT the color param)
         let is_stroke_float = func_name == "stroke" && from.is_float();
-
-        if (needs_f32 || is_stroke_float) && from.is_float() && *from != PdcType::F32 {
+        if is_stroke_float && *from != PdcType::F32 {
             return self.builder.ins().fdemote(F32, val);
-        }
-        if needs_f32 && from.is_int() {
-            let f64_val = self.builder.ins().fcvt_from_sint(F64, val);
-            return self.builder.ins().fdemote(F32, f64_val);
         }
 
         val

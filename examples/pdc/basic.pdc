@@ -1,31 +1,11 @@
-// PDC Phase 2 example: user-defined functions + control flow
+// PDC Phase 3 example: imports + standard library
+import { Circle, Rect, RoundedRect } from geometry
+import { lerp } from math
+
 builtin const width: f32
 builtin const height: f32
 
-// Circle constructor — returns a path handle
-fn Circle(cx: f32, cy: f32, r: f32) -> Path {
-    const k = r * 0.5522847498
-    var p = Path()
-    p.move_to(cx + r, cy)
-    p.cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
-    p.cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
-    p.cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
-    p.cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
-    return p
-}
-
-// Rectangle constructor
-fn Rect(x: f32, y: f32, w: f32, h: f32) -> Path {
-    var p = Path()
-    p.move_to(x, y)
-    p.line_to(x + w, y)
-    p.line_to(x + w, y + h)
-    p.line_to(x, y + h)
-    p.close()
-    return p
-}
-
-// Checkerboard grid of circles
+// Checkerboard grid of circles using stdlib Circle()
 const spacing = 60.0
 var col = 0
 while col < 10 {
@@ -44,7 +24,7 @@ while col < 10 {
     col = col + 1
 }
 
-// Rectangle in the center
-const r = Rect(width / 2.0 - 80.0, height / 2.0 - 60.0, 160.0, 120.0)
-fill(r, 0xCC44CC44)
-stroke(r, 3.0, 0xFFFFFFFF)
+// Rounded rectangle in the center using stdlib RoundedRect()
+const rr = RoundedRect(width / 2.0 - 100.0, height / 2.0 - 75.0, 200.0, 150.0, 20.0)
+fill(rr, 0xCC44CC44)
+stroke(rr, 3.0, 0xFFFFFFFF)

@@ -1,12 +1,12 @@
-/// A 2D point.
+/// A 2D point (f64 precision for curve evaluation).
 #[derive(Debug, Clone, Copy)]
 pub struct Point {
-    pub x: f32,
-    pub y: f32,
+    pub x: f64,
+    pub y: f64,
 }
 
 impl Point {
-    pub fn new(x: f32, y: f32) -> Self {
+    pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
     }
 
@@ -17,7 +17,7 @@ impl Point {
         }
     }
 
-    fn distance_to(self, other: Self) -> f32 {
+    fn distance_to(self, other: Self) -> f64 {
         let dx = self.x - other.x;
         let dy = self.y - other.y;
         (dx * dx + dy * dy).sqrt()
@@ -59,25 +59,25 @@ const MAX_RECURSION_DEPTH: u32 = 20;
 
 /// Flatten a set of paths into line segments, parallelized across paths.
 ///
-/// Returns `(segments, seg_path_ids)` where segments are `[x0, y0, x1, y1]`.
-/// Path ordering is preserved for correct painter's algorithm compositing.
-pub fn flatten_paths(paths: &[Path], tolerance: f32) -> (Vec<[f32; 4]>, Vec<u32>) {
+/// Returns `(segments, seg_path_ids)` where segments are `[f64; 4]` for GPU.
+/// All math is f64. Conversion to f32 happens at the GPU upload boundary.
+pub fn flatten_paths(paths: &[Path], tolerance: f32) -> (Vec<[f64; 4]>, Vec<u32>) {
     use rayon::prelude::*;
 
-    // Flatten each path in parallel, collecting per-path results
-    let per_path: Vec<(Vec<[f32; 4]>, Vec<u32>)> = paths
+    let tol = tolerance as f64;
+
+    let per_path: Vec<(Vec<[f64; 4]>, Vec<u32>)> = paths
         .par_iter()
         .map(|path| {
             let mut segments = Vec::new();
             let mut seg_path_ids = Vec::new();
             for curve in &path.curves {
-                flatten_curve(curve, tolerance, path.path_id, &mut segments, &mut seg_path_ids);
+                flatten_curve(curve, tol, path.path_id, &mut segments, &mut seg_path_ids);
             }
             (segments, seg_path_ids)
         })
         .collect();
 
-    // Concatenate in order
     let total_segs: usize = per_path.iter().map(|(s, _)| s.len()).sum();
     let mut segments = Vec::with_capacity(total_segs);
     let mut seg_path_ids = Vec::with_capacity(total_segs);
@@ -89,17 +89,28 @@ pub fn flatten_paths(paths: &[Path], tolerance: f32) -> (Vec<[f32; 4]>, Vec<u32>
     (segments, seg_path_ids)
 }
 
+/// Emit a line segment, converting f64 points to f32 for GPU output.
+fn emit_segment(
+    a: Point,
+    b: Point,
+    path_id: u32,
+    segments: &mut Vec<[f64; 4]>,
+    seg_path_ids: &mut Vec<u32>,
+) {
+    segments.push([a.x, a.y, b.x, b.y]);
+    seg_path_ids.push(path_id);
+}
+
 fn flatten_curve(
     curve: &Curve,
-    tolerance: f32,
+    tolerance: f64,
     path_id: u32,
-    segments: &mut Vec<[f32; 4]>,
+    segments: &mut Vec<[f64; 4]>,
     seg_path_ids: &mut Vec<u32>,
 ) {
     match curve {
         Curve::Line(a, b) => {
-            segments.push([a.x, a.y, b.x, b.y]);
-            seg_path_ids.push(path_id);
+            emit_segment(*a, *b, path_id, segments, seg_path_ids);
         }
         Curve::Quad(q) => {
             flatten_quad(q, tolerance, path_id, segments, seg_path_ids, 0);
@@ -110,15 +121,11 @@ fn flatten_curve(
     }
 }
 
-/// Adaptive flattening of a quadratic bezier.
-///
-/// The maximum deviation of a quadratic bezier from its chord is
-/// `0.25 * distance(p1, midpoint(p0, p2))`.
 fn flatten_quad(
     q: &QuadBezier,
-    tolerance: f32,
+    tolerance: f64,
     path_id: u32,
-    segments: &mut Vec<[f32; 4]>,
+    segments: &mut Vec<[f64; 4]>,
     seg_path_ids: &mut Vec<u32>,
     depth: u32,
 ) {
@@ -126,12 +133,10 @@ fn flatten_quad(
     let deviation = q.p1.distance_to(mid_chord) * 0.25;
 
     if deviation <= tolerance || depth >= MAX_RECURSION_DEPTH {
-        segments.push([q.p0.x, q.p0.y, q.p2.x, q.p2.y]);
-        seg_path_ids.push(path_id);
+        emit_segment(q.p0, q.p2, path_id, segments, seg_path_ids);
         return;
     }
 
-    // De Casteljau split at t=0.5
     let m01 = q.p0.midpoint(q.p1);
     let m12 = q.p1.midpoint(q.p2);
     let mid = m01.midpoint(m12);
@@ -143,28 +148,21 @@ fn flatten_quad(
     flatten_quad(&right, tolerance, path_id, segments, seg_path_ids, depth + 1);
 }
 
-/// Adaptive flattening of a cubic bezier.
-///
-/// Uses the maximum distance of control points from the chord as the
-/// deviation metric. Specifically: max(distance(p1, chord), distance(p2, chord))
-/// where chord is the line from p0 to p3.
 fn flatten_cubic(
     c: &CubicBezier,
-    tolerance: f32,
+    tolerance: f64,
     path_id: u32,
-    segments: &mut Vec<[f32; 4]>,
+    segments: &mut Vec<[f64; 4]>,
     seg_path_ids: &mut Vec<u32>,
     depth: u32,
 ) {
     let deviation = cubic_deviation(c);
 
     if deviation <= tolerance || depth >= MAX_RECURSION_DEPTH {
-        segments.push([c.p0.x, c.p0.y, c.p3.x, c.p3.y]);
-        seg_path_ids.push(path_id);
+        emit_segment(c.p0, c.p3, path_id, segments, seg_path_ids);
         return;
     }
 
-    // De Casteljau split at t=0.5
     let m01 = c.p0.midpoint(c.p1);
     let m12 = c.p1.midpoint(c.p2);
     let m23 = c.p2.midpoint(c.p3);
@@ -179,21 +177,18 @@ fn flatten_cubic(
     flatten_cubic(&right, tolerance, path_id, segments, seg_path_ids, depth + 1);
 }
 
-/// Maximum distance of the control points from the chord line (p0→p3).
-fn cubic_deviation(c: &CubicBezier) -> f32 {
+fn cubic_deviation(c: &CubicBezier) -> f64 {
     let d1 = point_to_line_distance(c.p1, c.p0, c.p3);
     let d2 = point_to_line_distance(c.p2, c.p0, c.p3);
     d1.max(d2)
 }
 
-/// Distance from point `p` to the line through `a` and `b`.
-fn point_to_line_distance(p: Point, a: Point, b: Point) -> f32 {
+fn point_to_line_distance(p: Point, a: Point, b: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
     let len_sq = dx * dx + dy * dy;
 
-    if len_sq < 1e-10 {
-        // Degenerate: a and b are the same point
+    if len_sq < 1e-20 {
         return p.distance_to(a);
     }
 

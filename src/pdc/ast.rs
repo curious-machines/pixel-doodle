@@ -151,6 +151,13 @@ pub enum Stmt {
     Return(Option<Spanned<Expr>>),
     /// `fn name(params) [-> type] { body }`
     FnDef(FnDef),
+    /// `import module_name` or `import { names } from module_name`
+    Import {
+        module: String,
+        /// If empty, import the whole module (namespaced access).
+        /// If non-empty, import specific names (direct access).
+        names: Vec<String>,
+    },
 }
 
 /// A block of statements.
