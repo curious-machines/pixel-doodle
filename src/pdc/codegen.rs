@@ -862,7 +862,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         // Element types for the operation
         let l_elem_ty = match lt { PdcType::Array(et) => *et.clone(), _ => lt.clone() };
         let r_elem_ty = match rt { PdcType::Array(et) => *et.clone(), _ => rt.clone() };
-        let op_result_ty = if result_elem_ty == PdcType::Bool {
+        let op_result_ty = if result_elem_ty == PdcType::Bool && !matches!(op, BinOp::And | BinOp::Or) {
             // For comparison broadcasting, the scalar op result is Bool but we need
             // the numeric type for the operation
             if l_elem_ty.is_float() || r_elem_ty.is_float() { PdcType::F64 } else { PdcType::I32 }
@@ -2059,6 +2059,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         let lval = self.convert_value(lval, lt, result_ty);
         let rval = self.convert_value(rval, rt, result_ty);
+
+        // Logical operators — bool operands, bool result
+        if matches!(op, BinOp::And | BinOp::Or) {
+            return Ok(match op {
+                BinOp::And => self.builder.ins().band(lval, rval),
+                BinOp::Or => self.builder.ins().bor(lval, rval),
+                _ => unreachable!(),
+            });
+        }
 
         if result_ty == &PdcType::Bool {
             let cmp_type = if lt.is_float() || rt.is_float() {

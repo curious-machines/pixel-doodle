@@ -1474,6 +1474,21 @@ impl TypeChecker {
             }
         }
 
+        // Logical operators: support array<bool> element-wise
+        if matches!(op, BinOp::And | BinOp::Or) {
+            match (left, right) {
+                (PdcType::Array(elem_l), PdcType::Array(elem_r)) => {
+                    self.check_binary_op(op, elem_l, elem_r, span)?;
+                    return Ok(PdcType::Array(Box::new(PdcType::Bool)));
+                }
+                (PdcType::Array(elem), PdcType::Bool) | (PdcType::Bool, PdcType::Array(elem)) => {
+                    self.check_binary_op(op, elem, &PdcType::Bool, span)?;
+                    return Ok(PdcType::Array(Box::new(PdcType::Bool)));
+                }
+                _ => {} // fall through to scalar check
+            }
+        }
+
         // String operations
         if *left == PdcType::Str || *right == PdcType::Str {
             match op {

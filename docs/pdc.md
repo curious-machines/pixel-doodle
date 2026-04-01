@@ -862,7 +862,7 @@ The underlying byte buffer is contiguous and suitable for GPU buffer upload.
 
 ### Array Broadcasting
 
-Arithmetic, comparison, and bitwise operators work element-wise when applied to arrays:
+Arithmetic, comparison, bitwise, and logical operators work element-wise when applied to arrays:
 
 ```
 var a = Array<f64>()
@@ -887,7 +887,7 @@ const sum = a + b               // [11.0, 22.0, 33.0]
 const greater = a > b           // Array<bool>: [false, false, false]
 ```
 
-All arithmetic (`+`, `-`, `*`, `/`, `%`, `**`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), and bitwise (`&`, `|`, `^`, `<<`, `>>`) operators support broadcasting. Comparison broadcasting produces `Array<bool>`.
+All arithmetic (`+`, `-`, `*`, `/`, `%`, `**`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), bitwise (`&`, `|`, `^`, `<<`, `>>`), and logical (`&&`, `||`) operators support broadcasting. Comparison and logical broadcasting produce `Array<bool>`.
 
 ## Tuples {#tuples-1}
 
