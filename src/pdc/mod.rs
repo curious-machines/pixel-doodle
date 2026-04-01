@@ -38,7 +38,7 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let compiled = codegen::compile(&program, &checker.types, &builtins_layout)?;
+    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns)?;
 
     // 5. Execute
     let builtins = [width as f64, height as f64];

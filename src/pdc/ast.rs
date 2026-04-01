@@ -101,13 +101,11 @@ pub enum Expr {
     },
 }
 
+/// A statement within a block or at top level.
 #[derive(Debug, Clone)]
-pub enum Item {
+pub enum Stmt {
     /// `builtin const name: type`
-    BuiltinDecl {
-        name: String,
-        ty: PdcType,
-    },
+    BuiltinDecl { name: String, ty: PdcType },
     /// `const name [: type] = expr`
     ConstDecl {
         name: String,
@@ -120,17 +118,65 @@ pub enum Item {
         ty: Option<PdcType>,
         value: Spanned<Expr>,
     },
-    /// Assignment: `name = expr` or `name.method(args)` (expression statement)
-    Assign {
-        name: String,
-        value: Spanned<Expr>,
-    },
+    /// `name = expr`
+    Assign { name: String, value: Spanned<Expr> },
     /// Expression statement (function call, method call)
     ExprStmt(Spanned<Expr>),
+    /// `if cond { body } [elsif cond { body }]* [else { body }]`
+    If {
+        condition: Spanned<Expr>,
+        then_body: Block,
+        elsif_clauses: Vec<(Spanned<Expr>, Block)>,
+        else_body: Option<Block>,
+    },
+    /// `while cond { body }`
+    While {
+        condition: Spanned<Expr>,
+        body: Block,
+    },
+    /// `for name in start..end { body }` (exclusive range)
+    For {
+        var_name: String,
+        start: Spanned<Expr>,
+        end: Spanned<Expr>,
+        body: Block,
+    },
+    /// `loop { body }` — infinite loop, exit with break
+    Loop { body: Block },
+    /// `break`
+    Break,
+    /// `continue`
+    Continue,
+    /// `return [expr]`
+    Return(Option<Spanned<Expr>>),
+    /// `fn name(params) [-> type] { body }`
+    FnDef(FnDef),
 }
 
-/// A complete PDC program.
+/// A block of statements.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub stmts: Vec<Spanned<Stmt>>,
+}
+
+/// Function parameter.
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub ty: PdcType,
+}
+
+/// Function definition.
+#[derive(Debug, Clone)]
+pub struct FnDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: PdcType,
+    pub body: Block,
+}
+
+/// A complete PDC program (list of top-level statements).
 #[derive(Debug)]
 pub struct Program {
-    pub items: Vec<Spanned<Item>>,
+    pub stmts: Vec<Spanned<Stmt>>,
 }

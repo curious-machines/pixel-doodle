@@ -13,6 +13,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
+use super::type_check::UserFnSig;
 
 /// Compiled PDC function type.
 pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
@@ -20,10 +21,9 @@ pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
 /// JIT-compiled PDC program.
 pub struct CompiledProgram {
     pub fn_ptr: PdcSceneFn,
-    _module: JITModule, // kept alive so fn_ptr remains valid
+    _module: JITModule,
 }
 
-/// Builtin variable info: offset into builtins array and type.
 pub struct BuiltinInfo {
     pub offset: usize,
     pub ty: PdcType,
@@ -33,8 +33,8 @@ pub fn compile(
     program: &Program,
     types: &[PdcType],
     builtins_layout: &[(&str, PdcType)],
+    user_fns: &HashMap<String, UserFnSig>,
 ) -> Result<CompiledProgram, PdcError> {
-    // Set up Cranelift JIT
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_codegen::isa::lookup_by_name(
@@ -53,47 +53,60 @@ pub fn compile(
     let pointer_type = isa.pointer_type();
 
     let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-
-    // Register runtime symbols
     for (name, ptr) in runtime::runtime_symbols() {
         jit_builder.symbol(name, ptr);
     }
 
     let mut jit_module = JITModule::new(jit_builder);
 
-    // Build function signature: extern "C" fn(*mut PdcContext)
-    let mut sig = jit_module.make_signature();
-    sig.params.push(AbiParam::new(pointer_type));
-    sig.call_conv = call_conv;
+    // First pass: compile user-defined functions
+    let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
+    let mut fn_defs: Vec<&FnDef> = Vec::new();
 
-    let func_id = jit_module
-        .declare_function("pdc_main", Linkage::Local, &sig)
-        .map_err(|e| PdcError::Codegen {
-            message: format!("declare function: {e}"),
-        })?;
-
-    let mut ctx = jit_module.make_context();
-    ctx.func.signature = sig;
-    ctx.func.name = UserFuncName::user(0, 0);
-
-    let mut fb_ctx = FunctionBuilderContext::new();
-    {
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
-        let entry_block = builder.create_block();
-        builder.append_block_params_for_function_params(entry_block);
-        builder.switch_to_block(entry_block);
-        builder.seal_block(entry_block);
-
-        let ctx_ptr = builder.block_params(entry_block)[0];
-
-        // Build builtin variable info
-        let mut builtin_map: HashMap<String, BuiltinInfo> = HashMap::new();
-        for (i, (name, ty)) in builtins_layout.iter().enumerate() {
-            builtin_map.insert(name.to_string(), BuiltinInfo {
-                offset: i,
-                ty: ty.clone(),
-            });
+    for stmt in &program.stmts {
+        if let Stmt::FnDef(fndef) = &stmt.node {
+            fn_defs.push(fndef);
         }
+    }
+
+    for fndef in &fn_defs {
+        let mut sig = jit_module.make_signature();
+        sig.call_conv = call_conv;
+        // First param: ctx pointer
+        sig.params.push(AbiParam::new(pointer_type));
+        // User params
+        for param in &fndef.params {
+            sig.params.push(AbiParam::new(pdc_type_to_cl(&param.ty, pointer_type)));
+        }
+        if fndef.return_type != PdcType::Void {
+            sig.returns.push(AbiParam::new(pdc_type_to_cl(&fndef.return_type, pointer_type)));
+        }
+
+        let func_id = jit_module
+            .declare_function(&format!("pdc_userfn_{}", fndef.name), Linkage::Local, &sig)
+            .map_err(|e| PdcError::Codegen {
+                message: format!("declare user fn: {e}"),
+            })?;
+        user_fn_ids.insert(fndef.name.clone(), func_id);
+    }
+
+    // Compile each user function
+    for fndef in &fn_defs {
+        let func_id = user_fn_ids[&fndef.name];
+        let mut ctx = jit_module.make_context();
+        let sig = jit_module.declarations().get_function_decl(func_id).signature.clone();
+        ctx.func.signature = sig;
+        ctx.func.name = UserFuncName::user(0, func_id.as_u32());
+
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let ctx_ptr = builder.block_params(entry)[0];
+        let builtin_map = build_builtin_map(builtins_layout);
 
         let mut cg = CodegenCtx {
             builder: &mut builder,
@@ -104,34 +117,143 @@ pub fn compile(
             type_table: types,
             call_conv,
             pointer_type,
+            user_fn_ids: &user_fn_ids,
+            user_fns,
         };
 
-        for item in &program.items {
-            cg.emit_item(item)?;
+        // Define parameters as variables
+        for (i, param) in fndef.params.iter().enumerate() {
+            let val = cg.builder.block_params(entry)[i + 1]; // +1 for ctx_ptr
+            let var = cg.new_variable(&param.name, &param.ty);
+            cg.builder.def_var(var, val);
+        }
+
+        cg.emit_block(&fndef.body)?;
+
+        // Add implicit return if the body didn't end with a return statement
+        let body_returns = fndef.body.stmts.last().is_some_and(|s| matches!(s.node, Stmt::Return(_)));
+        if !body_returns {
+            if fndef.return_type == PdcType::Void {
+                cg.builder.ins().return_(&[]);
+            } else {
+                let zero = cg.default_value(&fndef.return_type);
+                cg.builder.ins().return_(&[zero]);
+            }
+        }
+
+        drop(cg);
+        builder.finalize();
+
+        jit_module
+            .define_function(func_id, &mut ctx)
+            .map_err(|e| {
+                eprintln!("--- Cranelift IR for '{}' ---\n{}", fndef.name, ctx.func.display());
+                PdcError::Codegen {
+                    message: format!("define user fn '{}': {e}", fndef.name),
+                }
+            })?;
+    }
+
+    // Compile main function (top-level statements, excluding fn defs)
+    let mut main_sig = jit_module.make_signature();
+    main_sig.params.push(AbiParam::new(pointer_type));
+    main_sig.call_conv = call_conv;
+
+    let main_id = jit_module
+        .declare_function("pdc_main", Linkage::Local, &main_sig)
+        .map_err(|e| PdcError::Codegen {
+            message: format!("declare main: {e}"),
+        })?;
+
+    let mut main_ctx = jit_module.make_context();
+    main_ctx.func.signature = main_sig;
+    main_ctx.func.name = UserFuncName::user(0, main_id.as_u32());
+
+    let mut fb_ctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut main_ctx.func, &mut fb_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let ctx_ptr = builder.block_params(entry)[0];
+        let builtin_map = build_builtin_map(builtins_layout);
+
+        let mut cg = CodegenCtx {
+            builder: &mut builder,
+            module: &mut jit_module,
+            ctx_ptr,
+            variables: HashMap::new(),
+            builtin_map,
+            type_table: types,
+            call_conv,
+            pointer_type,
+            user_fn_ids: &user_fn_ids,
+            user_fns,
+        };
+
+        for stmt in &program.stmts {
+            if matches!(&stmt.node, Stmt::FnDef(_)) {
+                continue; // already compiled
+            }
+            cg.emit_stmt(stmt)?;
         }
 
         cg.builder.ins().return_(&[]);
+
         drop(cg);
         builder.finalize();
     }
 
     jit_module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| PdcError::Codegen {
-            message: format!("define function: {e}"),
+        .define_function(main_id, &mut main_ctx)
+        .map_err(|e| {
+            eprintln!("--- Cranelift IR for main ---\n{}", main_ctx.func.display());
+            PdcError::Codegen {
+                message: format!("define main: {e}"),
+            }
         })?;
 
     jit_module.finalize_definitions().map_err(|e| PdcError::Codegen {
         message: format!("finalize: {e}"),
     })?;
 
-    let code_ptr = jit_module.get_finalized_function(func_id);
+    let code_ptr = jit_module.get_finalized_function(main_id);
     let fn_ptr: PdcSceneFn = unsafe { std::mem::transmute(code_ptr) };
 
     Ok(CompiledProgram {
         fn_ptr,
         _module: jit_module,
     })
+}
+
+fn build_builtin_map(layout: &[(&str, PdcType)]) -> HashMap<String, BuiltinInfo> {
+    layout
+        .iter()
+        .enumerate()
+        .map(|(i, (name, ty))| {
+            (
+                name.to_string(),
+                BuiltinInfo {
+                    offset: i,
+                    ty: ty.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::Type {
+    match ty {
+        PdcType::F32 => F32,
+        PdcType::F64 => F64,
+        PdcType::I32 | PdcType::U32 => I32,
+        PdcType::Bool => I8,
+        PdcType::PathHandle => I32,
+        PdcType::Void => I32,
+        PdcType::Unknown => pointer_type,
+    }
 }
 
 struct CodegenCtx<'a, 'b> {
@@ -143,23 +265,14 @@ struct CodegenCtx<'a, 'b> {
     type_table: &'a [PdcType],
     call_conv: CallConv,
     pointer_type: cranelift_codegen::ir::Type,
+    user_fn_ids: &'a HashMap<String, cranelift_module::FuncId>,
+    #[allow(dead_code)]
+    user_fns: &'a HashMap<String, UserFnSig>,
 }
 
 impl<'a, 'b> CodegenCtx<'a, 'b> {
-    fn pdc_type_to_cl(&self, ty: &PdcType) -> cranelift_codegen::ir::Type {
-        match ty {
-            PdcType::F32 => F32,
-            PdcType::F64 => F64,
-            PdcType::I32 | PdcType::U32 => I32,
-            PdcType::Bool => I8,
-            PdcType::PathHandle => I32,
-            PdcType::Void => I32, // shouldn't be used as a value
-            PdcType::Unknown => I64,
-        }
-    }
-
     fn new_variable(&mut self, name: &str, ty: &PdcType) -> Variable {
-        let cl_type = self.pdc_type_to_cl(ty);
+        let cl_type = pdc_type_to_cl(ty, self.pointer_type);
         let var = self.builder.declare_var(cl_type);
         self.variables.insert(name.to_string(), (var, ty.clone()));
         var
@@ -169,49 +282,60 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         &self.type_table[id as usize]
     }
 
-    fn emit_item(&mut self, item: &Spanned<Item>) -> Result<(), PdcError> {
-        match &item.node {
-            Item::BuiltinDecl { name, ty } => {
-                // Load builtin value from context
+    fn default_value(&mut self, ty: &PdcType) -> cranelift_codegen::ir::Value {
+        match ty {
+            PdcType::F32 => self.builder.ins().f32const(0.0),
+            PdcType::F64 => self.builder.ins().f64const(0.0),
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => self.builder.ins().iconst(I32, 0),
+            PdcType::Bool => self.builder.ins().iconst(I8, 0),
+            _ => self.builder.ins().iconst(I32, 0),
+        }
+    }
+
+    fn emit_block(&mut self, block: &Block) -> Result<(), PdcError> {
+        for stmt in &block.stmts {
+            self.emit_stmt(stmt)?;
+            if self.builder.is_unreachable() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
+        match &stmt.node {
+            Stmt::BuiltinDecl { name, ty } => {
                 let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
                     message: format!("builtin '{name}' not found in layout"),
                 })?;
                 let offset = info.offset;
                 let declared_ty = ty.clone();
 
-                // Load builtins pointer from PdcContext (first field)
                 let builtins_ptr = self.builder.ins().load(
                     self.pointer_type,
                     MemFlags::trusted(),
                     self.ctx_ptr,
-                    0, // builtins is first field
+                    0,
                 );
-
-                // Load f64 value at offset
                 let f64_val = self.builder.ins().load(
                     F64,
                     MemFlags::trusted(),
                     builtins_ptr,
                     (offset * 8) as i32,
                 );
-
-                // Convert to declared type
                 let val = self.convert_value(f64_val, &PdcType::F64, &declared_ty);
-
                 let var = self.new_variable(name, &declared_ty);
                 self.builder.def_var(var, val);
-                Ok(())
             }
-            Item::ConstDecl { name, ty, value } | Item::VarDecl { name, ty, value } => {
+            Stmt::ConstDecl { name, ty, value } | Stmt::VarDecl { name, ty, value } => {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
                 let converted = self.convert_value(val, &expr_ty, &final_ty);
                 let var = self.new_variable(name, &final_ty);
                 self.builder.def_var(var, converted);
-                Ok(())
             }
-            Item::Assign { name, value } => {
+            Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
                 let (var, var_ty) = self.variables.get(name).cloned().ok_or_else(|| {
                     PdcError::Codegen {
@@ -221,13 +345,217 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let expr_ty = self.node_type(value.id).clone();
                 let converted = self.convert_value(val, &expr_ty, &var_ty);
                 self.builder.def_var(var, converted);
-                Ok(())
             }
-            Item::ExprStmt(expr) => {
+            Stmt::ExprStmt(expr) => {
                 self.emit_expr(expr)?;
-                Ok(())
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                elsif_clauses,
+                else_body,
+            } => {
+                self.emit_if(condition, then_body, elsif_clauses, else_body)?;
+            }
+            Stmt::While { condition, body } => {
+                self.emit_while(condition, body)?;
+            }
+            Stmt::For {
+                var_name,
+                start,
+                end,
+                body,
+            } => {
+                self.emit_for(var_name, start, end, body)?;
+            }
+            Stmt::Loop { body } => {
+                self.emit_loop(body)?;
+            }
+            Stmt::Break => {
+                // Jump to the loop exit block (stored in a side channel — simplified: use trap for now)
+                // TODO: proper break/continue with block tracking
+                self.builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            }
+            Stmt::Continue => {
+                self.builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            }
+            Stmt::Return(value) => {
+                if let Some(expr) = value {
+                    let val = self.emit_expr(expr)?;
+                    self.builder.ins().return_(&[val]);
+                } else {
+                    self.builder.ins().return_(&[]);
+                }
+            }
+            Stmt::FnDef(_) => {
+                // Already compiled in the first pass
             }
         }
+        Ok(())
+    }
+
+    fn emit_if(
+        &mut self,
+        condition: &Spanned<Expr>,
+        then_body: &Block,
+        elsif_clauses: &[(Spanned<Expr>, Block)],
+        else_body: &Option<Block>,
+    ) -> Result<(), PdcError> {
+        let cond_val = self.emit_expr(condition)?;
+
+        let then_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        // Build chain: if → elsif → elsif → else → merge
+        let mut next_block = if !elsif_clauses.is_empty() || else_body.is_some() {
+            self.builder.create_block()
+        } else {
+            merge_block
+        };
+
+        self.builder.ins().brif(cond_val, then_block, &[], next_block, &[]);
+
+        // Then block
+        self.builder.switch_to_block(then_block);
+        self.builder.seal_block(then_block);
+        self.emit_block(then_body)?;
+        if !self.builder.is_unreachable() {
+            self.builder.ins().jump(merge_block, &[]);
+        }
+
+        // Elsif clauses
+        for (i, (cond, body)) in elsif_clauses.iter().enumerate() {
+            self.builder.switch_to_block(next_block);
+            self.builder.seal_block(next_block);
+
+            let cond_val = self.emit_expr(cond)?;
+            let elsif_block = self.builder.create_block();
+
+            let is_last = i == elsif_clauses.len() - 1;
+            next_block = if is_last && else_body.is_none() {
+                merge_block
+            } else if is_last {
+                self.builder.create_block()
+            } else {
+                self.builder.create_block()
+            };
+
+            self.builder.ins().brif(cond_val, elsif_block, &[], next_block, &[]);
+
+            self.builder.switch_to_block(elsif_block);
+            self.builder.seal_block(elsif_block);
+            self.emit_block(body)?;
+            if !self.builder.is_unreachable() {
+                self.builder.ins().jump(merge_block, &[]);
+            }
+        }
+
+        // Else block
+        if let Some(else_b) = else_body {
+            self.builder.switch_to_block(next_block);
+            self.builder.seal_block(next_block);
+            self.emit_block(else_b)?;
+            if !self.builder.is_unreachable() {
+                self.builder.ins().jump(merge_block, &[]);
+            }
+        }
+
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
+        Ok(())
+    }
+
+    fn emit_while(
+        &mut self,
+        condition: &Spanned<Expr>,
+        body: &Block,
+    ) -> Result<(), PdcError> {
+        let header_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.ins().jump(header_block, &[]);
+
+        // Header: evaluate condition
+        self.builder.switch_to_block(header_block);
+        let cond_val = self.emit_expr(condition)?;
+        self.builder.ins().brif(cond_val, body_block, &[], exit_block, &[]);
+
+        // Body
+        self.builder.switch_to_block(body_block);
+        self.builder.seal_block(body_block);
+        self.emit_block(body)?;
+        if !self.builder.is_unreachable() {
+            self.builder.ins().jump(header_block, &[]);
+        }
+
+        // Seal header after body (back-edge)
+        self.builder.seal_block(header_block);
+
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+        Ok(())
+    }
+
+    fn emit_for(
+        &mut self,
+        var_name: &str,
+        start: &Spanned<Expr>,
+        end: &Spanned<Expr>,
+        body: &Block,
+    ) -> Result<(), PdcError> {
+        let start_val = self.emit_expr(start)?;
+        let end_val = self.emit_expr(end)?;
+
+        let var = self.new_variable(var_name, &PdcType::I32);
+        self.builder.def_var(var, start_val);
+
+        let header_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.ins().jump(header_block, &[]);
+
+        // Header: check i < end
+        self.builder.switch_to_block(header_block);
+        let i_val = self.builder.use_var(var);
+        let cond = self.builder.ins().icmp(IntCC::SignedLessThan, i_val, end_val);
+        self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
+
+        // Body
+        self.builder.switch_to_block(body_block);
+        self.builder.seal_block(body_block);
+        self.emit_block(body)?;
+        if !self.builder.is_unreachable() {
+            // Increment
+            let i_val = self.builder.use_var(var);
+            let one = self.builder.ins().iconst(I32, 1);
+            let next = self.builder.ins().iadd(i_val, one);
+            self.builder.def_var(var, next);
+            self.builder.ins().jump(header_block, &[]);
+        }
+
+        self.builder.seal_block(header_block);
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+        Ok(())
+    }
+
+    fn emit_loop(&mut self, body: &Block) -> Result<(), PdcError> {
+        let body_block = self.builder.create_block();
+        let _exit_block = self.builder.create_block();
+
+        self.builder.ins().jump(body_block, &[]);
+
+        self.builder.switch_to_block(body_block);
+        self.emit_block(body)?;
+        if !self.builder.is_unreachable() {
+            self.builder.ins().jump(body_block, &[]);
+        }
+
+        self.builder.seal_block(body_block);
+        // exit_block would be used by break — deferred
+        Ok(())
     }
 
     fn emit_expr(
@@ -276,7 +604,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 method,
                 args,
             } => {
-                // UFCS: prepend object to args
                 let mut all_args = vec![object.as_ref().clone()];
                 all_args.extend(args.iter().cloned());
                 self.emit_call(method, &all_args, expr.id)
@@ -313,7 +640,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         args: &[Spanned<Expr>],
         _call_id: u32,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
-        // Check for type cast
+        // Type cast
         let cast_ty = match name {
             "f32" => Some(PdcType::F32),
             "f64" => Some(PdcType::F64),
@@ -321,26 +648,44 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "u32" => Some(PdcType::U32),
             _ => None,
         };
-
         if let Some(target) = cast_ty {
             let val = self.emit_expr(&args[0])?;
             let from_ty = self.node_type(args[0].id).clone();
             return Ok(self.convert_value(val, &from_ty, &target));
         }
 
-        // Runtime function call — map PDC name to runtime symbol name
+        // User-defined function
+        if let Some(&func_id) = self.user_fn_ids.get(name) {
+            let sig = self.user_fns.get(name).unwrap().clone();
+            let mut arg_vals = vec![self.ctx_ptr];
+            for (i, arg) in args.iter().enumerate() {
+                let val = self.emit_expr(arg)?;
+                let from_ty = self.node_type(arg.id).clone();
+                let to_ty = &sig.params[i];
+                let converted = self.convert_value(val, &from_ty, to_ty);
+                arg_vals.push(converted);
+            }
+
+            let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
+            let call = self.builder.ins().call(func_ref, &arg_vals);
+            let results = self.builder.inst_results(call);
+            if results.is_empty() {
+                return Ok(self.builder.ins().iconst(I32, 0));
+            }
+            return Ok(results[0]);
+        }
+
+        // Runtime function call
         let runtime_name = match name {
             "Path" => "pdc_path".to_string(),
             other => format!("pdc_{}", other),
         };
 
-        // Determine if function takes ctx as first arg
         let takes_ctx = matches!(
             name,
             "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
         );
 
-        // Emit argument values
         let mut arg_vals = Vec::new();
         if takes_ctx {
             arg_vals.push(self.ctx_ptr);
@@ -348,12 +693,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         for arg in args {
             let val = self.emit_expr(arg)?;
             let arg_ty = self.node_type(arg.id).clone();
-            // Convert to the expected parameter type
-            let converted = self.convert_for_call(val, &arg_ty, name, args.len(), arg_vals.len() - if takes_ctx { 1 } else { 0 });
+            let converted = self.convert_for_call(val, &arg_ty, name);
             arg_vals.push(converted);
         }
 
-        // Build call signature
         let mut sig = self.module.make_signature();
         sig.call_conv = self.call_conv;
         for val in &arg_vals {
@@ -361,7 +704,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             sig.params.push(AbiParam::new(ty));
         }
 
-        // Determine return type
         let ret_type = self.call_return_type(name);
         if let Some(rt) = ret_type {
             sig.returns.push(AbiParam::new(rt));
@@ -380,7 +722,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         if ret_type.is_some() {
             Ok(self.builder.inst_results(call)[0])
         } else {
-            // Void function — return a dummy value
             Ok(self.builder.ins().iconst(I32, 0))
         }
     }
@@ -389,7 +730,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match name {
             "Path" => Some(I32),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke" => None,
-            // Math functions return f64
             _ => Some(F64),
         }
     }
@@ -399,16 +739,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         val: cranelift_codegen::ir::Value,
         from: &PdcType,
         func_name: &str,
-        _num_args: usize,
-        _arg_idx: usize,
     ) -> cranelift_codegen::ir::Value {
-        // Path/draw functions expect f32 for coordinates, u32 for handles/colors
+        // Path/draw coordinate parameters need f32
         let needs_f32 = matches!(
             func_name,
-            "move_to" | "line_to" | "quad_to" | "cubic_to" | "stroke"
+            "move_to" | "line_to" | "quad_to" | "cubic_to"
         );
 
-        if needs_f32 && from.is_float() && *from != PdcType::F32 {
+        // stroke's width param (f32) but NOT the color param (u32)
+        // We detect by checking if the value is a float type
+        let is_stroke_float = func_name == "stroke" && from.is_float();
+
+        if (needs_f32 || is_stroke_float) && from.is_float() && *from != PdcType::F32 {
             return self.builder.ins().fdemote(F32, val);
         }
         if needs_f32 && from.is_int() {
@@ -445,7 +787,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let f64_val = self.builder.ins().fpromote(F64, val);
                 self.builder.ins().fcvt_to_sint_sat(I32, f64_val)
             }
-            _ => val, // no-op for compatible types
+            _ => val,
         }
     }
 
@@ -458,12 +800,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         rt: &PdcType,
         result_ty: &PdcType,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
-        // Convert operands to the result type
         let lval = self.convert_value(lval, lt, result_ty);
         let rval = self.convert_value(rval, rt, result_ty);
 
         if result_ty == &PdcType::Bool {
-            // Comparison operators — determine operand type for comparison
             let cmp_type = if lt.is_float() || rt.is_float() {
                 if lt == &PdcType::F32 && rt == &PdcType::F32 {
                     PdcType::F32
@@ -486,7 +826,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     BinOp::GtEq => FloatCC::GreaterThanOrEqual,
                     _ => unreachable!(),
                 };
-                // Need to re-emit operands with proper type
                 Ok(self.builder.ins().fcmp(cc, lval, rval))
             } else {
                 let cc = match op {
@@ -502,7 +841,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             };
         }
 
-        // Arithmetic operators
         if result_ty.is_float() {
             Ok(match op {
                 BinOp::Add => self.builder.ins().fadd(lval, rval),
@@ -510,13 +848,12 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 BinOp::Mul => self.builder.ins().fmul(lval, rval),
                 BinOp::Div => self.builder.ins().fdiv(lval, rval),
                 BinOp::Mod => {
-                    // fmod: a - floor(a/b) * b
                     let div = self.builder.ins().fdiv(lval, rval);
                     let floored = self.builder.ins().floor(div);
                     let prod = self.builder.ins().fmul(floored, rval);
                     self.builder.ins().fsub(lval, prod)
                 }
-                _ => unreachable!("comparison handled above"),
+                _ => unreachable!(),
             })
         } else {
             Ok(match op {
@@ -525,7 +862,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 BinOp::Mul => self.builder.ins().imul(lval, rval),
                 BinOp::Div => self.builder.ins().sdiv(lval, rval),
                 BinOp::Mod => self.builder.ins().srem(lval, rval),
-                _ => unreachable!("comparison handled above"),
+                _ => unreachable!(),
             })
         }
     }

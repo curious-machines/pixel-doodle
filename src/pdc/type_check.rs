@@ -9,13 +9,21 @@ use super::span::Spanned;
 struct BuiltinFn {
     params: Vec<PdcType>,
     ret: PdcType,
-    /// If true, first param is the PdcContext pointer (not passed by PDC code).
     takes_ctx: bool,
+}
+
+/// A user-defined function signature (discovered during type checking).
+#[derive(Clone)]
+pub struct UserFnSig {
+    pub params: Vec<PdcType>,
+    pub ret: PdcType,
 }
 
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
     builtins: HashMap<String, BuiltinFn>,
+    /// User-defined function signatures.
+    pub user_fns: HashMap<String, UserFnSig>,
     /// Type assigned to each AST node, indexed by node ID.
     pub types: Vec<PdcType>,
 }
@@ -25,6 +33,7 @@ impl TypeChecker {
         let mut tc = Self {
             scopes: vec![HashMap::new()],
             builtins: HashMap::new(),
+            user_fns: HashMap::new(),
             types: Vec::new(),
         };
         tc.register_builtins();
@@ -32,14 +41,12 @@ impl TypeChecker {
     }
 
     fn register_builtins(&mut self) {
-        // Path constructor
         self.builtins.insert("Path".into(), BuiltinFn {
             params: vec![],
             ret: PdcType::PathHandle,
             takes_ctx: true,
         });
 
-        // Path primitives (all take ctx + handle as first visible arg)
         for name in &["move_to", "line_to"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::PathHandle, PdcType::F32, PdcType::F32],
@@ -63,7 +70,6 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Draw commands
         self.builtins.insert("fill".into(), BuiltinFn {
             params: vec![PdcType::PathHandle, PdcType::U32],
             ret: PdcType::Void,
@@ -75,7 +81,6 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Math functions (f64 -> f64, no ctx)
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64],
@@ -83,7 +88,6 @@ impl TypeChecker {
                 takes_ctx: false,
             });
         }
-        // 2-arg math
         for name in &["min", "max", "atan2", "fmod"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64, PdcType::F64],
@@ -91,8 +95,14 @@ impl TypeChecker {
                 takes_ctx: false,
             });
         }
+    }
 
-        // Type casts (handled specially, not as regular functions)
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
     }
 
     fn define_var(&mut self, name: &str, ty: PdcType) {
@@ -117,19 +127,29 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), PdcError> {
-        for item in &program.items {
-            self.check_item(item)?;
+        // First pass: register all function signatures
+        for stmt in &program.stmts {
+            if let Stmt::FnDef(fndef) = &stmt.node {
+                self.user_fns.insert(fndef.name.clone(), UserFnSig {
+                    params: fndef.params.iter().map(|p| p.ty.clone()).collect(),
+                    ret: fndef.return_type.clone(),
+                });
+            }
+        }
+
+        // Second pass: type check everything
+        for stmt in &program.stmts {
+            self.check_stmt(stmt)?;
         }
         Ok(())
     }
 
-    fn check_item(&mut self, item: &Spanned<Item>) -> Result<(), PdcError> {
-        match &item.node {
-            Item::BuiltinDecl { name, ty } => {
+    fn check_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
+        match &stmt.node {
+            Stmt::BuiltinDecl { name, ty } => {
                 self.define_var(name, ty.clone());
-                Ok(())
             }
-            Item::ConstDecl { name, ty, value } => {
+            Stmt::ConstDecl { name, ty, value } | Stmt::VarDecl { name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
                     self.check_compatible(&val_ty, declared, value.span)?;
@@ -138,40 +158,117 @@ impl TypeChecker {
                     val_ty
                 };
                 self.define_var(name, final_ty);
-                Ok(())
             }
-            Item::VarDecl { name, ty, value } => {
-                let val_ty = self.check_expr(value)?;
-                let final_ty = if let Some(declared) = ty {
-                    self.check_compatible(&val_ty, declared, value.span)?;
-                    declared.clone()
-                } else {
-                    val_ty
-                };
-                self.define_var(name, final_ty);
-                Ok(())
-            }
-            Item::Assign { name, value } => {
+            Stmt::Assign { name, value } => {
                 let expected = self.lookup_var(name).cloned().ok_or_else(|| PdcError::Type {
-                    span: item.span,
+                    span: stmt.span,
                     message: format!("undefined variable '{name}'"),
                 })?;
                 let val_ty = self.check_expr(value)?;
                 self.check_compatible(&val_ty, &expected, value.span)?;
-                Ok(())
             }
-            Item::ExprStmt(expr) => {
+            Stmt::ExprStmt(expr) => {
                 self.check_expr(expr)?;
-                Ok(())
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                elsif_clauses,
+                else_body,
+            } => {
+                let cond_ty = self.check_expr(condition)?;
+                if cond_ty != PdcType::Bool {
+                    return Err(PdcError::Type {
+                        span: condition.span,
+                        message: format!("if condition must be bool, got {cond_ty}"),
+                    });
+                }
+                self.check_block(then_body)?;
+                for (cond, body) in elsif_clauses {
+                    let ct = self.check_expr(cond)?;
+                    if ct != PdcType::Bool {
+                        return Err(PdcError::Type {
+                            span: cond.span,
+                            message: format!("elsif condition must be bool, got {ct}"),
+                        });
+                    }
+                    self.check_block(body)?;
+                }
+                if let Some(else_b) = else_body {
+                    self.check_block(else_b)?;
+                }
+            }
+            Stmt::While { condition, body } => {
+                let cond_ty = self.check_expr(condition)?;
+                if cond_ty != PdcType::Bool {
+                    return Err(PdcError::Type {
+                        span: condition.span,
+                        message: format!("while condition must be bool, got {cond_ty}"),
+                    });
+                }
+                self.check_block(body)?;
+            }
+            Stmt::For {
+                var_name,
+                start,
+                end,
+                body,
+            } => {
+                let st = self.check_expr(start)?;
+                let et = self.check_expr(end)?;
+                if !st.is_int() {
+                    return Err(PdcError::Type {
+                        span: start.span,
+                        message: format!("for range start must be integer, got {st}"),
+                    });
+                }
+                if !et.is_int() {
+                    return Err(PdcError::Type {
+                        span: end.span,
+                        message: format!("for range end must be integer, got {et}"),
+                    });
+                }
+                self.push_scope();
+                self.define_var(var_name, PdcType::I32);
+                for s in &body.stmts {
+                    self.check_stmt(s)?;
+                }
+                self.pop_scope();
+            }
+            Stmt::Loop { body } => {
+                self.check_block(body)?;
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::Return(_value) => {
+                // TODO: check return type matches function signature
+            }
+            Stmt::FnDef(fndef) => {
+                self.push_scope();
+                for param in &fndef.params {
+                    self.define_var(&param.name, param.ty.clone());
+                }
+                for s in &fndef.body.stmts {
+                    self.check_stmt(s)?;
+                }
+                self.pop_scope();
             }
         }
+        Ok(())
+    }
+
+    fn check_block(&mut self, block: &Block) -> Result<(), PdcError> {
+        self.push_scope();
+        for stmt in &block.stmts {
+            self.check_stmt(stmt)?;
+        }
+        self.pop_scope();
+        Ok(())
     }
 
     fn check_expr(&mut self, expr: &Spanned<Expr>) -> Result<PdcType, PdcError> {
         let ty = match &expr.node {
             Expr::Literal(lit) => match lit {
                 Literal::Int(v) => {
-                    // Hex-range values → u32, others → i32
                     if *v < 0 || *v <= i32::MAX as i64 {
                         PdcType::I32
                     } else {
@@ -216,7 +313,6 @@ impl TypeChecker {
                 }
             }
             Expr::Call { name, args } => {
-                // Check for type cast: f32(x), i32(x), etc.
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {
@@ -244,6 +340,22 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
                     }
                     ret
+                } else if let Some(sig) = self.user_fns.get(name.as_str()).cloned() {
+                    if args.len() != sig.params.len() {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!(
+                                "function '{name}' expects {} arguments, got {}",
+                                sig.params.len(),
+                                args.len()
+                            ),
+                        });
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_ty = self.check_expr(arg)?;
+                        self.check_compatible(&arg_ty, &sig.params[i], arg.span)?;
+                    }
+                    sig.ret
                 } else {
                     return Err(PdcError::Type {
                         span: expr.span,
@@ -252,10 +364,8 @@ impl TypeChecker {
                 }
             }
             Expr::MethodCall { object, method, args } => {
-                // UFCS: desugar to Call(method, [object] + args)
                 let obj_ty = self.check_expr(object)?;
 
-                // Look up as a regular function with object as first arg
                 if let Some(builtin) = self.builtins.get(method.as_str()) {
                     let expected_params = builtin.params.clone();
                     let ret = builtin.ret.clone();
@@ -276,6 +386,24 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &expected_params[i + 1], arg.span)?;
                     }
                     ret
+                } else if let Some(sig) = self.user_fns.get(method.as_str()).cloned() {
+                    let total_args = 1 + args.len();
+                    if total_args != sig.params.len() {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!(
+                                "method '{method}' expects {} arguments (including self), got {}",
+                                sig.params.len(),
+                                total_args,
+                            ),
+                        });
+                    }
+                    self.check_compatible(&obj_ty, &sig.params[0], object.span)?;
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_ty = self.check_expr(arg)?;
+                        self.check_compatible(&arg_ty, &sig.params[i + 1], arg.span)?;
+                    }
+                    sig.ret
                 } else {
                     return Err(PdcError::Type {
                         span: expr.span,
@@ -327,7 +455,6 @@ impl TypeChecker {
         }
     }
 
-    /// Find the common type for two numeric types (implicit widening).
     fn unify_numeric(
         &self,
         a: &PdcType,
@@ -343,7 +470,6 @@ impl TypeChecker {
         if a == b {
             return Ok(a.clone());
         }
-        // Widening rules: i32 → f64, u32 → f64, f32 → f64
         match (a, b) {
             (PdcType::F64, _) | (_, PdcType::F64) => Ok(PdcType::F64),
             (PdcType::F32, _) | (_, PdcType::F32) => Ok(PdcType::F32),
@@ -361,7 +487,6 @@ impl TypeChecker {
         if from == to {
             return Ok(());
         }
-        // Allow implicit widening
         if from.is_numeric() && to.is_numeric() {
             return Ok(());
         }

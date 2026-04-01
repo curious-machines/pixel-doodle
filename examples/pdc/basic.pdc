@@ -1,25 +1,50 @@
-// Basic PDC example: blue rectangle + orange circle
+// PDC Phase 2 example: user-defined functions + control flow
 builtin const width: f32
 builtin const height: f32
 
-const cx = width / 2.0
-const cy = height / 2.0
+// Circle constructor — returns a path handle
+fn Circle(cx: f32, cy: f32, r: f32) -> Path {
+    const k = r * 0.5522847498
+    var p = Path()
+    p.move_to(cx + r, cy)
+    p.cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
+    p.cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
+    p.cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
+    p.cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
+    return p
+}
 
-// Blue rectangle
-var r = Path()
-r.move_to(cx - 100.0, cy - 75.0)
-r.line_to(cx + 100.0, cy - 75.0)
-r.line_to(cx + 100.0, cy + 75.0)
-r.line_to(cx - 100.0, cy + 75.0)
-r.close()
-fill(r, 0xFF4488FF)
+// Rectangle constructor
+fn Rect(x: f32, y: f32, w: f32, h: f32) -> Path {
+    var p = Path()
+    p.move_to(x, y)
+    p.line_to(x + w, y)
+    p.line_to(x + w, y + h)
+    p.line_to(x, y + h)
+    p.close()
+    return p
+}
 
-// Orange circle on top
-const k = 80.0 * 0.5522847498
-var c = Path()
-c.move_to(cx + 80.0, cy)
-c.cubic_to(cx + 80.0, cy - k, cx + k, cy - 80.0, cx, cy - 80.0)
-c.cubic_to(cx - k, cy - 80.0, cx - 80.0, cy - k, cx - 80.0, cy)
-c.cubic_to(cx - 80.0, cy + k, cx - k, cy + 80.0, cx, cy + 80.0)
-c.cubic_to(cx + k, cy + 80.0, cx + 80.0, cy + k, cx + 80.0, cy)
-fill(c, 0xFFFF8800)
+// Checkerboard grid of circles
+const spacing = 60.0
+var col = 0
+while col < 10 {
+    var row = 0
+    while row < 8 {
+        const x = f32(col) * spacing + 50.0
+        const y = f32(row) * spacing + 50.0
+        const c = Circle(x, y, 20.0)
+        if (col + row) % 2 == 0 {
+            fill(c, 0xFFFF8800)
+        } else {
+            fill(c, 0xFF4488FF)
+        }
+        row = row + 1
+    }
+    col = col + 1
+}
+
+// Rectangle in the center
+const r = Rect(width / 2.0 - 80.0, height / 2.0 - 60.0, 160.0, 120.0)
+fill(r, 0xCC44CC44)
+stroke(r, 3.0, 0xFFFFFFFF)
