@@ -1,0 +1,101 @@
+// PDC Standard Library: vector4d
+// 4D vector type with arithmetic operators and common vector operations.
+// Commonly used for homogeneous coordinates and RGBA colors.
+
+// 4D vector with f64 components.
+pub struct Vector4D {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+
+// -- Arithmetic operators --
+
+// Component-wise addition.
+pub operator +(a: Vector4D, b: Vector4D) -> Vector4D {
+    return Vector4D(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z, w: a.w + b.w)
+}
+
+// Component-wise subtraction.
+pub operator -(a: Vector4D, b: Vector4D) -> Vector4D {
+    return Vector4D(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z, w: a.w - b.w)
+}
+
+// Negate all components.
+pub operator -(v: Vector4D) -> Vector4D {
+    return Vector4D(x: -v.x, y: -v.y, z: -v.z, w: -v.w)
+}
+
+// Scale vector by a scalar (vector * scalar).
+pub operator *(v: Vector4D, s: f64) -> Vector4D {
+    return Vector4D(x: v.x * s, y: v.y * s, z: v.z * s, w: v.w * s)
+}
+
+// Scale vector by a scalar (scalar * vector).
+pub operator *(s: f64, v: Vector4D) -> Vector4D {
+    return Vector4D(x: s * v.x, y: s * v.y, z: s * v.z, w: s * v.w)
+}
+
+// Divide vector by a scalar.
+pub operator /(v: Vector4D, s: f64) -> Vector4D {
+    return Vector4D(x: v.x / s, y: v.y / s, z: v.z / s, w: v.w / s)
+}
+
+// -- Comparison operators --
+
+// Component-wise equality.
+pub operator ==(a: Vector4D, b: Vector4D) -> bool {
+    return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w
+}
+
+// Component-wise inequality.
+pub operator !=(a: Vector4D, b: Vector4D) -> bool {
+    return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w
+}
+
+// -- Vector operations --
+
+// Dot product of two vectors.
+//   a: first vector
+//   b: second vector
+pub fn dot(a: Vector4D, b: Vector4D) -> f64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+}
+
+// Squared length of a vector. Avoids the sqrt when only comparing magnitudes.
+//   v: vector
+pub fn length_squared(v: Vector4D) -> f64 {
+    return v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w
+}
+
+// Length (magnitude) of a vector.
+//   v: vector
+pub fn length(v: Vector4D) -> f64 {
+    return sqrt(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w)
+}
+
+// Unit vector in the same direction. Returns zero vector if length is zero.
+//   v: vector
+pub fn normalize(v: Vector4D) -> Vector4D {
+    const len = length(v)
+    if len == 0.0 {
+        return Vector4D(x: 0.0, y: 0.0, z: 0.0, w: 0.0)
+    }
+    return v / len
+}
+
+// Reflect vector v off a surface with the given normal.
+//   v: incident vector
+//   normal: surface normal (should be unit length)
+pub fn reflect(v: Vector4D, normal: Vector4D) -> Vector4D {
+    return v - normal * 2.0 * dot(v, normal)
+}
+
+// Linear interpolation between two vectors.
+//   a: start vector
+//   b: end vector
+//   t: interpolation factor (0 = a, 1 = b)
+pub fn lerp(a: Vector4D, b: Vector4D, t: f64) -> Vector4D {
+    return a + (b - a) * t
+}

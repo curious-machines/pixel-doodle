@@ -1,0 +1,136 @@
+// PDC Standard Library: vector2d
+// 2D vector type with arithmetic operators and common vector operations.
+
+import { PI } from math
+
+// 2D vector with f64 components.
+pub struct Vector2D {
+    x: f64,
+    y: f64,
+}
+
+// -- Arithmetic operators --
+
+// Component-wise addition.
+pub operator +(a: Vector2D, b: Vector2D) -> Vector2D {
+    return Vector2D(x: a.x + b.x, y: a.y + b.y)
+}
+
+// Component-wise subtraction.
+pub operator -(a: Vector2D, b: Vector2D) -> Vector2D {
+    return Vector2D(x: a.x - b.x, y: a.y - b.y)
+}
+
+// Negate both components.
+pub operator -(v: Vector2D) -> Vector2D {
+    return Vector2D(x: -v.x, y: -v.y)
+}
+
+// Scale vector by a scalar (vector * scalar).
+pub operator *(v: Vector2D, s: f64) -> Vector2D {
+    return Vector2D(x: v.x * s, y: v.y * s)
+}
+
+// Scale vector by a scalar (scalar * vector).
+pub operator *(s: f64, v: Vector2D) -> Vector2D {
+    return Vector2D(x: s * v.x, y: s * v.y)
+}
+
+// Divide vector by a scalar.
+pub operator /(v: Vector2D, s: f64) -> Vector2D {
+    return Vector2D(x: v.x / s, y: v.y / s)
+}
+
+// -- Comparison operators --
+
+// Component-wise equality.
+pub operator ==(a: Vector2D, b: Vector2D) -> bool {
+    return a.x == b.x && a.y == b.y
+}
+
+// Component-wise inequality.
+pub operator !=(a: Vector2D, b: Vector2D) -> bool {
+    return a.x != b.x || a.y != b.y
+}
+
+// -- Vector operations --
+
+// Dot product of two vectors.
+//   a: first vector
+//   b: second vector
+pub fn dot(a: Vector2D, b: Vector2D) -> f64 {
+    return a.x * b.x + a.y * b.y
+}
+
+// 2D cross product (perp dot product). Returns the z-component of the
+// implied 3D cross product. Positive when b is counter-clockwise from a.
+//   a: first vector
+//   b: second vector
+pub fn cross(a: Vector2D, b: Vector2D) -> f64 {
+    return a.x * b.y - a.y * b.x
+}
+
+// Squared length of a vector. Avoids the sqrt when only comparing magnitudes.
+//   v: vector
+pub fn length_squared(v: Vector2D) -> f64 {
+    return v.x * v.x + v.y * v.y
+}
+
+// Length (magnitude) of a vector.
+//   v: vector
+pub fn length(v: Vector2D) -> f64 {
+    return sqrt(v.x * v.x + v.y * v.y)
+}
+
+// Unit vector in the same direction. Returns zero vector if length is zero.
+//   v: vector
+pub fn normalize(v: Vector2D) -> Vector2D {
+    const len = length(v)
+    if len == 0.0 {
+        return Vector2D(x: 0.0, y: 0.0)
+    }
+    return v / len
+}
+
+// Reflect vector v off a surface with the given normal.
+//   v: incident vector
+//   normal: surface normal (should be unit length)
+pub fn reflect(v: Vector2D, normal: Vector2D) -> Vector2D {
+    return v - normal * 2.0 * dot(v, normal)
+}
+
+// Rotate a vector by an angle in radians.
+//   v: vector to rotate
+//   angle: rotation angle in radians (counter-clockwise)
+pub fn rotate(v: Vector2D, angle: f64) -> Vector2D {
+    const c = cos(angle)
+    const s = sin(angle)
+    return Vector2D(x: v.x * c - v.y * s, y: v.x * s + v.y * c)
+}
+
+// Perpendicular vector (90-degree counter-clockwise rotation).
+//   v: vector
+pub fn perp(v: Vector2D) -> Vector2D {
+    return Vector2D(x: -v.y, y: v.x)
+}
+
+// Angle of a vector in radians, measured from the positive x-axis.
+//   v: vector
+pub fn angle(v: Vector2D) -> f64 {
+    return atan2(v.y, v.x)
+}
+
+// Angle between two vectors in radians.
+//   a: first vector
+//   b: second vector
+pub fn angle_between(a: Vector2D, b: Vector2D) -> f64 {
+    return atan2(cross(a, b), dot(a, b))
+}
+
+// Linear interpolation between two vectors.
+//   a: start vector
+//   b: end vector
+//   t: interpolation factor (0 = a, 1 = b)
+pub fn lerp(a: Vector2D, b: Vector2D, t: f64) -> Vector2D {
+    return a + (b - a) * t
+}

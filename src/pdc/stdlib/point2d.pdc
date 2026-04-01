@@ -1,0 +1,61 @@
+// PDC Standard Library: point2d
+// 2D point type representing a position in space.
+
+import { Vector2D, length } from vector2d
+
+// 2D point with f64 components.
+pub struct Point2D {
+    x: f64,
+    y: f64,
+}
+
+// -- Operators --
+
+// Displacement between two points.
+pub operator -(a: Point2D, b: Point2D) -> Vector2D {
+    return Vector2D(x: a.x - b.x, y: a.y - b.y)
+}
+
+// Translate a point by a vector.
+pub operator +(p: Point2D, v: Vector2D) -> Point2D {
+    return Point2D(x: p.x + v.x, y: p.y + v.y)
+}
+
+// Translate a point by the negation of a vector.
+pub operator -(p: Point2D, v: Vector2D) -> Point2D {
+    return Point2D(x: p.x - v.x, y: p.y - v.y)
+}
+
+// Component-wise equality.
+pub operator ==(a: Point2D, b: Point2D) -> bool {
+    return a.x == b.x && a.y == b.y
+}
+
+// Component-wise inequality.
+pub operator !=(a: Point2D, b: Point2D) -> bool {
+    return a.x != b.x || a.y != b.y
+}
+
+// -- Point operations --
+
+// Euclidean distance between two points.
+//   a: first point
+//   b: second point
+pub fn distance(a: Point2D, b: Point2D) -> f64 {
+    return length(a - b)
+}
+
+// Midpoint between two points.
+//   a: first point
+//   b: second point
+pub fn midpoint(a: Point2D, b: Point2D) -> Point2D {
+    return Point2D(x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0)
+}
+
+// Linear interpolation between two points.
+//   a: start point
+//   b: end point
+//   t: interpolation factor (0 = a, 1 = b)
+pub fn lerp(a: Point2D, b: Point2D, t: f64) -> Point2D {
+    return Point2D(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+}

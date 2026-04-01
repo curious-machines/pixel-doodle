@@ -1,0 +1,262 @@
+// PDC Standard Library: affine2d
+// 2D affine transformation matrix using 6 active elements.
+//
+// Layout:
+//   | a  b  tx |
+//   | c  d  ty |
+//   | 0  0   1 |
+
+import { PI } from math
+import { Vector2D } from vector2d
+import { Point2D } from point2d
+
+// 2D affine transformation with 6 active elements.
+pub struct AffineTransform2D {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    tx: f64,
+    ty: f64,
+}
+
+// -- Factory functions --
+
+// Identity transform (no-op).
+pub fn identity() -> AffineTransform2D {
+    return AffineTransform2D(a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0)
+}
+
+// Pure translation.
+//   tx: horizontal offset
+//   ty: vertical offset
+pub fn translation(tx: f64, ty: f64) -> AffineTransform2D {
+    return AffineTransform2D(a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: tx, ty: ty)
+}
+
+// Pure rotation about the origin.
+//   angle: rotation angle in radians (counter-clockwise)
+pub fn rotation(angle: f64) -> AffineTransform2D {
+    const cs = cos(angle)
+    const sn = sin(angle)
+    return AffineTransform2D(a: cs, b: -sn, c: sn, d: cs, tx: 0.0, ty: 0.0)
+}
+
+// Pure scaling about the origin.
+//   sx: horizontal scale factor
+//   sy: vertical scale factor
+pub fn scaling(sx: f64, sy: f64) -> AffineTransform2D {
+    return AffineTransform2D(a: sx, b: 0.0, c: 0.0, d: sy, tx: 0.0, ty: 0.0)
+}
+
+// -- Operators --
+
+// Compose two transforms. Applies rhs first, then lhs.
+pub operator *(lhs: AffineTransform2D, rhs: AffineTransform2D) -> AffineTransform2D {
+    return AffineTransform2D(
+        a:  lhs.a * rhs.a  + lhs.b * rhs.c,
+        b:  lhs.a * rhs.b  + lhs.b * rhs.d,
+        c:  lhs.c * rhs.a  + lhs.d * rhs.c,
+        d:  lhs.c * rhs.b  + lhs.d * rhs.d,
+        tx: lhs.a * rhs.tx + lhs.b * rhs.ty + lhs.tx,
+        ty: lhs.c * rhs.tx + lhs.d * rhs.ty + lhs.ty
+    )
+}
+
+// Transform a point (applies rotation, scale, and translation).
+pub operator *(t: AffineTransform2D, p: Point2D) -> Point2D {
+    return Point2D(
+        x: t.a * p.x + t.b * p.y + t.tx,
+        y: t.c * p.x + t.d * p.y + t.ty
+    )
+}
+
+// Transform a vector (applies rotation and scale only, no translation).
+pub operator *(t: AffineTransform2D, v: Vector2D) -> Vector2D {
+    return Vector2D(
+        x: t.a * v.x + t.b * v.y,
+        y: t.c * v.x + t.d * v.y
+    )
+}
+
+// Scalar multiply all elements.
+pub operator *(t: AffineTransform2D, s: f64) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: t.a * s, b: t.b * s, c: t.c * s, d: t.d * s,
+        tx: t.tx * s, ty: t.ty * s
+    )
+}
+
+// Scalar multiply all elements (scalar * transform).
+pub operator *(s: f64, t: AffineTransform2D) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: s * t.a, b: s * t.b, c: s * t.c, d: s * t.d,
+        tx: s * t.tx, ty: s * t.ty
+    )
+}
+
+// Component-wise equality.
+pub operator ==(a: AffineTransform2D, b: AffineTransform2D) -> bool {
+    return a.a == b.a && a.b == b.b && a.c == b.c && a.d == b.d && a.tx == b.tx && a.ty == b.ty
+}
+
+// Component-wise inequality.
+pub operator !=(a: AffineTransform2D, b: AffineTransform2D) -> bool {
+    return a.a != b.a || a.b != b.b || a.c != b.c || a.d != b.d || a.tx != b.tx || a.ty != b.ty
+}
+
+// -- In-place mutation methods --
+// Each method post-multiplies the operation, so transforms apply in call order:
+//   t.translate(10, 0).rotate(PI/4)  =>  translate first, then rotate
+
+// Append a translation.
+//   t: transform to modify
+//   dx: horizontal offset
+//   dy: vertical offset
+pub fn translate(t: AffineTransform2D, dx: f64, dy: f64) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: t.a, b: t.b, c: t.c, d: t.d,
+        tx: t.a * dx + t.b * dy + t.tx,
+        ty: t.c * dx + t.d * dy + t.ty
+    )
+}
+
+// Append a rotation about the origin.
+//   t: transform to modify
+//   angle: rotation angle in radians (counter-clockwise)
+pub fn rotate(t: AffineTransform2D, angle: f64) -> AffineTransform2D {
+    const cs = cos(angle)
+    const sn = sin(angle)
+    return AffineTransform2D(
+        a:  t.a * cs + t.b * sn,
+        b:  t.a * -sn + t.b * cs,
+        c:  t.c * cs + t.d * sn,
+        d:  t.c * -sn + t.d * cs,
+        tx: t.tx,
+        ty: t.ty
+    )
+}
+
+// Append a rotation about a point.
+//   t: transform to modify
+//   angle: rotation angle in radians (counter-clockwise)
+//   p: center of rotation
+pub fn rotate_at(t: AffineTransform2D, angle: f64, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).rotate(angle).translate(-p.x, -p.y)
+}
+
+// Append a scale about the origin.
+//   t: transform to modify
+//   sx: horizontal scale factor
+//   sy: vertical scale factor
+pub fn scale(t: AffineTransform2D, sx: f64, sy: f64) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: t.a * sx, b: t.b * sy,
+        c: t.c * sx, d: t.d * sy,
+        tx: t.tx, ty: t.ty
+    )
+}
+
+// Append a scale about a point.
+//   t: transform to modify
+//   sx: horizontal scale factor
+//   sy: vertical scale factor
+//   p: center of scaling
+pub fn scale_at(t: AffineTransform2D, sx: f64, sy: f64, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).scale(sx, sy).translate(-p.x, -p.y)
+}
+
+// Append a horizontal skew.
+//   t: transform to modify
+//   angle: skew angle in radians
+pub fn skew_x(t: AffineTransform2D, angle: f64) -> AffineTransform2D {
+    const tn = tan(angle)
+    return AffineTransform2D(
+        a: t.a, b: t.a * tn + t.b,
+        c: t.c, d: t.c * tn + t.d,
+        tx: t.tx, ty: t.ty
+    )
+}
+
+// Append a vertical skew.
+//   t: transform to modify
+//   angle: skew angle in radians
+pub fn skew_y(t: AffineTransform2D, angle: f64) -> AffineTransform2D {
+    const tn = tan(angle)
+    return AffineTransform2D(
+        a: t.a + t.b * tn, b: t.b,
+        c: t.c + t.d * tn, d: t.d,
+        tx: t.tx, ty: t.ty
+    )
+}
+
+// Append a horizontal skew about a point.
+//   t: transform to modify
+//   angle: skew angle in radians
+//   p: center of skew
+pub fn skew_x_at(t: AffineTransform2D, angle: f64, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).skew_x(angle).translate(-p.x, -p.y)
+}
+
+// Append a vertical skew about a point.
+//   t: transform to modify
+//   angle: skew angle in radians
+//   p: center of skew
+pub fn skew_y_at(t: AffineTransform2D, angle: f64, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).skew_y(angle).translate(-p.x, -p.y)
+}
+
+// Append a horizontal reflection (negate x).
+//   t: transform to modify
+pub fn flip_x(t: AffineTransform2D) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: -t.a, b: t.b, c: -t.c, d: t.d,
+        tx: t.tx, ty: t.ty
+    )
+}
+
+// Append a vertical reflection (negate y).
+//   t: transform to modify
+pub fn flip_y(t: AffineTransform2D) -> AffineTransform2D {
+    return AffineTransform2D(
+        a: t.a, b: -t.b, c: t.c, d: -t.d,
+        tx: t.tx, ty: t.ty
+    )
+}
+
+// Append a horizontal reflection about a point.
+//   t: transform to modify
+//   p: center of reflection
+pub fn flip_x_at(t: AffineTransform2D, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).flip_x().translate(-p.x, -p.y)
+}
+
+// Append a vertical reflection about a point.
+//   t: transform to modify
+//   p: center of reflection
+pub fn flip_y_at(t: AffineTransform2D, p: Point2D) -> AffineTransform2D {
+    return t.translate(p.x, p.y).flip_y().translate(-p.x, -p.y)
+}
+
+// -- Utilities --
+
+// Determinant of the linear part (ad - bc).
+//   t: transform
+pub fn determinant(t: AffineTransform2D) -> f64 {
+    return t.a * t.d - t.b * t.c
+}
+
+// Inverse transform. Undefined if determinant is zero.
+//   t: transform to invert
+pub fn inverse(t: AffineTransform2D) -> AffineTransform2D {
+    const det = t.a * t.d - t.b * t.c
+    const inv_det = 1.0 / det
+    return AffineTransform2D(
+        a:   t.d * inv_det,
+        b:  -t.b * inv_det,
+        c:  -t.c * inv_det,
+        d:   t.a * inv_det,
+        tx: (t.b * t.ty - t.d * t.tx) * inv_det,
+        ty: (t.c * t.tx - t.a * t.ty) * inv_det
+    )
+}

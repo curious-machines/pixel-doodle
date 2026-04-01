@@ -1,0 +1,63 @@
+// PDC Standard Library: point4d
+// 4D point type representing a position in space (or homogeneous coordinates).
+
+import { Vector4D, length } from vector4d
+
+// 4D point with f64 components.
+pub struct Point4D {
+    x: f64,
+    y: f64,
+    z: f64,
+    w: f64,
+}
+
+// -- Operators --
+
+// Displacement between two points.
+pub operator -(a: Point4D, b: Point4D) -> Vector4D {
+    return Vector4D(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z, w: a.w - b.w)
+}
+
+// Translate a point by a vector.
+pub operator +(p: Point4D, v: Vector4D) -> Point4D {
+    return Point4D(x: p.x + v.x, y: p.y + v.y, z: p.z + v.z, w: p.w + v.w)
+}
+
+// Translate a point by the negation of a vector.
+pub operator -(p: Point4D, v: Vector4D) -> Point4D {
+    return Point4D(x: p.x - v.x, y: p.y - v.y, z: p.z - v.z, w: p.w - v.w)
+}
+
+// Component-wise equality.
+pub operator ==(a: Point4D, b: Point4D) -> bool {
+    return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w
+}
+
+// Component-wise inequality.
+pub operator !=(a: Point4D, b: Point4D) -> bool {
+    return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w
+}
+
+// -- Point operations --
+
+// Euclidean distance between two points.
+//   a: first point
+//   b: second point
+pub fn distance(a: Point4D, b: Point4D) -> f64 {
+    return length(a - b)
+}
+
+// Midpoint between two points.
+//   a: first point
+//   b: second point
+pub fn midpoint(a: Point4D, b: Point4D) -> Point4D {
+    return Point4D(x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0, z: (a.z + b.z) / 2.0, w: (a.w + b.w) / 2.0)
+}
+
+// Linear interpolation between two points.
+//   a: start point
+//   b: end point
+//   t: interpolation factor (0 = a, 1 = b)
+pub fn lerp(a: Point4D, b: Point4D, t: f64) -> Point4D {
+    return Point4D(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t, w: a.w + (b.w - a.w) * t)
+}

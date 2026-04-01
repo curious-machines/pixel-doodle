@@ -1,0 +1,62 @@
+// PDC Standard Library: point3d
+// 3D point type representing a position in space.
+
+import { Vector3D, length } from vector3d
+
+// 3D point with f64 components.
+pub struct Point3D {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+// -- Operators --
+
+// Displacement between two points.
+pub operator -(a: Point3D, b: Point3D) -> Vector3D {
+    return Vector3D(x: a.x - b.x, y: a.y - b.y, z: a.z - b.z)
+}
+
+// Translate a point by a vector.
+pub operator +(p: Point3D, v: Vector3D) -> Point3D {
+    return Point3D(x: p.x + v.x, y: p.y + v.y, z: p.z + v.z)
+}
+
+// Translate a point by the negation of a vector.
+pub operator -(p: Point3D, v: Vector3D) -> Point3D {
+    return Point3D(x: p.x - v.x, y: p.y - v.y, z: p.z - v.z)
+}
+
+// Component-wise equality.
+pub operator ==(a: Point3D, b: Point3D) -> bool {
+    return a.x == b.x && a.y == b.y && a.z == b.z
+}
+
+// Component-wise inequality.
+pub operator !=(a: Point3D, b: Point3D) -> bool {
+    return a.x != b.x || a.y != b.y || a.z != b.z
+}
+
+// -- Point operations --
+
+// Euclidean distance between two points.
+//   a: first point
+//   b: second point
+pub fn distance(a: Point3D, b: Point3D) -> f64 {
+    return length(a - b)
+}
+
+// Midpoint between two points.
+//   a: first point
+//   b: second point
+pub fn midpoint(a: Point3D, b: Point3D) -> Point3D {
+    return Point3D(x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0, z: (a.z + b.z) / 2.0)
+}
+
+// Linear interpolation between two points.
+//   a: start point
+//   b: end point
+//   t: interpolation factor (0 = a, 1 = b)
+pub fn lerp(a: Point3D, b: Point3D, t: f64) -> Point3D {
+    return Point3D(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t)
+}
