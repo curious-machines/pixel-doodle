@@ -513,6 +513,13 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<PdcType, PdcError> {
         if let TokenKind::Ident(name) = self.peek().clone() {
+            if name == "Array" {
+                self.advance(); // consume "Array"
+                self.expect(&TokenKind::Lt)?;
+                let elem_ty = self.parse_type()?;
+                self.expect(&TokenKind::Gt)?;
+                return Ok(PdcType::Array(Box::new(elem_ty)));
+            }
             let ty = match name.as_str() {
                 "f32" => PdcType::F32,
                 "f64" => PdcType::F64,
@@ -740,6 +747,19 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+                // Array<type>() constructor
+                if name == "Array" && *self.peek() == TokenKind::Lt {
+                    self.advance(); // consume '<'
+                    let elem_ty = self.parse_type()?;
+                    self.expect(&TokenKind::Gt)?;
+                    self.expect(&TokenKind::LParen)?;
+                    let args = self.parse_call_args()?;
+                    let arg_names = vec![None; args.len()];
+                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                    // Encode the element type in the call name: "Array<f64>"
+                    let full_name = format!("Array<{elem_ty}>");
+                    return Ok(self.ids.spanned(Expr::Call { name: full_name, args, arg_names }, span));
+                }
                 if *self.peek() == TokenKind::LParen {
                     self.advance(); // consume '('
                     if self.is_named_arg_start() {

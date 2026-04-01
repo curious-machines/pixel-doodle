@@ -62,7 +62,7 @@ rr.fill(0x88223366)
 rr.stroke(3.0, 0xFFFFFFFF)
 
 // Array example: store radii, then draw circles from the array
-var radii = array_new()
+var radii = Array<f64>()
 radii.push(15.0)
 radii.push(25.0)
 radii.push(35.0)

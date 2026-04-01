@@ -292,7 +292,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::PathHandle => I32,
         PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
         PdcType::Enum(_) => I32, // enums are u32 constants
-        PdcType::ArrayF64 => I32, // arrays are handles (u32)
+        PdcType::Array(_) => I32, // arrays are handles (u32)
         PdcType::Void => I32,
         PdcType::Unknown => pointer_type,
     }
@@ -1023,20 +1023,23 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
 
         // Runtime function call
-        let runtime_name = match name {
-            "Path" => "pdc_path".to_string(),
-            "array_new" => "pdc_array_new".to_string(),
-            "push" => "pdc_array_push".to_string(),
-            "len" => "pdc_array_len".to_string(),
-            "get" => "pdc_array_get".to_string(),
-            "set" => "pdc_array_set".to_string(),
-            other => format!("pdc_{}", other),
+        let runtime_name = if name.starts_with("Array<") {
+            "pdc_array_new".to_string()
+        } else {
+            match name {
+                "Path" => "pdc_path".to_string(),
+                "push" => "pdc_array_push".to_string(),
+                "len" => "pdc_array_len".to_string(),
+                "get" => "pdc_array_get".to_string(),
+                "set" => "pdc_array_set".to_string(),
+                other => format!("pdc_{}", other),
+            }
         };
 
-        let takes_ctx = matches!(
+        let takes_ctx = name.starts_with("Array<") || matches!(
             name,
             "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-            | "array_new" | "push" | "len" | "get" | "set"
+            | "push" | "len" | "get" | "set"
         );
 
         let mut arg_vals = Vec::new();
@@ -1080,8 +1083,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     }
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
+        if name.starts_with("Array<") {
+            return Some(I32);
+        }
         match name {
-            "Path" | "array_new" => Some(I32),
+            "Path" => Some(I32),
             "len" => Some(I32),
             "get" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"

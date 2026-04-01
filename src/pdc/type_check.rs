@@ -107,32 +107,9 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Array functions
-        self.builtins.insert("array_new".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::ArrayF64,
-            takes_ctx: true,
-        });
-        self.builtins.insert("push".into(), BuiltinFn {
-            params: vec![PdcType::ArrayF64, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("len".into(), BuiltinFn {
-            params: vec![PdcType::ArrayF64],
-            ret: PdcType::I32,
-            takes_ctx: true,
-        });
-        self.builtins.insert("get".into(), BuiltinFn {
-            params: vec![PdcType::ArrayF64, PdcType::I32],
-            ret: PdcType::F64,
-            takes_ctx: true,
-        });
-        self.builtins.insert("set".into(), BuiltinFn {
-            params: vec![PdcType::ArrayF64, PdcType::I32, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
+        // Array methods (push/len/get/set) are handled specially in check_expr
+        // because they need to know the element type from the array.
+        // Array<T>() constructor is also handled specially.
 
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
@@ -484,6 +461,22 @@ impl TypeChecker {
                     // Not a struct — check as named function call below
                 }
 
+                // Array<type>() constructor
+                if name.starts_with("Array<") {
+                    let elem_type_str = &name[6..name.len()-1]; // extract type between < >
+                    let elem_ty = match elem_type_str {
+                        "f32" => PdcType::F32,
+                        "f64" => PdcType::F64,
+                        "i32" => PdcType::I32,
+                        "u32" => PdcType::U32,
+                        "bool" => PdcType::Bool,
+                        _ => PdcType::F64, // default
+                    };
+                    let arr_ty = PdcType::Array(Box::new(elem_ty));
+                    self.set_type(expr.id, arr_ty.clone());
+                    return Ok(arr_ty);
+                }
+
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {
@@ -537,6 +530,39 @@ impl TypeChecker {
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.check_expr(object)?;
 
+                // Array methods: push, len, get, set
+                if let PdcType::Array(ref elem_ty) = obj_ty {
+                    match method.as_str() {
+                        "push" => {
+                            if args.len() == 1 {
+                                let arg_ty = self.check_expr(&args[0])?;
+                                self.check_compatible(&arg_ty, elem_ty, args[0].span)?;
+                            }
+                            PdcType::Void
+                        }
+                        "len" => PdcType::I32,
+                        "get" => {
+                            if args.len() == 1 {
+                                self.check_expr(&args[0])?;
+                            }
+                            *elem_ty.clone()
+                        }
+                        "set" => {
+                            if args.len() == 2 {
+                                self.check_expr(&args[0])?;
+                                let val_ty = self.check_expr(&args[1])?;
+                                self.check_compatible(&val_ty, elem_ty, args[1].span)?;
+                            }
+                            PdcType::Void
+                        }
+                        _ => {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("array has no method '{method}'"),
+                            });
+                        }
+                    }
+                } else
                 // Enum variant construction: EnumName.Variant(args)
                 if let PdcType::Enum(ref ename) = obj_ty {
                     let info = self.enums.get(ename).cloned().ok_or_else(|| PdcError::Type {
