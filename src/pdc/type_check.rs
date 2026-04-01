@@ -107,9 +107,30 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Array methods (push/len/get/set) are handled specially in check_expr
-        // because they need to know the element type from the array.
-        // Array<T>() constructor is also handled specially.
+        // Array methods also registered as builtins so UFCS-as-function works:
+        // push(arr, val) as well as arr.push(val)
+        // Note: MethodCall path has type-aware handling for generic arrays.
+        let arr_ty = PdcType::Array(Box::new(PdcType::F64));
+        self.builtins.insert("push".into(), BuiltinFn {
+            params: vec![arr_ty.clone(), PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("len".into(), BuiltinFn {
+            params: vec![arr_ty.clone()],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+        self.builtins.insert("get".into(), BuiltinFn {
+            params: vec![arr_ty.clone(), PdcType::I32],
+            ret: PdcType::F64,
+            takes_ctx: true,
+        });
+        self.builtins.insert("set".into(), BuiltinFn {
+            params: vec![arr_ty.clone(), PdcType::I32, PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
 
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
@@ -775,6 +796,10 @@ impl TypeChecker {
             return Ok(());
         }
         if from.is_numeric() && to.is_numeric() {
+            return Ok(());
+        }
+        // Arrays with compatible element types
+        if let (PdcType::Array(_), PdcType::Array(_)) = (from, to) {
             return Ok(());
         }
         Err(PdcError::Type {
