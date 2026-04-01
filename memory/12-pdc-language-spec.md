@@ -1,7 +1,11 @@
 # PDC (Pixel Doodle Code) Language Specification
 
-**Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-5 implemented)
-**Status:** Core language implemented (types, variables, control flow, functions, structs, enums, match, imports, stdlib). Arrays, strings, slices, and PDP integration still pending.
+**Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-5+ implemented)
+**Status:** Core language implemented. See `docs/pdc.md` for the complete user-facing reference.
+
+**Implemented:** All numeric types (i8-i64, u8-u64, f32, f64), bool, Path, structs, enums (simple + data variants), match (with destructuring, dot-shorthand, exhaustiveness), tuples (construction, element access, destructuring, len), arrays (Array\<T\> with proper element-sized storage, bracket notation, for-each), imports, stdlib (geometry, math), compound assignment, named function arguments, const enforcement, UFCS, alpha blending.
+
+**Not yet implemented:** strings, slices, array broadcasting operators, block comments, `**` exponentiation, bitwise operators, ternary `?:`, function references/map, SOA layout annotation, LLVM backend, PDP integration.
 
 PDC is a JIT-compiled language for describing vector scenes and defining processing kernels. It combines VFS's expression language with PDP's resource model. Compiled via Cranelift (portable) and optionally LLVM (performance).
 
