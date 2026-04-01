@@ -1,11 +1,11 @@
 # PDC (Pixel Doodle Code) Language Specification
 
-**Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-5+ implemented)
+**Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-7+ implemented)
 **Status:** Core language implemented. See `docs/pdc.md` for the complete user-facing reference.
 
-**Implemented:** All numeric types (i8-i64, u8-u64, f32, f64), bool, Path, structs, enums (simple + data variants), match (with destructuring, dot-shorthand, exhaustiveness), tuples (construction, element access, destructuring, len), arrays (Array\<T\> with proper element-sized storage, bracket notation, for-each), imports, stdlib (geometry, math), compound assignment, named function arguments, const enforcement, UFCS, alpha blending.
+**Implemented:** All numeric types (i8-i64, u8-u64, f32, f64), bool, Path, strings (handle-based, UTF-8, concat/slice/len/char_at), slices (slice\<T\> views into arrays), structs, enums (simple + data variants), match (with destructuring, dot-shorthand, exhaustiveness), tuples (construction, element access, destructuring, len), arrays (Array\<T\> with proper element-sized storage, bracket notation, for-each, map, broadcasting), imports (direct, namespaced, and file-based with circular detection), stdlib (geometry, math), compound assignment (all operators), named function arguments, const enforcement, UFCS, alpha blending, `**` exponentiation, bitwise operators (`& | ^ ~ << >>`), ternary `?:`, function references/map, function overloading, for-each destructuring, richer fill/stroke styling (FillRule, LineCap, LineJoin), block comments (`/* */` with nesting), type aliases (`type Name = Type`), inclusive range loops (`..=`), exp2/inversesqrt math builtins.
 
-**Not yet implemented:** strings, slices, array broadcasting operators, block comments, `**` exponentiation, bitwise operators, ternary `?:`, function references/map, SOA layout annotation, LLVM backend, PDP integration.
+**Not yet implemented:** SOA layout annotation, LLVM backend, PDP integration.
 
 PDC is a JIT-compiled language for describing vector scenes and defining processing kernels. It combines VFS's expression language with PDP's resource model. Compiled via Cranelift (portable) and optionally LLVM (performance).
 
@@ -55,10 +55,6 @@ const s = Style(width: 2.0, color: 0xFF000000)
 // Type constructor (built-in like Path)
 var p = Path()
 ```
-
-### Deferred
-
-- Type aliases (`type Color = vec4<f32>`)
 
 ## Variables
 

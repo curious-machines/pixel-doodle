@@ -12,6 +12,9 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Path](#path)
   - [Arrays](#arrays)
   - [Tuples](#tuples)
+  - [Strings](#strings)
+  - [Slices](#slices)
+  - [Type Aliases](#type-aliases)
   - [Structs](#structs)
   - [Enums](#enums)
 - [Variables](#variables)
@@ -21,8 +24,10 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Const Enforcement](#const-enforcement)
 - [Operators](#operators)
   - [Arithmetic](#arithmetic)
+  - [Bitwise](#bitwise)
   - [Comparison](#comparison)
   - [Logical](#logical)
+  - [Ternary](#ternary)
   - [Assignment](#assignment)
   - [Compound Assignment](#compound-assignment)
 - [Type Casting](#type-casting)
@@ -30,6 +35,7 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [If / Elsif / Else](#if--elsif--else)
   - [While Loop](#while-loop)
   - [For Range Loop](#for-range-loop)
+  - [Inclusive Range Loop](#inclusive-range-loop)
   - [For-Each Loop](#for-each-loop)
   - [Loop (Infinite)](#loop-infinite)
   - [Break and Continue](#break-and-continue)
@@ -39,6 +45,8 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Void Functions](#void-functions)
   - [Recursion](#recursion)
   - [Named Arguments](#named-arguments)
+  - [Function Overloading](#function-overloading)
+  - [Function References and Map](#function-references-and-map)
 - [Structs](#structs-1)
   - [Definition](#struct-definition)
   - [Construction](#struct-construction)
@@ -60,6 +68,7 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Array Methods](#array-methods)
   - [For-Each Iteration](#for-each-iteration-1)
   - [Array Storage](#array-storage)
+  - [Array Broadcasting](#array-broadcasting)
 - [Tuples](#tuples-1)
   - [Construction](#tuple-construction)
   - [Element Access](#element-access)
@@ -77,6 +86,7 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
 - [Drawing](#drawing)
   - [Fill](#fill)
   - [Stroke](#stroke)
+  - [Style Enums](#style-enums)
   - [Color Format](#color-format)
   - [Alpha Blending](#alpha-blending)
   - [Painter's Algorithm](#painters-algorithm)
@@ -108,9 +118,15 @@ fill(c, 0xFFFF8800)
 
 ```
 // Line comment
-```
 
-Block comments (`/* */`) are planned but not yet implemented.
+/* Block comment */
+
+/* Block comments
+   can span
+   multiple lines */
+
+/* Block comments /* can be nested */ like this */
+```
 
 ## Types
 
@@ -162,6 +178,58 @@ See [Tuples](#tuples-1) section for full details.
 const point = (100.0, 200.0)
 const x = point.0
 ```
+
+### Strings
+
+UTF-8 strings with handle-based runtime storage:
+
+```
+const greeting = "hello"
+const name = "world"
+const msg = greeting + " " + name     // concatenation with +
+const n = msg.len()                    // byte length
+const ch = msg.char_at(0)             // single-char string
+const sub = msg.slice(0, 5)           // substring view
+const eq = greeting == "hello"        // comparison
+```
+
+Methods: `len()`, `concat(other)`, `slice(start, end)`, `char_at(index)`.
+
+Escape sequences: `\\`, `\"`, `\n`, `\t`, `\r`, `\0`.
+
+### Slices
+
+Views into arrays without copying:
+
+```
+var arr = Array<f64>()
+arr.push(1.0)
+arr.push(2.0)
+arr.push(3.0)
+arr.push(4.0)
+
+const s = arr.slice(1, 3)    // view of elements [1..3)
+const n = s.len()             // 2
+const v = s[0]                // 2.0 (arr[1])
+const w = s.get(1)            // 3.0 (arr[2])
+```
+
+Slices share the underlying array memory. They support `len()`, `get(index)`, and bracket indexing.
+
+### Type Aliases
+
+Create alternative names for existing types:
+
+```
+type Coord = f64
+type Point = (f64, f64)
+type Pixels = Array<u32>
+
+const x: Coord = 42.0
+const origin: Point = (0.0, 0.0)
+```
+
+Type aliases are fully resolved at compile time and are interchangeable with the original type.
 
 ### Structs
 
@@ -229,7 +297,13 @@ This applies to `const` declarations, `builtin const`, const loop variables, and
 | `*` | Multiplication |
 | `/` | Division |
 | `%` | Modulo (remainder) |
+| `**` | Exponentiation |
 | `-x` | Unary negation |
+
+```
+const area = 3.14 * r ** 2      // right-associative: a ** b ** c = a ** (b ** c)
+const cubed = x ** 3
+```
 
 Mixed numeric types are automatically widened (e.g., `i32 + f64` produces `f64`).
 
@@ -246,6 +320,25 @@ Mixed numeric types are automatically widened (e.g., `i32 + f64` produces `f64`)
 
 Comparison operators return `bool`. Enum values of the same type can be compared with `==` and `!=`.
 
+### Bitwise
+
+| Operator | Description |
+|----------|-------------|
+| `&` | Bitwise AND |
+| `\|` | Bitwise OR |
+| `^` | Bitwise XOR |
+| `~` | Bitwise NOT |
+| `<<` | Left shift |
+| `>>` | Right shift (arithmetic) |
+
+Bitwise operators require integer operands.
+
+```
+const flags = 0x0F & mask
+const shifted = value << 4
+const inverted = ~bits
+```
+
 ### Logical
 
 | Operator | Description |
@@ -253,6 +346,14 @@ Comparison operators return `bool`. Enum values of the same type can be compared
 | `&&` | Logical AND (short-circuit) |
 | `\|\|` | Logical OR (short-circuit) |
 | `!` | Logical NOT |
+
+### Ternary
+
+```
+const result = condition ? value_if_true : value_if_false
+```
+
+The ternary operator is an expression — it returns a value. Both branches must have compatible types. It has the lowest precedence of all operators (lower than `||`).
 
 ### Assignment
 
@@ -270,6 +371,12 @@ x = 10
 | `x *= 2` | `x = x * 2` |
 | `x /= 2` | `x = x / 2` |
 | `x %= 3` | `x = x % 3` |
+| `x **= 2` | `x = x ** 2` |
+| `x &= mask` | `x = x & mask` |
+| `x \|= flag` | `x = x \| flag` |
+| `x ^= bits` | `x = x ^ bits` |
+| `x <<= n` | `x = x << n` |
+| `x >>= n` | `x = x >> n` |
 
 ## Type Casting
 
@@ -320,6 +427,16 @@ for i in 0..10 {
 }
 ```
 
+### Inclusive Range Loop
+
+Iterates over an inclusive integer range:
+
+```
+for i in 0..=10 {
+    // i goes from 0 to 10 (inclusive)
+}
+```
+
 ### For-Each Loop
 
 Iterates over array elements:
@@ -332,6 +449,18 @@ arr.push(3.0)
 
 for val in arr {
     // val is 1.0, then 2.0, then 3.0
+}
+```
+
+Tuple destructuring in for-each:
+
+```
+var pairs = Array<(f64, f64)>()
+pairs.push((1.0, 10.0))
+pairs.push((2.0, 20.0))
+
+for (x, y) in pairs {
+    // x is 1.0 then 2.0; y is 10.0 then 20.0
 }
 ```
 
@@ -432,6 +561,48 @@ draw_circle(radius: 50.0, cx: 100.0, cy: 200.0)
 ```
 
 Named arguments are also used for struct construction (see [Struct Construction](#struct-construction)).
+
+### Function Overloading
+
+Multiple functions can share the same name if they have different parameter types:
+
+```
+fn area(radius: f64) -> f64 {
+    return 3.14159 * radius ** 2
+}
+
+fn area(width: f64, height: f64) -> f64 {
+    return width * height
+}
+
+const circle_area = area(5.0)       // calls 1-param version
+const rect_area = area(3.0, 4.0)   // calls 2-param version
+```
+
+Overload resolution selects the function whose parameter count and types best match the arguments. Exact type matches are preferred; numeric coercion is used as a fallback.
+
+### Function References and Map
+
+Functions can be referenced by name (without calling them) and passed to `map`:
+
+```
+var values = Array<f64>()
+values.push(0.0)
+values.push(1.5708)
+values.push(3.14159)
+
+const sines = values.map(sin)    // [0.0, 1.0, 0.0]
+```
+
+`map` takes a single-parameter function and returns a new array with the function applied to each element. Both built-in and user-defined functions work:
+
+```
+fn double(x: f64) -> f64 {
+    return x * 2.0
+}
+
+const doubled = values.map(double)
+```
 
 ## Structs {#structs-1}
 
@@ -653,6 +824,7 @@ arr[2] = 99.0          // modify third element
 | `arr.len()` | Get the number of elements (returns `i32`) |
 | `arr.get(index)` | Get element at index (same as `arr[index]`) |
 | `arr.set(index, value)` | Set element at index (same as `arr[index] = value`) |
+| `arr.map(fn_ref)` | Apply a function to each element, returns new array |
 
 All methods also work as regular function calls via UFCS:
 
@@ -687,6 +859,35 @@ Arrays store elements at their natural size in contiguous memory:
 - `Array<f64>` / `Array<i64>`: 8 bytes per element
 
 The underlying byte buffer is contiguous and suitable for GPU buffer upload.
+
+### Array Broadcasting
+
+Arithmetic, comparison, and bitwise operators work element-wise when applied to arrays:
+
+```
+var a = Array<f64>()
+a.push(1.0)
+a.push(2.0)
+a.push(3.0)
+
+// Array op scalar: applies to each element
+const doubled = a * 2.0         // [2.0, 4.0, 6.0]
+const offset = a + 10.0         // [11.0, 12.0, 13.0]
+
+// Scalar op array
+const inverted = 1.0 / a        // [1.0, 0.5, 0.333...]
+
+// Array op array: element-wise (must be same length)
+var b = Array<f64>()
+b.push(10.0)
+b.push(20.0)
+b.push(30.0)
+
+const sum = a + b               // [11.0, 22.0, 33.0]
+const greater = a > b           // Array<bool>: [false, false, false]
+```
+
+All arithmetic (`+`, `-`, `*`, `/`, `%`, `**`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), and bitwise (`&`, `|`, `^`, `<<`, `>>`) operators support broadcasting. Comparison broadcasting produces `Array<bool>`.
 
 ## Tuples {#tuples-1}
 
@@ -748,12 +949,31 @@ Without the trailing comma, `(42)` is a parenthesized expression, not a tuple.
 
 ### Import Syntax
 
-Import specific items from a module:
+Import specific items from a module (direct access):
 
 ```
 import { Circle, Rect, RoundedRect } from geometry
 import { lerp, clamp, PI } from math
 ```
+
+Import an entire module (namespaced access):
+
+```
+import math
+
+const angle = math.atan2(y, x)
+const pi = math.PI
+const v = math.lerp(a, b, 0.5)
+```
+
+Import a file-based module (relative to the current file):
+
+```
+import "./my_shapes"
+import { star, hexagon } from "./my_shapes"
+```
+
+File imports resolve `.pdc` files relative to the importing file's directory. The `.pdc` extension is added automatically if omitted. Circular imports are detected and produce a compile error.
 
 ### Geometry Module
 
@@ -796,6 +1016,7 @@ Constants and math utilities:
 | `smoothstep(e0, e1, x)` | Smooth Hermite interpolation |
 | `degrees(rad)` | Radians to degrees |
 | `radians(deg)` | Degrees to radians |
+| `inversesqrt(x)` | Reciprocal square root (1/sqrt(x)) |
 
 All math module functions operate on `f64`.
 
@@ -811,7 +1032,7 @@ Always available (no import needed):
 | `sqrt(x)` | Square root |
 | `abs(x)` | Absolute value |
 | `floor(x)`, `ceil(x)`, `round(x)` | Rounding |
-| `exp(x)`, `ln(x)` | Exponential / natural log |
+| `exp(x)`, `exp2(x)`, `ln(x)` | Exponential / natural log |
 | `log2(x)`, `log10(x)` | Logarithms |
 | `fract(x)` | Fractional part |
 | `min(a, b)`, `max(a, b)` | Minimum / maximum |
@@ -869,19 +1090,27 @@ Drawing commands submit paths to the scene for rendering. The same path can be d
 
 ```
 fill(path, color)
+fill(path, color, fill_rule)
 // or via UFCS:
 path.fill(color)
 ```
 
-Fills the path interior using the even-odd fill rule.
+Fills the path interior.
 
 - `path` — a `Path` handle
 - `color` — packed ARGB `u32`
+- `fill_rule` — optional `FillRule` enum value (default: `FillRule.EvenOdd`)
+
+```
+fill(p, 0xFFFF8800)                        // even-odd (default)
+fill(p, 0xFFFF8800, FillRule.NonZero)      // nonzero winding
+```
 
 ### Stroke
 
 ```
 stroke(path, width, color)
+stroke(path, width, color, cap, join)
 // or via UFCS:
 path.stroke(width, color)
 ```
@@ -891,8 +1120,23 @@ Draws the path outline with a given width.
 - `path` — a `Path` handle
 - `width` — stroke width in pixels (`f32`)
 - `color` — packed ARGB `u32`
+- `cap` — optional `LineCap` enum value (default: `LineCap.Butt`)
+- `join` — optional `LineJoin` enum value (default: `LineJoin.Miter`)
 
-Strokes use miter joins with bevel fallback and butt end caps. Strokes are rendered with nonzero winding fill rule to handle self-intersecting outlines correctly.
+```
+stroke(p, 2.0, 0xFF000000)                                        // default style
+stroke(p, 3.0, 0xFF0000FF, LineCap.Round, LineJoin.Round)         // round caps and joins
+```
+
+### Style Enums
+
+Three built-in enums control drawing style:
+
+| Enum | Variants | Description |
+|------|----------|-------------|
+| `FillRule` | `EvenOdd`, `NonZero` | Path fill rule |
+| `LineCap` | `Butt`, `Round`, `Square` | Stroke endpoint style |
+| `LineJoin` | `Miter`, `Round`, `Bevel` | Stroke corner style |
 
 ### Color Format
 

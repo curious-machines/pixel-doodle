@@ -50,3 +50,7 @@ fn degrees(rad: f64) -> f64 {
 fn radians(deg: f64) -> f64 {
     return deg * PI / 180.0
 }
+
+fn inversesqrt(x: f64) -> f64 {
+    return 1.0 / sqrt(x)
+}

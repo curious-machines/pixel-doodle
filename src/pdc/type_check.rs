@@ -13,10 +13,16 @@ struct BuiltinFn {
 }
 
 /// A user-defined function signature (discovered during type checking).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UserFnSig {
     pub params: Vec<PdcType>,
     pub ret: PdcType,
+}
+
+/// Overload set: one or more signatures for the same function name.
+#[derive(Clone, Debug)]
+pub struct OverloadSet {
+    pub sigs: Vec<UserFnSig>,
 }
 
 /// Struct definition info for type checking.
@@ -44,12 +50,14 @@ pub struct TypeChecker {
     /// Variables declared as const — assignments to these are rejected.
     const_vars: HashSet<String>,
     builtins: HashMap<String, BuiltinFn>,
-    /// User-defined function signatures.
-    pub user_fns: HashMap<String, UserFnSig>,
+    /// User-defined function signatures (supports overloading).
+    pub user_fns: HashMap<String, OverloadSet>,
     /// User-defined struct definitions.
     pub structs: HashMap<String, StructInfo>,
     /// User-defined enum definitions.
     pub enums: HashMap<String, EnumInfo>,
+    /// Type aliases: `type Name = ExistingType`
+    pub type_aliases: HashMap<String, PdcType>,
     /// Type assigned to each AST node, indexed by node ID.
     pub types: Vec<PdcType>,
 }
@@ -63,6 +71,7 @@ impl TypeChecker {
             user_fns: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            type_aliases: HashMap::new(),
             types: Vec::new(),
         };
         tc.register_builtins();
@@ -135,14 +144,53 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract"] {
+        // Styled draw overloads
+        self.builtins.insert("fill_styled".into(), BuiltinFn {
+            params: vec![PdcType::PathHandle, PdcType::U32, PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("stroke_styled".into(), BuiltinFn {
+            params: vec![PdcType::PathHandle, PdcType::F32, PdcType::U32, PdcType::I32, PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+
+        // Built-in enums: FillRule, LineCap, LineJoin
+        self.enums.insert("FillRule".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "EvenOdd".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "NonZero".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("FillRule", PdcType::Enum("FillRule".into()));
+
+        self.enums.insert("LineCap".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "Butt".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Round".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Square".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("LineCap", PdcType::Enum("LineCap".into()));
+
+        self.enums.insert("LineJoin".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "Miter".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Round".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Bevel".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("LineJoin", PdcType::Enum("LineJoin".into()));
+
+        for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract", "exp2"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64],
                 ret: PdcType::F64,
                 takes_ctx: false,
             });
         }
-        for name in &["min", "max", "atan2", "fmod"] {
+        for name in &["min", "max", "atan2", "fmod", "pow"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64, PdcType::F64],
                 ret: PdcType::F64,
@@ -172,6 +220,23 @@ impl TypeChecker {
         None
     }
 
+    /// Resolve type aliases. If the type is a Struct(name) that matches a type alias, return the aliased type.
+    fn resolve_type(&self, ty: &PdcType) -> PdcType {
+        match ty {
+            PdcType::Struct(name) => {
+                if let Some(aliased) = self.type_aliases.get(name) {
+                    self.resolve_type(aliased)
+                } else {
+                    ty.clone()
+                }
+            }
+            PdcType::Array(elem) => {
+                PdcType::Array(Box::new(self.resolve_type(elem)))
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn set_type(&mut self, id: u32, ty: PdcType) {
         let id = id as usize;
         if id >= self.types.len() {
@@ -184,15 +249,28 @@ impl TypeChecker {
         // First pass: register all struct and function signatures
         for stmt in &program.stmts {
             match &stmt.node {
+                Stmt::TypeAlias { name, ty } => {
+                    let resolved = self.resolve_type(ty);
+                    self.type_aliases.insert(name.clone(), resolved);
+                }
+                _ => {}
+            }
+        }
+        // Second sub-pass: register structs and functions (aliases now available)
+        for stmt in &program.stmts {
+            match &stmt.node {
                 Stmt::FnDef(fndef) => {
-                    self.user_fns.insert(fndef.name.clone(), UserFnSig {
-                        params: fndef.params.iter().map(|p| p.ty.clone()).collect(),
-                        ret: fndef.return_type.clone(),
-                    });
+                    let sig = UserFnSig {
+                        params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
+                        ret: self.resolve_type(&fndef.return_type),
+                    };
+                    self.user_fns.entry(fndef.name.clone())
+                        .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                        .sigs.push(sig);
                 }
                 Stmt::StructDef(sdef) => {
                     self.structs.insert(sdef.name.clone(), StructInfo {
-                        fields: sdef.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+                        fields: sdef.fields.iter().map(|f| (f.name.clone(), self.resolve_type(&f.ty))).collect(),
                     });
                 }
                 Stmt::EnumDef(edef) => {
@@ -220,14 +298,16 @@ impl TypeChecker {
     fn check_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
         match &stmt.node {
             Stmt::BuiltinDecl { name, ty } => {
-                self.define_var(name, ty.clone());
+                let resolved = self.resolve_type(ty);
+                self.define_var(name, resolved);
                 self.const_vars.insert(name.clone());
             }
             Stmt::ConstDecl { name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
-                    self.check_compatible(&val_ty, declared, value.span)?;
-                    declared.clone()
+                    let resolved = self.resolve_type(declared);
+                    self.check_compatible(&val_ty, &resolved, value.span)?;
+                    resolved
                 } else {
                     val_ty
                 };
@@ -237,8 +317,9 @@ impl TypeChecker {
             Stmt::VarDecl { name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
-                    self.check_compatible(&val_ty, declared, value.span)?;
-                    declared.clone()
+                    let resolved = self.resolve_type(declared);
+                    self.check_compatible(&val_ty, &resolved, value.span)?;
+                    resolved
                 } else {
                     val_ty
                 };
@@ -343,6 +424,7 @@ impl TypeChecker {
                 var_name,
                 start,
                 end,
+                inclusive: _,
                 body,
             } => {
                 let st = self.check_expr(start)?;
@@ -374,6 +456,7 @@ impl TypeChecker {
             }
             Stmt::ForEach { mutable,
                 var_name,
+                destructure_names,
                 collection,
                 body,
             } => {
@@ -388,15 +471,49 @@ impl TypeChecker {
                     }
                 };
                 self.push_scope();
-                self.define_var(var_name, elem_ty);
-                if !mutable {
-                    self.const_vars.insert(var_name.clone());
+                if !destructure_names.is_empty() {
+                    // Destructuring: element must be a tuple
+                    if let PdcType::Tuple(ref elems) = elem_ty {
+                        if destructure_names.len() != elems.len() {
+                            return Err(PdcError::Type {
+                                span: collection.span,
+                                message: format!(
+                                    "for-each destructure: expected {} names, got {} (tuple has {} elements)",
+                                    elems.len(), destructure_names.len(), elems.len(),
+                                ),
+                            });
+                        }
+                        for (i, name) in destructure_names.iter().enumerate() {
+                            if name != "_" {
+                                self.define_var(name, elems[i].clone());
+                                if !mutable {
+                                    self.const_vars.insert(name.clone());
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(PdcError::Type {
+                            span: collection.span,
+                            message: format!("cannot destructure non-tuple element type {elem_ty}"),
+                        });
+                    }
+                } else {
+                    self.define_var(var_name, elem_ty);
+                    if !mutable {
+                        self.const_vars.insert(var_name.clone());
+                    }
                 }
                 for s in &body.stmts {
                     self.check_stmt(s)?;
                 }
                 if !mutable {
-                    self.const_vars.remove(var_name);
+                    if !destructure_names.is_empty() {
+                        for name in destructure_names {
+                            self.const_vars.remove(name);
+                        }
+                    } else {
+                        self.const_vars.remove(var_name);
+                    }
                 }
                 self.pop_scope();
             }
@@ -479,7 +596,13 @@ impl TypeChecker {
                     }
                 }
             }
-            Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {
+            Stmt::Import { module, names } => {
+                // Namespaced import: `import math` → define `math` as a module namespace
+                if names.is_empty() {
+                    self.define_var(module, PdcType::Module(module.clone()));
+                }
+            }
+            Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } => {
                 // Already registered in first pass
             }
             Stmt::FnDef(fndef) => {
@@ -520,12 +643,30 @@ impl TypeChecker {
                 }
                 Literal::Float(_) => PdcType::F64,
                 Literal::Bool(_) => PdcType::Bool,
+                Literal::String(_) => PdcType::Str,
             },
             Expr::Variable(name) => {
-                self.lookup_var(name).cloned().ok_or_else(|| PdcError::Type {
-                    span: expr.span,
-                    message: format!("undefined variable '{name}'"),
-                })?
+                if let Some(ty) = self.lookup_var(name).cloned() {
+                    ty
+                } else if let Some(builtin) = self.builtins.get(name.as_str()) {
+                    // Function reference to a builtin
+                    PdcType::FnRef {
+                        params: builtin.params.clone(),
+                        ret: Box::new(builtin.ret.clone()),
+                    }
+                } else if let Some(overloads) = self.user_fns.get(name.as_str()) {
+                    // Function reference to a user function (use first overload)
+                    let sig = &overloads.sigs[0];
+                    PdcType::FnRef {
+                        params: sig.params.clone(),
+                        ret: Box::new(sig.ret.clone()),
+                    }
+                } else {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("undefined variable '{name}'"),
+                    });
+                }
             }
             Expr::BinaryOp { op, left, right } => {
                 let lt = self.check_expr(left)?;
@@ -552,6 +693,15 @@ impl TypeChecker {
                             });
                         }
                         PdcType::Bool
+                    }
+                    UnaryOp::BitNot => {
+                        if !t.is_int() {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("cannot apply ~ to type {t}, expected integer"),
+                            });
+                        }
+                        t
                     }
                 }
             }
@@ -595,6 +745,20 @@ impl TypeChecker {
                     return Ok(arr_ty);
                 }
 
+                // Overloaded builtins: fill/stroke with style parameters
+                if name == "fill" && args.len() == 3 {
+                    // fill(path, color, rule) → fill_styled
+                    for arg in args.iter() { self.check_expr(arg)?; }
+                    self.set_type(expr.id, PdcType::Void);
+                    return Ok(PdcType::Void);
+                }
+                if name == "stroke" && args.len() == 5 {
+                    // stroke(path, width, color, cap, join) → stroke_styled
+                    for arg in args.iter() { self.check_expr(arg)?; }
+                    self.set_type(expr.id, PdcType::Void);
+                    return Ok(PdcType::Void);
+                }
+
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {
@@ -622,20 +786,22 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
                     }
                     ret
-                } else if let Some(sig) = self.user_fns.get(name.as_str()).cloned() {
-                    if args.len() != sig.params.len() {
-                        return Err(PdcError::Type {
+                } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
+                    // Type-check args first to get their types for overload resolution
+                    let mut arg_types = Vec::new();
+                    for arg in args.iter() {
+                        arg_types.push(self.check_expr(arg)?);
+                    }
+                    let sig = self.resolve_overload(&overloads, &arg_types)
+                        .ok_or_else(|| PdcError::Type {
                             span: expr.span,
                             message: format!(
-                                "function '{name}' expects {} arguments, got {}",
-                                sig.params.len(),
-                                args.len()
+                                "no matching overload for '{name}' with argument types ({})",
+                                arg_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "),
                             ),
-                        });
-                    }
+                        })?;
                     for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr(arg)?;
-                        self.check_compatible(&arg_ty, &sig.params[i], arg.span)?;
+                        self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
                     }
                     sig.ret
                 } else {
@@ -648,6 +814,38 @@ impl TypeChecker {
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.check_expr(object)?;
 
+                // Module namespaced call: math.sin(x) → sin(x)
+                if let PdcType::Module(_) = &obj_ty {
+                    // Check args
+                    let mut arg_types = Vec::new();
+                    for arg in args.iter() {
+                        arg_types.push(self.check_expr(arg)?);
+                    }
+                    // Try user function first
+                    if let Some(overloads) = self.user_fns.get(method.as_str()).cloned() {
+                        let sig = self.resolve_overload(&overloads, &arg_types)
+                            .ok_or_else(|| PdcError::Type {
+                                span: expr.span,
+                                message: format!("no matching overload for '{method}'"),
+                            })?;
+                        for (i, arg) in args.iter().enumerate() {
+                            self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                        }
+                        self.set_type(expr.id, sig.ret.clone());
+                        return Ok(sig.ret);
+                    }
+                    // Try builtin
+                    if let Some(builtin) = self.builtins.get(method.as_str()) {
+                        let ret = builtin.ret.clone();
+                        self.set_type(expr.id, ret.clone());
+                        return Ok(ret);
+                    }
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("module has no function '{method}'"),
+                    });
+                }
+
                 // Tuple methods: len
                 if let PdcType::Tuple(_) = &obj_ty {
                     match method.as_str() {
@@ -656,6 +854,61 @@ impl TypeChecker {
                             return Err(PdcError::Type {
                                 span: expr.span,
                                 message: format!("tuple has no method '{method}'"),
+                            });
+                        }
+                    }
+                } else
+                // Slice methods: len, get
+                if let PdcType::Slice(ref elem_ty) = obj_ty {
+                    match method.as_str() {
+                        "len" => PdcType::I32,
+                        "get" => {
+                            if args.len() == 1 {
+                                self.check_expr(&args[0])?;
+                            }
+                            *elem_ty.clone()
+                        }
+                        _ => {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("slice has no method '{method}'"),
+                            });
+                        }
+                    }
+                } else
+                // String methods
+                if obj_ty == PdcType::Str {
+                    match method.as_str() {
+                        "len" => PdcType::I32,
+                        "slice" => {
+                            if args.len() == 2 {
+                                self.check_expr(&args[0])?;
+                                self.check_expr(&args[1])?;
+                            }
+                            PdcType::Str
+                        }
+                        "concat" => {
+                            if args.len() == 1 {
+                                let arg_ty = self.check_expr(&args[0])?;
+                                if arg_ty != PdcType::Str {
+                                    return Err(PdcError::Type {
+                                        span: args[0].span,
+                                        message: format!("concat expects string, got {arg_ty}"),
+                                    });
+                                }
+                            }
+                            PdcType::Str
+                        }
+                        "char_at" => {
+                            if args.len() == 1 {
+                                self.check_expr(&args[0])?;
+                            }
+                            PdcType::Str
+                        }
+                        _ => {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("string has no method '{method}'"),
                             });
                         }
                     }
@@ -684,6 +937,40 @@ impl TypeChecker {
                                 self.check_compatible(&val_ty, elem_ty, args[1].span)?;
                             }
                             PdcType::Void
+                        }
+                        "map" => {
+                            if args.len() != 1 {
+                                return Err(PdcError::Type {
+                                    span: expr.span,
+                                    message: "map() expects exactly 1 argument (a function reference)".into(),
+                                });
+                            }
+                            let fn_ty = self.check_expr(&args[0])?;
+                            match &fn_ty {
+                                PdcType::FnRef { params, ret } => {
+                                    if params.len() != 1 {
+                                        return Err(PdcError::Type {
+                                            span: args[0].span,
+                                            message: format!("map function must take 1 parameter, got {}", params.len()),
+                                        });
+                                    }
+                                    self.check_compatible(elem_ty, &params[0], args[0].span)?;
+                                    PdcType::Array(Box::new(*ret.clone()))
+                                }
+                                _ => {
+                                    return Err(PdcError::Type {
+                                        span: args[0].span,
+                                        message: format!("map() argument must be a function reference, got {fn_ty}"),
+                                    });
+                                }
+                            }
+                        }
+                        "slice" => {
+                            if args.len() == 2 {
+                                self.check_expr(&args[0])?;
+                                self.check_expr(&args[1])?;
+                            }
+                            PdcType::Slice(elem_ty.clone())
                         }
                         _ => {
                             return Err(PdcError::Type {
@@ -738,22 +1025,23 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &expected_params[i + 1], arg.span)?;
                     }
                     ret
-                } else if let Some(sig) = self.user_fns.get(method.as_str()).cloned() {
-                    let total_args = 1 + args.len();
-                    if total_args != sig.params.len() {
-                        return Err(PdcError::Type {
+                } else if let Some(overloads) = self.user_fns.get(method.as_str()).cloned() {
+                    // Build full arg types: [obj_ty, arg0_ty, arg1_ty, ...]
+                    let mut arg_types = vec![obj_ty.clone()];
+                    for arg in args.iter() {
+                        arg_types.push(self.check_expr(arg)?);
+                    }
+                    let sig = self.resolve_overload(&overloads, &arg_types)
+                        .ok_or_else(|| PdcError::Type {
                             span: expr.span,
                             message: format!(
-                                "method '{method}' expects {} arguments (including self), got {}",
-                                sig.params.len(),
-                                total_args,
+                                "no matching overload for method '{method}' with argument types ({})",
+                                arg_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "),
                             ),
-                        });
-                    }
+                        })?;
                     self.check_compatible(&obj_ty, &sig.params[0], object.span)?;
                     for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr(arg)?;
-                        self.check_compatible(&arg_ty, &sig.params[i + 1], arg.span)?;
+                        self.check_compatible(&arg_types[i + 1], &sig.params[i + 1], arg.span)?;
                     }
                     sig.ret
                 } else {
@@ -768,10 +1056,12 @@ impl TypeChecker {
                 self.check_expr(index)?;
                 if let PdcType::Array(elem_ty) = &obj_ty {
                     *elem_ty.clone()
+                } else if let PdcType::Slice(elem_ty) = &obj_ty {
+                    *elem_ty.clone()
                 } else {
                     return Err(PdcError::Type {
                         span: expr.span,
-                        message: format!("cannot index non-array type {obj_ty}"),
+                        message: format!("cannot index type {obj_ty}"),
                     });
                 }
             }
@@ -802,6 +1092,14 @@ impl TypeChecker {
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.check_expr(object)?;
                 match &obj_ty {
+                    PdcType::Module(_) => {
+                        // Module namespaced field: math.PI → PI
+                        self.lookup_var(field).cloned()
+                            .ok_or_else(|| PdcError::Type {
+                                span: expr.span,
+                                message: format!("module has no member '{field}'"),
+                            })?
+                    }
                     PdcType::Struct(name) => {
                         let info = self.structs.get(name).cloned().ok_or_else(|| PdcError::Type {
                             span: expr.span,
@@ -834,6 +1132,27 @@ impl TypeChecker {
                             message: format!("cannot access field '{field}' on type {obj_ty}"),
                         });
                     }
+                }
+            }
+            Expr::Ternary { condition, then_expr, else_expr } => {
+                let cond_ty = self.check_expr(condition)?;
+                if cond_ty != PdcType::Bool {
+                    return Err(PdcError::Type {
+                        span: condition.span,
+                        message: format!("ternary condition must be bool, got {cond_ty}"),
+                    });
+                }
+                let then_ty = self.check_expr(then_expr)?;
+                let else_ty = self.check_expr(else_expr)?;
+                if then_ty == else_ty {
+                    then_ty
+                } else if then_ty.is_numeric() && else_ty.is_numeric() {
+                    self.unify_numeric(&then_ty, &else_ty, expr.span)?
+                } else {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("ternary branches must have compatible types, got {then_ty} and {else_ty}"),
+                    });
                 }
             }
             Expr::StructConstruct { name, fields } => {
@@ -873,7 +1192,15 @@ impl TypeChecker {
             "u32" => Some(PdcType::U32),
             "u64" => Some(PdcType::U64),
             "bool" => Some(PdcType::Bool),
-            _ => None,
+            _ => {
+                // Check type aliases that resolve to numeric types
+                if let Some(aliased) = self.type_aliases.get(name) {
+                    if aliased.is_numeric() || *aliased == PdcType::Bool {
+                        return Some(aliased.clone());
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -884,6 +1211,73 @@ impl TypeChecker {
         right: &PdcType,
         span: super::span::Span,
     ) -> Result<PdcType, PdcError> {
+        // Array broadcasting: array op array, array op scalar, scalar op array
+        let is_arithmetic_or_cmp = matches!(op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow |
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq |
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+        );
+        if is_arithmetic_or_cmp {
+            match (left, right) {
+                (PdcType::Array(elem_l), PdcType::Array(elem_r)) => {
+                    // array op array: element-wise
+                    let result_elem = self.check_binary_op(op, elem_l, elem_r, span)?;
+                    return if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                        Ok(PdcType::Array(Box::new(PdcType::Bool)))
+                    } else {
+                        Ok(PdcType::Array(Box::new(result_elem)))
+                    };
+                }
+                (PdcType::Array(elem), scalar) if scalar.is_numeric() => {
+                    let result_elem = self.check_binary_op(op, elem, scalar, span)?;
+                    return if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                        Ok(PdcType::Array(Box::new(PdcType::Bool)))
+                    } else {
+                        Ok(PdcType::Array(Box::new(result_elem)))
+                    };
+                }
+                (scalar, PdcType::Array(elem)) if scalar.is_numeric() => {
+                    let result_elem = self.check_binary_op(op, scalar, elem, span)?;
+                    return if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                        Ok(PdcType::Array(Box::new(PdcType::Bool)))
+                    } else {
+                        Ok(PdcType::Array(Box::new(result_elem)))
+                    };
+                }
+                _ => {} // fall through to normal checking
+            }
+        }
+
+        // String operations
+        if *left == PdcType::Str || *right == PdcType::Str {
+            match op {
+                BinOp::Add => {
+                    if *left == PdcType::Str && *right == PdcType::Str {
+                        return Ok(PdcType::Str);
+                    }
+                    return Err(PdcError::Type {
+                        span,
+                        message: format!("cannot add {left} and {right}"),
+                    });
+                }
+                BinOp::Eq | BinOp::NotEq => {
+                    if *left == PdcType::Str && *right == PdcType::Str {
+                        return Ok(PdcType::Bool);
+                    }
+                    return Err(PdcError::Type {
+                        span,
+                        message: format!("cannot compare {left} and {right}"),
+                    });
+                }
+                _ => {
+                    return Err(PdcError::Type {
+                        span,
+                        message: format!("operator not supported for string type"),
+                    });
+                }
+            }
+        }
+
         match op {
             BinOp::And | BinOp::Or => {
                 if *left != PdcType::Bool || *right != PdcType::Bool {
@@ -908,7 +1302,16 @@ impl TypeChecker {
                 let _ = self.unify_numeric(left, right, span)?;
                 Ok(PdcType::Bool)
             }
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+                self.unify_numeric(left, right, span)
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                if !left.is_int() || !right.is_int() {
+                    return Err(PdcError::Type {
+                        span,
+                        message: format!("bitwise operator requires integer types, got {left} and {right}"),
+                    });
+                }
                 self.unify_numeric(left, right, span)
             }
         }
@@ -941,6 +1344,28 @@ impl TypeChecker {
             (PdcType::U16, _) | (_, PdcType::U16) => Ok(PdcType::I16),
             _ => Ok(PdcType::I32), // i8/u8 → i32
         }
+    }
+
+    /// Resolve the best-matching overload for given argument types.
+    fn resolve_overload(&self, overloads: &OverloadSet, arg_types: &[PdcType]) -> Option<UserFnSig> {
+        // Exact match first
+        for sig in &overloads.sigs {
+            if sig.params.len() == arg_types.len() &&
+               sig.params.iter().zip(arg_types).all(|(p, a)| p == a) {
+                return Some(sig.clone());
+            }
+        }
+        // Compatible match (numeric coercion)
+        for sig in &overloads.sigs {
+            if sig.params.len() == arg_types.len() &&
+               sig.params.iter().zip(arg_types).all(|(p, a)| {
+                   p == a || (p.is_numeric() && a.is_numeric()) ||
+                   matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
+               }) {
+                return Some(sig.clone());
+            }
+        }
+        None
     }
 
     fn check_compatible(

@@ -16,6 +16,8 @@ pub enum PdcType {
     Bool,
     /// Opaque path handle (u32 internally). Becomes a struct in later phases.
     PathHandle,
+    /// UTF-8 string type. Runtime-managed, handle-based.
+    Str,
     /// User-defined struct type, referenced by name.
     Struct(String),
     /// User-defined enum type, referenced by name.
@@ -24,6 +26,15 @@ pub enum PdcType {
     Array(Box<PdcType>),
     /// Tuple type: (T, U, ...)
     Tuple(Vec<PdcType>),
+    /// Slice type: view into array without copying.
+    Slice(Box<PdcType>),
+        /// Function reference type: fn(params) -> ret
+    FnRef {
+        params: Vec<PdcType>,
+        ret: Box<PdcType>,
+    },
+    /// Module namespace for namespaced imports (e.g., `import math` → `math` has type Module).
+    Module(String),
     /// Type not yet determined (for inference).
     Unknown,
     /// No return value.
@@ -60,6 +71,7 @@ impl std::fmt::Display for PdcType {
             PdcType::U64 => write!(f, "u64"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
+            PdcType::Str => write!(f, "string"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
             PdcType::Array(elem) => write!(f, "Array<{elem}>"),
             PdcType::Tuple(elems) => {
@@ -70,6 +82,16 @@ impl std::fmt::Display for PdcType {
                 }
                 write!(f, ")")
             }
+            PdcType::Slice(elem) => write!(f, "slice<{elem}>"),
+            PdcType::FnRef { params, ret } => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{p}")?;
+                }
+                write!(f, ") -> {ret}")
+            }
+            PdcType::Module(name) => write!(f, "module({name})"),
             PdcType::Unknown => write!(f, "unknown"),
             PdcType::Void => write!(f, "void"),
         }
@@ -81,6 +103,7 @@ pub enum Literal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    String(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +113,7 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+    Pow,
     Eq,
     NotEq,
     Lt,
@@ -98,12 +122,18 @@ pub enum BinOp {
     GtEq,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Neg,
     Not,
+    BitNot,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +186,12 @@ pub enum Expr {
         object: Box<Spanned<Expr>>,
         index: Box<Spanned<Expr>>,
     },
+    /// Ternary: `cond ? then_expr : else_expr`
+    Ternary {
+        condition: Box<Spanned<Expr>>,
+        then_expr: Box<Spanned<Expr>>,
+        else_expr: Box<Spanned<Expr>>,
+    },
 }
 
 /// A statement within a block or at top level.
@@ -203,17 +239,22 @@ pub enum Stmt {
         condition: Spanned<Expr>,
         body: Block,
     },
-    /// `for [const|var] name in start..end { body }` (exclusive range)
+    /// `for [const|var] name in start..end { body }` (exclusive)
+    /// `for [const|var] name in start..=end { body }` (inclusive)
     For {
         var_name: String,
         mutable: bool,
         start: Spanned<Expr>,
         end: Spanned<Expr>,
+        inclusive: bool,
         body: Block,
     },
     /// `for [const|var] name in collection { body }` (iterate over array)
+    /// `for [const|var] (a, b) in collection { body }` (destructuring)
     ForEach {
         var_name: String,
+        /// Tuple destructuring names. If non-empty, var_name is ignored.
+        destructure_names: Vec<String>,
         mutable: bool,
         collection: Spanned<Expr>,
         body: Block,
@@ -237,6 +278,11 @@ pub enum Stmt {
     StructDef(StructDef),
     /// `enum Name { Variant1, Variant2, ... }`
     EnumDef(EnumDef),
+    /// `type Name = ExistingType`
+    TypeAlias {
+        name: String,
+        ty: PdcType,
+    },
     /// `import module_name` or `import { names } from module_name`
     Import {
         module: String,

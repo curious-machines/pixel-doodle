@@ -13,7 +13,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
-use super::type_check::{EnumInfo, StructInfo, UserFnSig};
+use super::type_check::{EnumInfo, OverloadSet, StructInfo};
 
 /// Compiled PDC function type.
 pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
@@ -33,7 +33,7 @@ pub fn compile(
     program: &Program,
     types: &[PdcType],
     builtins_layout: &[(&str, PdcType)],
-    user_fns: &HashMap<String, UserFnSig>,
+    user_fns: &HashMap<String, OverloadSet>,
     structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, EnumInfo>,
 ) -> Result<CompiledProgram, PdcError> {
@@ -90,6 +90,8 @@ pub fn compile(
         }
     }
 
+    // Track overload counts for mangled names
+    let mut overload_counts: HashMap<String, usize> = HashMap::new();
     for fndef in &fn_defs {
         let mut sig = jit_module.make_signature();
         sig.call_conv = call_conv;
@@ -103,17 +105,34 @@ pub fn compile(
             sig.returns.push(AbiParam::new(pdc_type_to_cl(&fndef.return_type, pointer_type)));
         }
 
+        let idx = overload_counts.entry(fndef.name.clone()).or_insert(0);
+        let mangled = if *idx == 0 {
+            format!("pdc_userfn_{}", fndef.name)
+        } else {
+            format!("pdc_userfn_{}_{}", fndef.name, idx)
+        };
+        *idx += 1;
+
         let func_id = jit_module
-            .declare_function(&format!("pdc_userfn_{}", fndef.name), Linkage::Local, &sig)
+            .declare_function(&mangled, Linkage::Local, &sig)
             .map_err(|e| PdcError::Codegen {
                 message: format!("declare user fn: {e}"),
             })?;
-        user_fn_ids.insert(fndef.name.clone(), func_id);
+        // Key by mangled name so each overload gets its own entry
+        user_fn_ids.insert(mangled, func_id);
     }
 
     // Compile each user function
+    let mut compile_overload_counts: HashMap<String, usize> = HashMap::new();
     for fndef in &fn_defs {
-        let func_id = user_fn_ids[&fndef.name];
+        let idx = compile_overload_counts.entry(fndef.name.clone()).or_insert(0);
+        let mangled = if *idx == 0 {
+            format!("pdc_userfn_{}", fndef.name)
+        } else {
+            format!("pdc_userfn_{}_{}", fndef.name, idx)
+        };
+        *idx += 1;
+        let func_id = user_fn_ids[&mangled];
         let mut ctx = jit_module.make_context();
         let sig = jit_module.declarations().get_function_decl(func_id).signature.clone();
         ctx.func.signature = sig;
@@ -228,7 +247,7 @@ pub fn compile(
         };
 
         for stmt in &program.stmts {
-            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_)) {
+            if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::TypeAlias { .. }) {
                 continue;
             }
             cg.emit_stmt(stmt)?;
@@ -292,10 +311,14 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
         PdcType::PathHandle => I32,
+        PdcType::Str => I32, // strings are handles (i32)
+        PdcType::Slice(_) => pointer_type, // slices are pointers to (handle, start, len)
         PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
         PdcType::Enum(_) => I32, // enums are u32 constants
         PdcType::Array(_) => I32, // arrays are handles (u32)
         PdcType::Void => I32,
+        PdcType::FnRef { .. } => pointer_type, // function references are opaque at codegen level
+        PdcType::Module(_) => I32, // module namespaces have no runtime representation
         PdcType::Unknown => pointer_type,
     }
 }
@@ -313,8 +336,7 @@ struct CodegenCtx<'a, 'b> {
     call_conv: CallConv,
     pointer_type: cranelift_codegen::ir::Type,
     user_fn_ids: &'a HashMap<String, cranelift_module::FuncId>,
-    #[allow(dead_code)]
-    user_fns: &'a HashMap<String, UserFnSig>,
+    user_fns: &'a HashMap<String, OverloadSet>,
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
     /// Set to true after a terminator instruction (return, break, continue).
@@ -463,12 +485,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 var_name,
                 start,
                 end,
+                inclusive,
                 body,
             } => {
-                self.emit_for(var_name, start, end, body)?;
+                self.emit_for(var_name, start, end, *inclusive, body)?;
             }
             Stmt::ForEach { mutable: _,
                 var_name,
+                destructure_names,
                 collection,
                 body,
             } => {
@@ -525,8 +549,24 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 )?;
                 let elem_val = self.int_to_float_if_needed(raw, elem_cl);
 
-                let var = self.new_variable(var_name, &elem_ty);
-                self.builder.def_var(var, elem_val);
+                if !destructure_names.is_empty() {
+                    // Destructuring: elem_val is a pointer to a tuple
+                    if let PdcType::Tuple(ref tuple_elems) = elem_ty {
+                        for (i, name) in destructure_names.iter().enumerate() {
+                            if name == "_" {
+                                continue;
+                            }
+                            let field_ty = &tuple_elems[i];
+                            let raw = self.builder.ins().load(F64, MemFlags::trusted(), elem_val, (i * 8) as i32);
+                            let val = self.narrow_from_f64(raw, field_ty);
+                            let var = self.new_variable(name, field_ty);
+                            self.builder.def_var(var, val);
+                        }
+                    }
+                } else {
+                    let var = self.new_variable(var_name, &elem_ty);
+                    self.builder.def_var(var, elem_val);
+                }
 
                 self.emit_block(body)?;
                 if !self.block_terminated {
@@ -566,7 +606,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             Stmt::Match { scrutinee, arms } => {
                 self.emit_match(scrutinee, arms)?;
             }
-            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {
+            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. } => {
                 // Already handled
             }
         }
@@ -718,10 +758,274 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr, handle, idx, store_val], None)?;
                 Ok(self.builder.ins().iconst(I32, 0))
             }
+            "map" => {
+                self.emit_array_map(object, &args[0], elem_ty)
+            }
+            "slice" => {
+                // Create a slice: stack-allocate (arr_handle: i32, start: i32, len: i32)
+                let start_val = self.emit_expr(&args[0])?;
+                let end_val = self.emit_expr(&args[1])?;
+                let len_val = self.builder.ins().isub(end_val, start_val);
+
+                let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    12, // 3 × i32
+                    0,
+                ));
+                self.builder.ins().stack_store(handle, slot, 0);  // arr_handle
+                self.builder.ins().stack_store(start_val, slot, 4); // start
+                self.builder.ins().stack_store(len_val, slot, 8);  // length
+
+                Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+            }
             _ => Err(PdcError::Codegen {
                 message: format!("unknown array method '{method}'"),
             }),
         }
+    }
+
+    /// Emit array broadcasting: array op array, array op scalar, scalar op array.
+    fn emit_array_broadcast(
+        &mut self,
+        op: BinOp,
+        left: &Spanned<Expr>,
+        right: &Spanned<Expr>,
+        lt: &PdcType,
+        rt: &PdcType,
+        result_ty: &PdcType,
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let result_elem_ty = match result_ty {
+            PdcType::Array(et) => *et.clone(),
+            _ => return Err(PdcError::Codegen { message: "broadcast result must be array".into() }),
+        };
+        let result_elem_cl = pdc_type_to_cl(&result_elem_ty, self.pointer_type);
+        let result_elem_size = result_elem_cl.bytes() as u32;
+
+        let l_is_arr = matches!(lt, PdcType::Array(_));
+        let r_is_arr = matches!(rt, PdcType::Array(_));
+
+        let lval = self.emit_expr(left)?;
+        let rval = self.emit_expr(right)?;
+
+        // Get the length from whichever operand is an array
+        let arr_handle = if l_is_arr { lval } else { rval };
+        let len_val = self.emit_runtime_call_raw("pdc_array_len", &[self.ctx_ptr, arr_handle], Some(I32))?;
+
+        // Create result array
+        let size_val = self.builder.ins().iconst(I32, result_elem_size as i64);
+        let new_arr = self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32))?;
+
+        // Element types for the operation
+        let l_elem_ty = match lt { PdcType::Array(et) => *et.clone(), _ => lt.clone() };
+        let r_elem_ty = match rt { PdcType::Array(et) => *et.clone(), _ => rt.clone() };
+        let op_result_ty = if result_elem_ty == PdcType::Bool {
+            // For comparison broadcasting, the scalar op result is Bool but we need
+            // the numeric type for the operation
+            if l_elem_ty.is_float() || r_elem_ty.is_float() { PdcType::F64 } else { PdcType::I32 }
+        } else {
+            result_elem_ty.clone()
+        };
+
+        // Loop
+        let idx_var = self.builder.declare_var(I32);
+        let zero = self.builder.ins().iconst(I32, 0);
+        self.builder.def_var(idx_var, zero);
+
+        let header_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.ins().jump(header_block, &[]);
+
+        self.builder.switch_to_block(header_block);
+        let idx_val = self.builder.use_var(idx_var);
+        let cond = self.builder.ins().icmp(IntCC::SignedLessThan, idx_val, len_val);
+        self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
+
+        self.builder.switch_to_block(body_block);
+        self.builder.seal_block(body_block);
+
+        // Get left element (or scalar)
+        let l_elem = if l_is_arr {
+            let l_elem_cl = pdc_type_to_cl(&l_elem_ty, self.pointer_type);
+            let l_elem_size = l_elem_cl.bytes() as u32;
+            let get_name = format!("pdc_array_get_{l_elem_size}");
+            let int_type = match l_elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
+            let idx_for_get = self.builder.use_var(idx_var);
+            let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, lval, idx_for_get], Some(int_type))?;
+            self.int_to_float_if_needed(raw, l_elem_cl)
+        } else {
+            lval
+        };
+
+        // Get right element (or scalar)
+        let r_elem = if r_is_arr {
+            let r_elem_cl = pdc_type_to_cl(&r_elem_ty, self.pointer_type);
+            let r_elem_size = r_elem_cl.bytes() as u32;
+            let get_name = format!("pdc_array_get_{r_elem_size}");
+            let int_type = match r_elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
+            let idx_for_get = self.builder.use_var(idx_var);
+            let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, rval, idx_for_get], Some(int_type))?;
+            self.int_to_float_if_needed(raw, r_elem_cl)
+        } else {
+            rval
+        };
+
+        // Apply binary op
+        let elem_result = self.emit_binary_op(op, l_elem, r_elem, &l_elem_ty, &r_elem_ty, &op_result_ty)?;
+
+        // For comparison ops, result is already Bool (I8); for arithmetic, use result_elem_ty
+        let final_val = if result_elem_ty == PdcType::Bool {
+            elem_result // already I8
+        } else {
+            self.convert_value(elem_result, &op_result_ty, &result_elem_ty)
+        };
+
+        // Push to result array
+        let store_val = self.float_to_int_if_needed(final_val, result_elem_cl);
+        let push_name = format!("pdc_array_push_{result_elem_size}");
+        self.emit_runtime_call_raw(&push_name, &[self.ctx_ptr, new_arr, store_val], None)?;
+
+        // Increment
+        let idx_val = self.builder.use_var(idx_var);
+        let one = self.builder.ins().iconst(I32, 1);
+        let next = self.builder.ins().iadd(idx_val, one);
+        self.builder.def_var(idx_var, next);
+        self.builder.ins().jump(header_block, &[]);
+
+        self.builder.seal_block(header_block);
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+
+        Ok(new_arr)
+    }
+
+    /// Emit array.map(fn_ref): create new array, loop, call fn, push results.
+    fn emit_array_map(
+        &mut self,
+        array_expr: &Spanned<Expr>,
+        fn_ref_expr: &Spanned<Expr>,
+        elem_ty: &PdcType,
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let arr_handle = self.emit_expr(array_expr)?;
+
+        // Get function name from the fn_ref expression
+        let fn_name = match &fn_ref_expr.node {
+            Expr::Variable(name) => name.clone(),
+            _ => return Err(PdcError::Codegen {
+                message: "map() argument must be a function name".into(),
+            }),
+        };
+
+        // Determine result element type from the type table
+        let result_ty = self.node_type(fn_ref_expr.id).clone();
+        let ret_ty = match &result_ty {
+            PdcType::FnRef { ret, .. } => *ret.clone(),
+            _ => elem_ty.clone(),
+        };
+        let ret_cl = pdc_type_to_cl(&ret_ty, self.pointer_type);
+        let ret_size = ret_cl.bytes() as u32;
+
+        // Create new array for results
+        let size_val = self.builder.ins().iconst(I32, ret_size as i64);
+        let new_arr = self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32))?;
+
+        // Get source array length
+        let len_val = self.emit_runtime_call_raw("pdc_array_len", &[self.ctx_ptr, arr_handle], Some(I32))?;
+
+        // Loop index
+        let idx_var = self.builder.declare_var(I32);
+        let zero = self.builder.ins().iconst(I32, 0);
+        self.builder.def_var(idx_var, zero);
+
+        let header_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.ins().jump(header_block, &[]);
+
+        // Header: check idx < len
+        self.builder.switch_to_block(header_block);
+        let idx_val = self.builder.use_var(idx_var);
+        let cond = self.builder.ins().icmp(IntCC::SignedLessThan, idx_val, len_val);
+        self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
+
+        // Body: get element, call function, push result
+        self.builder.switch_to_block(body_block);
+        self.builder.seal_block(body_block);
+
+        let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+        let elem_size = elem_cl.bytes() as u32;
+        let get_name = format!("pdc_array_get_{elem_size}");
+        let int_type = match elem_size {
+            1 => I8, 2 => I16, 4 => I32, _ => I64,
+        };
+        let idx_for_get = self.builder.use_var(idx_var);
+        let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, idx_for_get], Some(int_type))?;
+        let elem_val = self.int_to_float_if_needed(raw, elem_cl);
+
+        // Call the function
+        let converted = self.convert_value(elem_val, elem_ty, &PdcType::F64);
+        let fn_result = self.emit_fn_ref_call(&fn_name, converted, elem_ty, &ret_ty)?;
+
+        // Push result to new array
+        let store_val = self.float_to_int_if_needed(fn_result, ret_cl);
+        let push_name = format!("pdc_array_push_{ret_size}");
+        self.emit_runtime_call_raw(&push_name, &[self.ctx_ptr, new_arr, store_val], None)?;
+
+        // Increment index
+        let idx_val = self.builder.use_var(idx_var);
+        let one = self.builder.ins().iconst(I32, 1);
+        let next = self.builder.ins().iadd(idx_val, one);
+        self.builder.def_var(idx_var, next);
+        self.builder.ins().jump(header_block, &[]);
+
+        self.builder.seal_block(header_block);
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+
+        Ok(new_arr)
+    }
+
+    /// Call a function by name with a single argument (used by map).
+    fn emit_fn_ref_call(
+        &mut self,
+        fn_name: &str,
+        arg: cranelift_codegen::ir::Value,
+        _arg_ty: &PdcType,
+        ret_ty: &PdcType,
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        // Check user-defined functions first
+        if let Some(overloads) = self.user_fns.get(fn_name) {
+            // Find single-arg overload
+            let (overload_idx, _sig) = overloads.sigs.iter().enumerate()
+                .find(|(_, sig)| sig.params.len() == 1)
+                .ok_or_else(|| PdcError::Codegen {
+                    message: format!("no single-arg overload for '{fn_name}'"),
+                })?;
+            let mangled = if overload_idx == 0 {
+                format!("pdc_userfn_{fn_name}")
+            } else {
+                format!("pdc_userfn_{fn_name}_{overload_idx}")
+            };
+            let func_id = self.user_fn_ids[&mangled];
+            let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
+            let call = self.builder.ins().call(func_ref, &[self.ctx_ptr, arg]);
+            let results = self.builder.inst_results(call);
+            if results.is_empty() {
+                return Ok(self.builder.ins().iconst(I32, 0));
+            }
+            return Ok(results[0]);
+        }
+
+        // Builtin runtime function
+        let runtime_name = format!("pdc_{fn_name}");
+        let ret_cl = if *ret_ty != PdcType::Void {
+            Some(pdc_type_to_cl(ret_ty, self.pointer_type))
+        } else {
+            None
+        };
+        self.emit_runtime_call_raw(&runtime_name, &[arg], ret_cl)
     }
 
     /// Bitcast float to integer of the same size for passing to runtime functions.
@@ -964,6 +1268,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         var_name: &str,
         start: &Spanned<Expr>,
         end: &Spanned<Expr>,
+        inclusive: bool,
         body: &Block,
     ) -> Result<(), PdcError> {
         let start_val = self.emit_expr(start)?;
@@ -978,10 +1283,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         self.builder.ins().jump(header_block, &[]);
 
-        // Header: check i < end
+        // Header: check i < end (exclusive) or i <= end (inclusive)
         self.builder.switch_to_block(header_block);
         let i_val = self.builder.use_var(var);
-        let cond = self.builder.ins().icmp(IntCC::SignedLessThan, i_val, end_val);
+        let cc = if inclusive { IntCC::SignedLessThanOrEqual } else { IntCC::SignedLessThan };
+        let cond = self.builder.ins().icmp(cc, i_val, end_val);
         self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
 
         // Body
@@ -1038,11 +1344,17 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 Ok(self.builder.use_var(var))
             }
             Expr::BinaryOp { op, left, right } => {
-                let lval = self.emit_expr(left)?;
-                let rval = self.emit_expr(right)?;
                 let lt = self.node_type(left.id).clone();
                 let rt = self.node_type(right.id).clone();
                 let result_ty = self.node_type(expr.id).clone();
+
+                // Array broadcasting
+                if let PdcType::Array(_) = &result_ty {
+                    return self.emit_array_broadcast(*op, left, right, &lt, &rt, &result_ty);
+                }
+
+                let lval = self.emit_expr(left)?;
+                let rval = self.emit_expr(right)?;
                 self.emit_binary_op(*op, lval, rval, &lt, &rt, &result_ty)
             }
             Expr::UnaryOp { op, operand } => {
@@ -1060,6 +1372,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     UnaryOp::Not => {
                         let one = self.builder.ins().iconst(I8, 1);
                         Ok(self.builder.ins().bxor(val, one))
+                    }
+                    UnaryOp::BitNot => {
+                        let cl = pdc_type_to_cl(ty, self.pointer_type);
+                        let neg_one = self.builder.ins().iconst(cl, -1);
+                        Ok(self.builder.ins().bxor(val, neg_one))
                     }
                 }
             }
@@ -1079,11 +1396,57 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 args,
             } => {
                 let obj_ty = self.node_type(object.id).clone();
+                // Module namespaced call: math.sin(x) → sin(x)
+                if let PdcType::Module(_) = obj_ty {
+                    return self.emit_call(method, args, expr.id);
+                }
                 // Tuple len(): compile-time constant
                 if let PdcType::Tuple(ref elems) = obj_ty {
                     if method == "len" {
                         return Ok(self.builder.ins().iconst(I32, elems.len() as i64));
                     }
+                }
+                // Slice methods
+                if let PdcType::Slice(ref elem_ty) = obj_ty {
+                    let slice_ptr = self.emit_expr(object)?;
+                    return match method.as_str() {
+                        "len" => {
+                            Ok(self.builder.ins().load(I32, MemFlags::trusted(), slice_ptr, 8))
+                        }
+                        "get" => {
+                            let idx = self.emit_expr(&args[0])?;
+                            let arr_handle = self.builder.ins().load(I32, MemFlags::trusted(), slice_ptr, 0);
+                            let start = self.builder.ins().load(I32, MemFlags::trusted(), slice_ptr, 4);
+                            let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                            let elem_size = elem_cl.bytes() as u32;
+                            let get_name = format!("pdc_slice_get_{elem_size}");
+                            let int_type = match elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
+                            let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, start, idx], Some(int_type))?;
+                            Ok(self.int_to_float_if_needed(raw, elem_cl))
+                        }
+                        _ => Err(PdcError::Codegen { message: format!("unknown slice method '{method}'") }),
+                    };
+                }
+                // String methods
+                if obj_ty == PdcType::Str {
+                    let handle = self.emit_expr(object)?;
+                    return match method.as_str() {
+                        "len" => self.emit_runtime_call_raw("pdc_string_len", &[self.ctx_ptr, handle], Some(I32)),
+                        "concat" => {
+                            let arg = self.emit_expr(&args[0])?;
+                            self.emit_runtime_call_raw("pdc_string_concat", &[self.ctx_ptr, handle, arg], Some(I32))
+                        }
+                        "slice" => {
+                            let start = self.emit_expr(&args[0])?;
+                            let end = self.emit_expr(&args[1])?;
+                            self.emit_runtime_call_raw("pdc_string_slice", &[self.ctx_ptr, handle, start, end], Some(I32))
+                        }
+                        "char_at" => {
+                            let idx = self.emit_expr(&args[0])?;
+                            self.emit_runtime_call_raw("pdc_string_char_at", &[self.ctx_ptr, handle, idx], Some(I32))
+                        }
+                        _ => Err(PdcError::Codegen { message: format!("unknown string method '{method}'") }),
+                    };
                 }
                 // Array methods with type-aware bitcasting
                 if let PdcType::Array(ref elem_ty) = obj_ty {
@@ -1145,8 +1508,19 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     };
                     let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, idx], Some(int_type))?;
                     Ok(self.int_to_float_if_needed(raw, elem_cl))
+                } else if let PdcType::Slice(ref elem_ty) = obj_ty {
+                    let slice_ptr = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    let arr_handle = self.builder.ins().load(I32, MemFlags::trusted(), slice_ptr, 0);
+                    let start = self.builder.ins().load(I32, MemFlags::trusted(), slice_ptr, 4);
+                    let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                    let elem_size = elem_cl.bytes() as u32;
+                    let get_name = format!("pdc_slice_get_{elem_size}");
+                    let int_type = match elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
+                    let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, start, idx], Some(int_type))?;
+                    Ok(self.int_to_float_if_needed(raw, elem_cl))
                 } else {
-                    Err(PdcError::Codegen { message: "cannot index non-array type".into() })
+                    Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
                 }
             }
             Expr::TupleConstruct { elements } => {
@@ -1170,8 +1544,53 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let raw = self.builder.ins().load(F64, MemFlags::trusted(), obj_val, (*index * 8) as i32);
                 Ok(self.narrow_from_f64(raw, &result_ty))
             }
+            Expr::Ternary { condition, then_expr, else_expr } => {
+                let cond_val = self.emit_expr(condition)?;
+                let result_ty = self.node_type(expr.id).clone();
+                let cl = pdc_type_to_cl(&result_ty, self.pointer_type);
+
+                let result_var = self.builder.declare_var(cl);
+                let default = self.default_value(&result_ty);
+                self.builder.def_var(result_var, default);
+
+                let then_block = self.builder.create_block();
+                let else_block = self.builder.create_block();
+                let merge_block = self.builder.create_block();
+
+                self.builder.ins().brif(cond_val, then_block, &[], else_block, &[]);
+
+                self.builder.switch_to_block(then_block);
+                self.builder.seal_block(then_block);
+                let then_val = self.emit_expr(then_expr)?;
+                let then_ty = self.node_type(then_expr.id).clone();
+                let then_converted = self.convert_value(then_val, &then_ty, &result_ty);
+                self.builder.def_var(result_var, then_converted);
+                self.builder.ins().jump(merge_block, &[]);
+
+                self.builder.switch_to_block(else_block);
+                self.builder.seal_block(else_block);
+                let else_val = self.emit_expr(else_expr)?;
+                let else_ty = self.node_type(else_expr.id).clone();
+                let else_converted = self.convert_value(else_val, &else_ty, &result_ty);
+                self.builder.def_var(result_var, else_converted);
+                self.builder.ins().jump(merge_block, &[]);
+
+                self.builder.switch_to_block(merge_block);
+                self.builder.seal_block(merge_block);
+                Ok(self.builder.use_var(result_var))
+            }
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.node_type(object.id).clone();
+
+                // Module namespaced field: math.PI → PI (emit as variable read)
+                if let PdcType::Module(_) = obj_ty {
+                    let (var, _) = self.variables.get(field).cloned().ok_or_else(|| {
+                        PdcError::Codegen {
+                            message: format!("module has no member '{field}'"),
+                        }
+                    })?;
+                    return Ok(self.builder.use_var(var));
+                }
 
                 // Enum variant access: EnumName.Variant → integer constant
                 if let PdcType::Enum(ref ename) = obj_ty {
@@ -1236,6 +1655,29 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 _ => Ok(self.builder.ins().f64const(*v)),
             },
             Literal::Bool(v) => Ok(self.builder.ins().iconst(I8, *v as i64)),
+            Literal::String(s) => {
+                // Store string data on the stack and call pdc_string_new
+                let bytes = s.as_bytes();
+                let len = bytes.len();
+                if len == 0 {
+                    let null_ptr = self.builder.ins().iconst(self.pointer_type, 0);
+                    let len_val = self.builder.ins().iconst(I32, 0);
+                    self.emit_runtime_call_raw("pdc_string_new", &[self.ctx_ptr, null_ptr, len_val], Some(I32))
+                } else {
+                    let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                        cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                        len as u32,
+                        0,
+                    ));
+                    for (i, &byte) in bytes.iter().enumerate() {
+                        let val = self.builder.ins().iconst(I8, byte as i64);
+                        self.builder.ins().stack_store(val, slot, i as i32);
+                    }
+                    let ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
+                    let len_val = self.builder.ins().iconst(I32, len as i64);
+                    self.emit_runtime_call_raw("pdc_string_new", &[self.ctx_ptr, ptr, len_val], Some(I32))
+                }
+            }
         }
     }
 
@@ -1269,9 +1711,32 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             return Ok(self.convert_value(val, &from_ty, &target));
         }
 
-        // User-defined function
-        if let Some(&func_id) = self.user_fn_ids.get(name) {
-            let sig = self.user_fns.get(name).unwrap().clone();
+        // User-defined function (with overload resolution)
+        if let Some(overloads) = self.user_fns.get(name) {
+            // Collect argument types for overload resolution
+            let arg_types: Vec<PdcType> = args.iter().map(|a| self.node_type(a.id).clone()).collect();
+
+            // Find matching overload
+            let (overload_idx, sig) = overloads.sigs.iter().enumerate()
+                .find(|(_, sig)| {
+                    sig.params.len() == arg_types.len() &&
+                    sig.params.iter().zip(&arg_types).all(|(p, a)| {
+                        p == a || (p.is_numeric() && a.is_numeric()) ||
+                        matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
+                    })
+                })
+                .map(|(i, s)| (i, s.clone()))
+                .ok_or_else(|| PdcError::Codegen {
+                    message: format!("no matching overload for '{name}'"),
+                })?;
+
+            let mangled = if overload_idx == 0 {
+                format!("pdc_userfn_{name}")
+            } else {
+                format!("pdc_userfn_{name}_{overload_idx}")
+            };
+            let func_id = self.user_fn_ids[&mangled];
+
             let mut arg_vals = vec![self.ctx_ptr];
             for (i, arg) in args.iter().enumerate() {
                 let val = self.emit_expr(arg)?;
@@ -1310,6 +1775,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
                 "set" => "pdc_array_set".to_string(),
+                // Styled overloads
+                "fill" if args.len() == 3 => "pdc_fill_styled".to_string(),
+                "stroke" if args.len() == 5 => "pdc_stroke_styled".to_string(),
                 other => format!("pdc_{}", other),
             }
         };
@@ -1317,6 +1785,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let takes_ctx = matches!(
             name,
             "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
+            | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
         );
 
@@ -1366,6 +1835,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "len" => Some(I32),
             "get" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
+            | "fill_styled" | "stroke_styled"
             | "push" | "set" => None,
             _ => Some(F64),
         }
@@ -1494,6 +1964,24 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         rt: &PdcType,
         result_ty: &PdcType,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        // String operations
+        if *lt == PdcType::Str && *rt == PdcType::Str {
+            return match op {
+                BinOp::Add => {
+                    self.emit_runtime_call_raw("pdc_string_concat", &[self.ctx_ptr, lval, rval], Some(I32))
+                }
+                BinOp::Eq => {
+                    self.emit_runtime_call_raw("pdc_string_eq", &[self.ctx_ptr, lval, rval], Some(I8))
+                }
+                BinOp::NotEq => {
+                    let eq = self.emit_runtime_call_raw("pdc_string_eq", &[self.ctx_ptr, lval, rval], Some(I8))?;
+                    let one = self.builder.ins().iconst(I8, 1);
+                    Ok(self.builder.ins().bxor(eq, one))
+                }
+                _ => Err(PdcError::Codegen { message: "unsupported string operator".into() }),
+            };
+        }
+
         let lval = self.convert_value(lval, lt, result_ty);
         let rval = self.convert_value(rval, rt, result_ty);
 
@@ -1535,6 +2023,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             };
         }
 
+        // Bitwise operators — always integer
+        match op {
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                return Ok(match op {
+                    BinOp::BitAnd => self.builder.ins().band(lval, rval),
+                    BinOp::BitOr => self.builder.ins().bor(lval, rval),
+                    BinOp::BitXor => self.builder.ins().bxor(lval, rval),
+                    BinOp::Shl => self.builder.ins().ishl(lval, rval),
+                    BinOp::Shr => self.builder.ins().sshr(lval, rval),
+                    _ => unreachable!(),
+                });
+            }
+            _ => {}
+        }
+
         if result_ty.is_float() {
             Ok(match op {
                 BinOp::Add => self.builder.ins().fadd(lval, rval),
@@ -1547,6 +2050,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let prod = self.builder.ins().fmul(floored, rval);
                     self.builder.ins().fsub(lval, prod)
                 }
+                BinOp::Pow => {
+                    // float ** float → call pow runtime function
+                    self.emit_runtime_call_raw("pdc_pow", &[lval, rval], Some(F64))?
+                }
                 _ => unreachable!(),
             })
         } else {
@@ -1556,6 +2063,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 BinOp::Mul => self.builder.ins().imul(lval, rval),
                 BinOp::Div => self.builder.ins().sdiv(lval, rval),
                 BinOp::Mod => self.builder.ins().srem(lval, rval),
+                BinOp::Pow => {
+                    // int ** int → convert to f64, call pow, convert back
+                    let lf = self.builder.ins().fcvt_from_sint(F64, lval);
+                    let rf = self.builder.ins().fcvt_from_sint(F64, rval);
+                    let result_f64 = self.emit_runtime_call_raw("pdc_pow", &[lf, rf], Some(F64))?;
+                    let result_cl = pdc_type_to_cl(result_ty, self.pointer_type);
+                    self.builder.ins().fcvt_to_sint_sat(result_cl, result_f64)
+                }
                 _ => unreachable!(),
             })
         }

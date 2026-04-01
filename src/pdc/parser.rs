@@ -100,6 +100,7 @@ impl Parser {
             TokenKind::Import => self.parse_import(start),
             TokenKind::Struct => self.parse_struct_def(start),
             TokenKind::Enum => self.parse_enum_def(start),
+            TokenKind::Type => self.parse_type_alias(start),
             TokenKind::Fn => self.parse_fn_def(start),
             _ => {
                 // Expression statement or assignment
@@ -134,8 +135,14 @@ impl Parser {
                     TokenKind::PlusEq => Some(BinOp::Add),
                     TokenKind::MinusEq => Some(BinOp::Sub),
                     TokenKind::StarEq => Some(BinOp::Mul),
+                    TokenKind::StarStarEq => Some(BinOp::Pow),
                     TokenKind::SlashEq => Some(BinOp::Div),
                     TokenKind::PercentEq => Some(BinOp::Mod),
+                    TokenKind::AmpEq => Some(BinOp::BitAnd),
+                    TokenKind::PipeEq => Some(BinOp::BitOr),
+                    TokenKind::CaretEq => Some(BinOp::BitXor),
+                    TokenKind::LtLtEq => Some(BinOp::Shl),
+                    TokenKind::GtGtEq => Some(BinOp::Shr),
                     _ => None,
                 };
                 if let Some(op) = compound_op {
@@ -288,12 +295,35 @@ impl Parser {
         } else {
             false // default to const
         };
-        let (var_name, _) = self.expect_ident()?;
+
+        // Check for tuple destructuring: for (a, b) in ...
+        let (var_name, destructure_names) = if *self.peek() == TokenKind::LParen {
+            self.advance(); // consume '('
+            let mut names = Vec::new();
+            if !self.at(&TokenKind::RParen) {
+                loop {
+                    let (name, _) = self.expect_ident()?;
+                    names.push(name);
+                    if *self.peek() == TokenKind::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RParen)?;
+            (String::new(), names)
+        } else {
+            let (name, _) = self.expect_ident()?;
+            (name, Vec::new())
+        };
+
         self.expect(&TokenKind::In)?;
         let expr = self.parse_expr()?;
 
-        if *self.peek() == TokenKind::DotDot {
-            // Range loop: for i in start..end { }
+        if *self.peek() == TokenKind::DotDot || *self.peek() == TokenKind::DotDotEq {
+            // Range loop: for i in start..end { } or start..=end { }
+            let inclusive = *self.peek() == TokenKind::DotDotEq;
             self.advance();
             let range_end = self.parse_expr()?;
             let body = self.parse_block()?;
@@ -305,6 +335,7 @@ impl Parser {
                     mutable,
                     start: expr,
                     end: range_end,
+                    inclusive,
                     body,
                 },
                 span,
@@ -317,6 +348,7 @@ impl Parser {
             Ok(self.ids.spanned(
                 Stmt::ForEach {
                     var_name,
+                    destructure_names,
                     mutable,
                     collection: expr,
                     body,
@@ -348,6 +380,16 @@ impl Parser {
         };
         let span = Span::new(start.start, end);
         Ok(self.ids.spanned(Stmt::Return(value), span))
+    }
+
+    fn parse_type_alias(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'type'
+        let (name, _) = self.expect_ident()?;
+        self.expect(&TokenKind::Eq)?;
+        let ty = self.parse_type()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(Stmt::TypeAlias { name, ty }, span))
     }
 
     fn parse_fn_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
@@ -553,13 +595,13 @@ impl Parser {
             }
             self.expect(&TokenKind::RBrace)?;
             self.expect(&TokenKind::From)?;
-            let (module, _) = self.expect_ident()?;
+            let module = self.expect_module_name()?;
             let end = self.tokens[self.pos - 1].span.end;
             let span = Span::new(start.start, end);
             Ok(self.ids.spanned(Stmt::Import { module, names }, span))
         } else {
-            // import module
-            let (module, _) = self.expect_ident()?;
+            // import module or import "path/to/module"
+            let module = self.expect_module_name()?;
             let end = self.tokens[self.pos - 1].span.end;
             let span = Span::new(start.start, end);
             Ok(self.ids.spanned(
@@ -569,6 +611,24 @@ impl Parser {
                 },
                 span,
             ))
+        }
+    }
+
+    /// Parse a module name: either an identifier (`math`) or a string literal (`"./my_shapes"`).
+    fn expect_module_name(&mut self) -> Result<String, PdcError> {
+        match self.peek().clone() {
+            TokenKind::Ident(name) => {
+                self.advance();
+                Ok(name)
+            }
+            TokenKind::StringLit(path) => {
+                self.advance();
+                Ok(path)
+            }
+            _ => Err(PdcError::Parse {
+                span: self.span(),
+                message: format!("expected module name (identifier or string), got {:?}", self.peek()),
+            }),
         }
     }
 
@@ -591,6 +651,13 @@ impl Parser {
                 self.expect(&TokenKind::Gt)?;
                 return Ok(PdcType::Array(Box::new(elem_ty)));
             }
+            if name == "slice" {
+                self.advance(); // consume "slice"
+                self.expect(&TokenKind::Lt)?;
+                let elem_ty = self.parse_type()?;
+                self.expect(&TokenKind::Gt)?;
+                return Ok(PdcType::Slice(Box::new(elem_ty)));
+            }
             let ty = match name.as_str() {
                 "f32" => PdcType::F32,
                 "f64" => PdcType::F64,
@@ -603,6 +670,7 @@ impl Parser {
                 "u32" => PdcType::U32,
                 "u64" => PdcType::U64,
                 "bool" => PdcType::Bool,
+                "string" => PdcType::Str,
                 "Path" => PdcType::PathHandle,
                 // User-defined struct types (starts with uppercase by convention)
                 _ => PdcType::Struct(name),
@@ -620,7 +688,25 @@ impl Parser {
     // ── Expression parsing (precedence climbing) ──
 
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, PdcError> {
-        self.parse_or()
+        let expr = self.parse_or()?;
+        // Ternary: expr ? then : else (right-associative)
+        if *self.peek() == TokenKind::Question {
+            self.advance();
+            let then_expr = self.parse_expr()?;
+            self.expect(&TokenKind::Colon)?;
+            let else_expr = self.parse_expr()?;
+            let span = Span::new(expr.span.start, else_expr.span.end);
+            Ok(self.ids.spanned(
+                Expr::Ternary {
+                    condition: Box::new(expr),
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                },
+                span,
+            ))
+        } else {
+            Ok(expr)
+        }
     }
 
     fn parse_or(&mut self) -> Result<Spanned<Expr>, PdcError> {
@@ -642,10 +728,10 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> Result<Spanned<Expr>, PdcError> {
-        let mut left = self.parse_comparison()?;
+        let mut left = self.parse_bit_or()?;
         while *self.peek() == TokenKind::AmpAmp {
             self.advance();
-            let right = self.parse_comparison()?;
+            let right = self.parse_bit_or()?;
             let span = Span::new(left.span.start, right.span.end);
             left = self.ids.spanned(
                 Expr::BinaryOp {
@@ -659,8 +745,62 @@ impl Parser {
         Ok(left)
     }
 
+    fn parse_bit_or(&mut self) -> Result<Spanned<Expr>, PdcError> {
+        let mut left = self.parse_bit_xor()?;
+        while *self.peek() == TokenKind::Pipe {
+            self.advance();
+            let right = self.parse_bit_xor()?;
+            let span = Span::new(left.span.start, right.span.end);
+            left = self.ids.spanned(
+                Expr::BinaryOp {
+                    op: BinOp::BitOr,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Spanned<Expr>, PdcError> {
+        let mut left = self.parse_bit_and()?;
+        while *self.peek() == TokenKind::Caret {
+            self.advance();
+            let right = self.parse_bit_and()?;
+            let span = Span::new(left.span.start, right.span.end);
+            left = self.ids.spanned(
+                Expr::BinaryOp {
+                    op: BinOp::BitXor,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Spanned<Expr>, PdcError> {
+        let mut left = self.parse_comparison()?;
+        while *self.peek() == TokenKind::Amp {
+            self.advance();
+            let right = self.parse_comparison()?;
+            let span = Span::new(left.span.start, right.span.end);
+            left = self.ids.spanned(
+                Expr::BinaryOp {
+                    op: BinOp::BitAnd,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
     fn parse_comparison(&mut self) -> Result<Spanned<Expr>, PdcError> {
-        let mut left = self.parse_addition()?;
+        let mut left = self.parse_shift()?;
         loop {
             let op = match self.peek() {
                 TokenKind::EqEq => BinOp::Eq,
@@ -669,6 +809,29 @@ impl Parser {
                 TokenKind::LtEq => BinOp::LtEq,
                 TokenKind::Gt => BinOp::Gt,
                 TokenKind::GtEq => BinOp::GtEq,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_shift()?;
+            let span = Span::new(left.span.start, right.span.end);
+            left = self.ids.spanned(
+                Expr::BinaryOp {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Spanned<Expr>, PdcError> {
+        let mut left = self.parse_addition()?;
+        loop {
+            let op = match self.peek() {
+                TokenKind::LtLt => BinOp::Shl,
+                TokenKind::GtGt => BinOp::Shr,
                 _ => break,
             };
             self.advance();
@@ -710,7 +873,7 @@ impl Parser {
     }
 
     fn parse_multiplication(&mut self) -> Result<Spanned<Expr>, PdcError> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_exponent()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Star => BinOp::Mul,
@@ -719,7 +882,7 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_unary()?;
+            let right = self.parse_exponent()?;
             let span = Span::new(left.span.start, right.span.end);
             left = self.ids.spanned(
                 Expr::BinaryOp {
@@ -731,6 +894,26 @@ impl Parser {
             );
         }
         Ok(left)
+    }
+
+    /// Exponentiation is right-associative: `a ** b ** c` = `a ** (b ** c)`
+    fn parse_exponent(&mut self) -> Result<Spanned<Expr>, PdcError> {
+        let left = self.parse_unary()?;
+        if *self.peek() == TokenKind::StarStar {
+            self.advance();
+            let right = self.parse_exponent()?; // right-recursive for right-associativity
+            let span = Span::new(left.span.start, right.span.end);
+            Ok(self.ids.spanned(
+                Expr::BinaryOp {
+                    op: BinOp::Pow,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            ))
+        } else {
+            Ok(left)
+        }
     }
 
     fn parse_unary(&mut self) -> Result<Spanned<Expr>, PdcError> {
@@ -755,6 +938,18 @@ impl Parser {
                 Ok(self.ids.spanned(
                     Expr::UnaryOp {
                         op: UnaryOp::Not,
+                        operand: Box::new(operand),
+                    },
+                    span,
+                ))
+            }
+            TokenKind::Tilde => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = Span::new(start.start, operand.span.end);
+                Ok(self.ids.spanned(
+                    Expr::UnaryOp {
+                        op: UnaryOp::BitNot,
                         operand: Box::new(operand),
                     },
                     span,
@@ -853,6 +1048,10 @@ impl Parser {
             TokenKind::BoolLit(val) => {
                 self.advance();
                 Ok(self.ids.spanned(Expr::Literal(Literal::Bool(val)), start))
+            }
+            TokenKind::StringLit(val) => {
+                self.advance();
+                Ok(self.ids.spanned(Expr::Literal(Literal::String(val)), start))
             }
             TokenKind::Ident(name) => {
                 self.advance();
