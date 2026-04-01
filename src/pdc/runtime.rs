@@ -22,8 +22,8 @@ pub struct SceneBuilder {
     pub paths: Vec<PathData>,
     /// Draw commands in submission order.
     pub draws: Vec<DrawCommand>,
-    /// Runtime arrays (handle-based).
-    pub arrays: Vec<Vec<f64>>,
+    /// Runtime arrays (handle-based). Each element is stored as 8 raw bytes.
+    pub arrays: Vec<Vec<u64>>,
 }
 
 pub struct PathData {
@@ -207,6 +207,10 @@ pub extern "C" fn pdc_fmod(a: f64, b: f64) -> f64 { a % b }
 
 // ── Array runtime functions ──
 
+/// All array elements are stored as u64 (8 bytes). The JIT code is responsible
+/// for bitcasting to/from the actual element type. This supports any type
+/// that fits in 8 bytes: f64, f32 (zero-extended), all integer types, bools,
+/// and pointers (handles, struct/tuple/array pointers).
 #[unsafe(no_mangle)]
 pub extern "C" fn pdc_array_new(ctx: *mut PdcContext) -> u32 {
     let scene = unsafe { &mut *(*ctx).scene };
@@ -216,7 +220,7 @@ pub extern "C" fn pdc_array_new(ctx: *mut PdcContext) -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_push(ctx: *mut PdcContext, handle: u32, value: f64) {
+pub extern "C" fn pdc_array_push(ctx: *mut PdcContext, handle: u32, value: u64) {
     let scene = unsafe { &mut *(*ctx).scene };
     scene.arrays[handle as usize].push(value);
 }
@@ -228,18 +232,18 @@ pub extern "C" fn pdc_array_len(ctx: *mut PdcContext, handle: u32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_get(ctx: *mut PdcContext, handle: u32, index: i32) -> f64 {
+pub extern "C" fn pdc_array_get(ctx: *mut PdcContext, handle: u32, index: i32) -> u64 {
     let scene = unsafe { &mut *(*ctx).scene };
     let arr = &scene.arrays[handle as usize];
     if (index as usize) < arr.len() {
         arr[index as usize]
     } else {
-        0.0 // TODO: trap on out-of-bounds
+        0
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_set(ctx: *mut PdcContext, handle: u32, index: i32, value: f64) {
+pub extern "C" fn pdc_array_set(ctx: *mut PdcContext, handle: u32, index: i32, value: u64) {
     let scene = unsafe { &mut *(*ctx).scene };
     let arr = &mut scene.arrays[handle as usize];
     if (index as usize) < arr.len() {
