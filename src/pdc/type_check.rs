@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
 use super::error::PdcError;
@@ -41,6 +41,8 @@ pub struct EnumInfo {
 
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
+    /// Variables declared as const — assignments to these are rejected.
+    const_vars: HashSet<String>,
     builtins: HashMap<String, BuiltinFn>,
     /// User-defined function signatures.
     pub user_fns: HashMap<String, UserFnSig>,
@@ -56,6 +58,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         let mut tc = Self {
             scopes: vec![HashMap::new()],
+            const_vars: HashSet::new(),
             builtins: HashMap::new(),
             user_fns: HashMap::new(),
             structs: HashMap::new(),
@@ -218,8 +221,20 @@ impl TypeChecker {
         match &stmt.node {
             Stmt::BuiltinDecl { name, ty } => {
                 self.define_var(name, ty.clone());
+                self.const_vars.insert(name.clone());
             }
-            Stmt::ConstDecl { name, ty, value } | Stmt::VarDecl { name, ty, value } => {
+            Stmt::ConstDecl { name, ty, value } => {
+                let val_ty = self.check_expr(value)?;
+                let final_ty = if let Some(declared) = ty {
+                    self.check_compatible(&val_ty, declared, value.span)?;
+                    declared.clone()
+                } else {
+                    val_ty
+                };
+                self.define_var(name, final_ty);
+                self.const_vars.insert(name.clone());
+            }
+            Stmt::VarDecl { name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
                     self.check_compatible(&val_ty, declared, value.span)?;
@@ -229,7 +244,7 @@ impl TypeChecker {
                 };
                 self.define_var(name, final_ty);
             }
-            Stmt::TupleDestructure { names, value, .. } => {
+            Stmt::TupleDestructure { names, value, is_const } => {
                 let val_ty = self.check_expr(value)?;
                 if let PdcType::Tuple(elems) = &val_ty {
                     if names.len() != elems.len() {
@@ -244,6 +259,9 @@ impl TypeChecker {
                     for (i, name) in names.iter().enumerate() {
                         if name != "_" {
                             self.define_var(name, elems[i].clone());
+                            if *is_const {
+                                self.const_vars.insert(name.clone());
+                            }
                         }
                     }
                 } else {
@@ -254,6 +272,12 @@ impl TypeChecker {
                 }
             }
             Stmt::Assign { name, value } => {
+                if self.const_vars.contains(name) {
+                    return Err(PdcError::Type {
+                        span: stmt.span,
+                        message: format!("cannot assign to const variable '{name}'"),
+                    });
+                }
                 let expected = self.lookup_var(name).cloned().ok_or_else(|| PdcError::Type {
                     span: stmt.span,
                     message: format!("undefined variable '{name}'"),
@@ -302,7 +326,7 @@ impl TypeChecker {
                 }
                 self.check_block(body)?;
             }
-            Stmt::For { mutable: _,
+            Stmt::For { mutable,
                 var_name,
                 start,
                 end,
@@ -324,12 +348,18 @@ impl TypeChecker {
                 }
                 self.push_scope();
                 self.define_var(var_name, PdcType::I32);
+                if !mutable {
+                    self.const_vars.insert(var_name.clone());
+                }
                 for s in &body.stmts {
                     self.check_stmt(s)?;
                 }
+                if !mutable {
+                    self.const_vars.remove(var_name);
+                }
                 self.pop_scope();
             }
-            Stmt::ForEach { mutable: _,
+            Stmt::ForEach { mutable,
                 var_name,
                 collection,
                 body,
@@ -346,8 +376,14 @@ impl TypeChecker {
                 };
                 self.push_scope();
                 self.define_var(var_name, elem_ty);
+                if !mutable {
+                    self.const_vars.insert(var_name.clone());
+                }
                 for s in &body.stmts {
                     self.check_stmt(s)?;
+                }
+                if !mutable {
+                    self.const_vars.remove(var_name);
                 }
                 self.pop_scope();
             }
