@@ -656,6 +656,30 @@ impl TypeChecker {
                     });
                 }
             }
+            Expr::TupleConstruct { elements } => {
+                let elem_types: Vec<PdcType> = elements.iter()
+                    .map(|e| self.check_expr(e))
+                    .collect::<Result<_, _>>()?;
+                PdcType::Tuple(elem_types)
+            }
+            Expr::TupleIndex { object, index } => {
+                let obj_ty = self.check_expr(object)?;
+                if let PdcType::Tuple(elems) = &obj_ty {
+                    if *index < elems.len() {
+                        elems[*index].clone()
+                    } else {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("tuple index {} out of range (tuple has {} elements)", index, elems.len()),
+                        });
+                    }
+                } else {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("cannot index non-tuple type {obj_ty}"),
+                    });
+                }
+            }
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.check_expr(object)?;
                 match &obj_ty {

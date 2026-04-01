@@ -22,6 +22,8 @@ pub enum PdcType {
     Enum(String),
     /// Array type with element type. Runtime stores as f64 internally.
     Array(Box<PdcType>),
+    /// Tuple type: (T, U, ...)
+    Tuple(Vec<PdcType>),
     /// Type not yet determined (for inference).
     Unknown,
     /// No return value.
@@ -60,6 +62,14 @@ impl std::fmt::Display for PdcType {
             PdcType::PathHandle => write!(f, "Path"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
             PdcType::Array(elem) => write!(f, "Array<{elem}>"),
+            PdcType::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
+            }
             PdcType::Unknown => write!(f, "unknown"),
             PdcType::Void => write!(f, "void"),
         }
@@ -131,6 +141,15 @@ pub enum Expr {
     StructConstruct {
         name: String,
         fields: Vec<(String, Spanned<Expr>)>,
+    },
+    /// Tuple construction: `(expr, expr, ...)`
+    TupleConstruct {
+        elements: Vec<Spanned<Expr>>,
+    },
+    /// Tuple element access: `expr.0`, `expr.1` etc.
+    TupleIndex {
+        object: Box<Spanned<Expr>>,
+        index: usize,
     },
 }
 

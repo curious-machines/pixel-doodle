@@ -292,7 +292,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
         PdcType::PathHandle => I32,
-        PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
+        PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
         PdcType::Enum(_) => I32, // enums are u32 constants
         PdcType::Array(_) => I32, // arrays are handles (u32)
         PdcType::Void => I32,
@@ -387,7 +387,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
                 // Struct and data-variant enum values are pointers to stack slots
                 let is_pointer_type = match &final_ty {
-                    PdcType::Struct(_) => true,
+                    PdcType::Struct(_) | PdcType::Tuple(_) => true,
                     PdcType::Enum(ename) => {
                         self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.field_types.is_empty()))
                     }
@@ -910,6 +910,27 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
                 // Return pointer to slot
                 Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+            }
+            Expr::TupleConstruct { elements } => {
+                let size = (elements.len() * 8) as u32;
+                let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    size,
+                    0,
+                ));
+                for (i, elem) in elements.iter().enumerate() {
+                    let val = self.emit_expr(elem)?;
+                    let elem_ty = self.node_type(elem.id).clone();
+                    let store_val = self.widen_to_f64(val, &elem_ty);
+                    self.builder.ins().stack_store(store_val, slot, (i * 8) as i32);
+                }
+                Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+            }
+            Expr::TupleIndex { object, index } => {
+                let obj_val = self.emit_expr(object)?;
+                let result_ty = self.node_type(expr.id).clone();
+                let raw = self.builder.ins().load(F64, MemFlags::trusted(), obj_val, (*index * 8) as i32);
+                Ok(self.narrow_from_f64(raw, &result_ty))
             }
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.node_type(object.id).clone();

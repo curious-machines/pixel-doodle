@@ -699,6 +699,22 @@ impl Parser {
             match self.peek() {
                 TokenKind::Dot => {
                     self.advance();
+                    // Tuple index access: expr.0, expr.1
+                    if let TokenKind::IntLit(idx) = self.peek().clone() {
+                        self.advance();
+                        let span = Span::new(
+                            expr.span.start,
+                            self.tokens[self.pos - 1].span.end,
+                        );
+                        expr = self.ids.spanned(
+                            Expr::TupleIndex {
+                                object: Box::new(expr),
+                                index: idx as usize,
+                            },
+                            span,
+                        );
+                        continue;
+                    }
                     let (method, _) = self.expect_ident()?;
                     if *self.peek() == TokenKind::LParen {
                         self.advance();
@@ -789,9 +805,25 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(&TokenKind::RParen)?;
-                Ok(expr)
+                let first = self.parse_expr()?;
+                if *self.peek() == TokenKind::Comma {
+                    // Tuple: (expr, expr, ...)
+                    let mut elements = vec![first];
+                    while *self.peek() == TokenKind::Comma {
+                        self.advance();
+                        if *self.peek() == TokenKind::RParen {
+                            break; // trailing comma
+                        }
+                        elements.push(self.parse_expr()?);
+                    }
+                    self.expect(&TokenKind::RParen)?;
+                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                    Ok(self.ids.spanned(Expr::TupleConstruct { elements }, span))
+                } else {
+                    // Parenthesized expression
+                    self.expect(&TokenKind::RParen)?;
+                    Ok(first)
+                }
             }
             _ => Err(PdcError::Parse {
                 span: start,
