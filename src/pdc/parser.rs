@@ -805,6 +805,12 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
+                // Empty tuple: ()
+                if *self.peek() == TokenKind::RParen {
+                    self.advance();
+                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                    return Ok(self.ids.spanned(Expr::TupleConstruct { elements: Vec::new() }, span));
+                }
                 let first = self.parse_expr()?;
                 if *self.peek() == TokenKind::Comma {
                     // Tuple: (expr, expr, ...)
