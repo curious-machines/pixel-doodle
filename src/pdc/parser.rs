@@ -523,8 +523,14 @@ impl Parser {
             let ty = match name.as_str() {
                 "f32" => PdcType::F32,
                 "f64" => PdcType::F64,
+                "i8" => PdcType::I8,
+                "i16" => PdcType::I16,
                 "i32" => PdcType::I32,
+                "i64" => PdcType::I64,
+                "u8" => PdcType::U8,
+                "u16" => PdcType::U16,
                 "u32" => PdcType::U32,
+                "u64" => PdcType::U64,
                 "bool" => PdcType::Bool,
                 "Path" => PdcType::PathHandle,
                 // User-defined struct types (starts with uppercase by convention)

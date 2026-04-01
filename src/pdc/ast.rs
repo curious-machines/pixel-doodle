@@ -5,8 +5,14 @@ use super::span::Spanned;
 pub enum PdcType {
     F32,
     F64,
+    I8,
+    I16,
     I32,
+    I64,
+    U8,
+    U16,
     U32,
+    U64,
     Bool,
     /// Opaque path handle (u32 internally). Becomes a struct in later phases.
     PathHandle,
@@ -24,7 +30,7 @@ pub enum PdcType {
 
 impl PdcType {
     pub fn is_numeric(&self) -> bool {
-        matches!(self, PdcType::F32 | PdcType::F64 | PdcType::I32 | PdcType::U32)
+        self.is_float() || self.is_int()
     }
 
     pub fn is_float(&self) -> bool {
@@ -32,7 +38,8 @@ impl PdcType {
     }
 
     pub fn is_int(&self) -> bool {
-        matches!(self, PdcType::I32 | PdcType::U32)
+        matches!(self, PdcType::I8 | PdcType::I16 | PdcType::I32 | PdcType::I64
+            | PdcType::U8 | PdcType::U16 | PdcType::U32 | PdcType::U64)
     }
 }
 
@@ -41,8 +48,14 @@ impl std::fmt::Display for PdcType {
         match self {
             PdcType::F32 => write!(f, "f32"),
             PdcType::F64 => write!(f, "f64"),
+            PdcType::I8 => write!(f, "i8"),
+            PdcType::I16 => write!(f, "i16"),
             PdcType::I32 => write!(f, "i32"),
+            PdcType::I64 => write!(f, "i64"),
+            PdcType::U8 => write!(f, "u8"),
+            PdcType::U16 => write!(f, "u16"),
             PdcType::U32 => write!(f, "u32"),
+            PdcType::U64 => write!(f, "u64"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),

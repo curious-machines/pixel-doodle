@@ -417,8 +417,10 @@ impl TypeChecker {
                 Literal::Int(v) => {
                     if *v < 0 || *v <= i32::MAX as i64 {
                         PdcType::I32
-                    } else {
+                    } else if *v <= u32::MAX as i64 {
                         PdcType::U32
+                    } else {
+                        PdcType::I64
                     }
                 }
                 Literal::Float(_) => PdcType::F64,
@@ -719,8 +721,14 @@ impl TypeChecker {
         match name {
             "f32" => Some(PdcType::F32),
             "f64" => Some(PdcType::F64),
+            "i8" => Some(PdcType::I8),
+            "i16" => Some(PdcType::I16),
             "i32" => Some(PdcType::I32),
+            "i64" => Some(PdcType::I64),
+            "u8" => Some(PdcType::U8),
+            "u16" => Some(PdcType::U16),
             "u32" => Some(PdcType::U32),
+            "u64" => Some(PdcType::U64),
             "bool" => Some(PdcType::Bool),
             _ => None,
         }
@@ -778,11 +786,17 @@ impl TypeChecker {
         if a == b {
             return Ok(a.clone());
         }
+        // Widening: float wins over int, larger wins over smaller
         match (a, b) {
             (PdcType::F64, _) | (_, PdcType::F64) => Ok(PdcType::F64),
             (PdcType::F32, _) | (_, PdcType::F32) => Ok(PdcType::F32),
-            (PdcType::I32, PdcType::U32) | (PdcType::U32, PdcType::I32) => Ok(PdcType::I32),
-            _ => Ok(a.clone()),
+            (PdcType::I64, _) | (_, PdcType::I64) => Ok(PdcType::I64),
+            (PdcType::U64, _) | (_, PdcType::U64) => Ok(PdcType::I64), // mixed sign → signed
+            (PdcType::I32, _) | (_, PdcType::I32) => Ok(PdcType::I32),
+            (PdcType::U32, _) | (_, PdcType::U32) => Ok(PdcType::I32),
+            (PdcType::I16, _) | (_, PdcType::I16) => Ok(PdcType::I16),
+            (PdcType::U16, _) | (_, PdcType::U16) => Ok(PdcType::I16),
+            _ => Ok(PdcType::I32), // i8/u8 → i32
         }
     }
 

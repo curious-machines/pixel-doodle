@@ -287,8 +287,10 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
     match ty {
         PdcType::F32 => F32,
         PdcType::F64 => F64,
+        PdcType::I8 | PdcType::U8 | PdcType::Bool => I8,
+        PdcType::I16 | PdcType::U16 => I16,
         PdcType::I32 | PdcType::U32 => I32,
-        PdcType::Bool => I8,
+        PdcType::I64 | PdcType::U64 => I64,
         PdcType::PathHandle => I32,
         PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
         PdcType::Enum(_) => I32, // enums are u32 constants
@@ -336,12 +338,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     }
 
     fn default_value(&mut self, ty: &PdcType) -> cranelift_codegen::ir::Value {
-        match ty {
-            PdcType::F32 => self.builder.ins().f32const(0.0),
-            PdcType::F64 => self.builder.ins().f64const(0.0),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => self.builder.ins().iconst(I32, 0),
-            PdcType::Bool => self.builder.ins().iconst(I8, 0),
-            _ => self.builder.ins().iconst(I32, 0),
+        let cl = pdc_type_to_cl(ty, self.pointer_type);
+        match cl {
+            F32 => self.builder.ins().f32const(0.0),
+            F64 => self.builder.ins().f64const(0.0),
+            _ => self.builder.ins().iconst(cl, 0),
         }
     }
 
@@ -964,17 +965,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         id: u32,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
         let ty = self.node_type(id);
+        let cl = pdc_type_to_cl(ty, self.pointer_type);
         match lit {
-            Literal::Int(v) => match ty {
-                PdcType::U32 | PdcType::I32 | PdcType::PathHandle => {
-                    Ok(self.builder.ins().iconst(I32, *v))
-                }
-                PdcType::F32 => Ok(self.builder.ins().f32const(*v as f32)),
-                PdcType::F64 => Ok(self.builder.ins().f64const(*v as f64)),
-                _ => Ok(self.builder.ins().iconst(I32, *v)),
+            Literal::Int(v) => match cl {
+                F32 => Ok(self.builder.ins().f32const(*v as f32)),
+                F64 => Ok(self.builder.ins().f64const(*v as f64)),
+                _ => Ok(self.builder.ins().iconst(cl, *v)),
             },
-            Literal::Float(v) => match ty {
-                PdcType::F32 => Ok(self.builder.ins().f32const(*v as f32)),
+            Literal::Float(v) => match cl {
+                F32 => Ok(self.builder.ins().f32const(*v as f32)),
                 _ => Ok(self.builder.ins().f64const(*v)),
             },
             Literal::Bool(v) => Ok(self.builder.ins().iconst(I8, *v as i64)),
@@ -1152,25 +1151,62 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         if from == to {
             return val;
         }
-        match (from, to) {
-            (PdcType::F64, PdcType::F32) => self.builder.ins().fdemote(F32, val),
-            (PdcType::F32, PdcType::F64) => self.builder.ins().fpromote(F64, val),
-            (PdcType::I32, PdcType::F64) | (PdcType::U32, PdcType::F64) => {
-                self.builder.ins().fcvt_from_sint(F64, val)
-            }
-            (PdcType::I32, PdcType::F32) | (PdcType::U32, PdcType::F32) => {
-                let f64_val = self.builder.ins().fcvt_from_sint(F64, val);
-                self.builder.ins().fdemote(F32, f64_val)
-            }
-            (PdcType::F64, PdcType::I32) | (PdcType::F64, PdcType::U32) => {
-                self.builder.ins().fcvt_to_sint_sat(I32, val)
-            }
-            (PdcType::F32, PdcType::I32) | (PdcType::F32, PdcType::U32) => {
-                let f64_val = self.builder.ins().fpromote(F64, val);
-                self.builder.ins().fcvt_to_sint_sat(I32, f64_val)
-            }
-            _ => val,
+
+        let from_cl = pdc_type_to_cl(from, self.pointer_type);
+        let to_cl = pdc_type_to_cl(to, self.pointer_type);
+
+        // Float ↔ float
+        if from.is_float() && to.is_float() {
+            return if to_cl == F64 {
+                self.builder.ins().fpromote(F64, val)
+            } else {
+                self.builder.ins().fdemote(F32, val)
+            };
         }
+
+        // Int → float
+        if from.is_int() && to.is_float() {
+            // First widen to I64 if needed, then convert to f64, then demote if f32
+            let wide = if from_cl.bytes() < 8 {
+                self.builder.ins().sextend(I64, val)
+            } else {
+                val
+            };
+            let f64_val = self.builder.ins().fcvt_from_sint(F64, wide);
+            return if to_cl == F32 {
+                self.builder.ins().fdemote(F32, f64_val)
+            } else {
+                f64_val
+            };
+        }
+
+        // Float → int
+        if from.is_float() && to.is_int() {
+            let f64_val = if from_cl == F32 {
+                self.builder.ins().fpromote(F64, val)
+            } else {
+                val
+            };
+            let i64_val = self.builder.ins().fcvt_to_sint_sat(I64, f64_val);
+            return if to_cl.bytes() < 8 {
+                self.builder.ins().ireduce(to_cl, i64_val)
+            } else {
+                i64_val
+            };
+        }
+
+        // Int → int (widen or narrow)
+        if from.is_int() && to.is_int() {
+            return if to_cl.bytes() > from_cl.bytes() {
+                self.builder.ins().sextend(to_cl, val)
+            } else if to_cl.bytes() < from_cl.bytes() {
+                self.builder.ins().ireduce(to_cl, val)
+            } else {
+                val // same size, different signedness
+            };
+        }
+
+        val
     }
 
     fn emit_binary_op(
