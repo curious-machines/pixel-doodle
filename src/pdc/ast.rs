@@ -199,6 +199,12 @@ pub enum Stmt {
         end: Spanned<Expr>,
         body: Block,
     },
+    /// `for name in collection { body }` (iterate over array)
+    ForEach {
+        var_name: String,
+        collection: Spanned<Expr>,
+        body: Block,
+    },
     /// `loop { body }` — infinite loop, exit with break
     Loop { body: Block },
     /// `match expr { pattern => { body }, ... }`

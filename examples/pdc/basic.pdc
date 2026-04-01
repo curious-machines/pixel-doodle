@@ -75,15 +75,16 @@ const (dx, dy, dr) = info
 const tc2 = Circle(dx + 80.0, dy, dr * 0.7)
 tc2.fill(0xFFCC00CC)
 
-// Array example: store radii, then draw circles from the array
+// Array example: for-each iteration
 var radii = Array<f64>()
 radii.push(15.0)
 radii.push(25.0)
 radii.push(35.0)
 
-for i in 0..radii.len() {
-    const r = radii.get(i)
-    const c = Circle(center.x + f64(i) * 80.0 - 80.0, center.y + 180.0, r)
+var xi = 0
+for r in radii {
+    const c = Circle(center.x + f64(xi) * 80.0 - 80.0, center.y + 180.0, r)
     c.fill(0xAAFF4444)
     c.stroke(2.0, 0xFFFFFFFF)
+    xi += 1
 }

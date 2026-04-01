@@ -267,21 +267,38 @@ impl Parser {
         self.advance(); // consume 'for'
         let (var_name, _) = self.expect_ident()?;
         self.expect(&TokenKind::In)?;
-        let range_start = self.parse_expr()?;
-        self.expect(&TokenKind::DotDot)?;
-        let range_end = self.parse_expr()?;
-        let body = self.parse_block()?;
-        let end = self.tokens[self.pos - 1].span.end;
-        let span = Span::new(start.start, end);
-        Ok(self.ids.spanned(
-            Stmt::For {
-                var_name,
-                start: range_start,
-                end: range_end,
-                body,
-            },
-            span,
-        ))
+        let expr = self.parse_expr()?;
+
+        if *self.peek() == TokenKind::DotDot {
+            // Range loop: for i in start..end { }
+            self.advance();
+            let range_end = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let end = self.tokens[self.pos - 1].span.end;
+            let span = Span::new(start.start, end);
+            Ok(self.ids.spanned(
+                Stmt::For {
+                    var_name,
+                    start: expr,
+                    end: range_end,
+                    body,
+                },
+                span,
+            ))
+        } else {
+            // ForEach: for x in collection { }
+            let body = self.parse_block()?;
+            let end = self.tokens[self.pos - 1].span.end;
+            let span = Span::new(start.start, end);
+            Ok(self.ids.spanned(
+                Stmt::ForEach {
+                    var_name,
+                    collection: expr,
+                    body,
+                },
+                span,
+            ))
+        }
     }
 
     fn parse_loop(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {

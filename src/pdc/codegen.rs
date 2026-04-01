@@ -452,6 +452,82 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             } => {
                 self.emit_for(var_name, start, end, body)?;
             }
+            Stmt::ForEach {
+                var_name,
+                collection,
+                body,
+            } => {
+                let coll_ty = self.node_type(collection.id).clone();
+                let elem_ty = match &coll_ty {
+                    PdcType::Array(et) => *et.clone(),
+                    _ => return Err(PdcError::Codegen {
+                        message: "for-each requires an array".into(),
+                    }),
+                };
+
+                let arr_handle = self.emit_expr(collection)?;
+
+                // Get array length
+                let len_val = self.emit_runtime_call_raw(
+                    "pdc_array_len",
+                    &[self.ctx_ptr, arr_handle],
+                    Some(I32),
+                )?;
+
+                // Index variable
+                let idx_var = self.builder.declare_var(I32);
+                let zero = self.builder.ins().iconst(I32, 0);
+                self.builder.def_var(idx_var, zero);
+
+                let header_block = self.builder.create_block();
+                let body_block = self.builder.create_block();
+                let exit_block = self.builder.create_block();
+
+                self.builder.ins().jump(header_block, &[]);
+
+                // Header: check idx < len
+                self.builder.switch_to_block(header_block);
+                let idx_val = self.builder.use_var(idx_var);
+                let cond = self.builder.ins().icmp(IntCC::SignedLessThan, idx_val, len_val);
+                self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
+
+                // Body: load element, bind variable
+                self.builder.switch_to_block(body_block);
+                self.builder.seal_block(body_block);
+                self.block_terminated = false;
+
+                let elem_cl = pdc_type_to_cl(&elem_ty, self.pointer_type);
+                let elem_size = elem_cl.bytes() as u32;
+                let get_name = format!("pdc_array_get_{elem_size}");
+                let int_type = match elem_size {
+                    1 => I8, 2 => I16, 4 => I32, _ => I64,
+                };
+                let idx_for_get = self.builder.use_var(idx_var);
+                let raw = self.emit_runtime_call_raw(
+                    &get_name,
+                    &[self.ctx_ptr, arr_handle, idx_for_get],
+                    Some(int_type),
+                )?;
+                let elem_val = self.int_to_float_if_needed(raw, elem_cl);
+
+                let var = self.new_variable(var_name, &elem_ty);
+                self.builder.def_var(var, elem_val);
+
+                self.emit_block(body)?;
+                if !self.block_terminated {
+                    // Increment index
+                    let idx_val = self.builder.use_var(idx_var);
+                    let one = self.builder.ins().iconst(I32, 1);
+                    let next = self.builder.ins().iadd(idx_val, one);
+                    self.builder.def_var(idx_var, next);
+                    self.builder.ins().jump(header_block, &[]);
+                }
+
+                self.builder.seal_block(header_block);
+                self.builder.switch_to_block(exit_block);
+                self.builder.seal_block(exit_block);
+                self.block_terminated = false;
+            }
             Stmt::Loop { body } => {
                 self.emit_loop(body)?;
             }

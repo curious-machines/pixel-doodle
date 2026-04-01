@@ -329,6 +329,28 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
+            Stmt::ForEach {
+                var_name,
+                collection,
+                body,
+            } => {
+                let coll_ty = self.check_expr(collection)?;
+                let elem_ty = match &coll_ty {
+                    PdcType::Array(et) => *et.clone(),
+                    _ => {
+                        return Err(PdcError::Type {
+                            span: collection.span,
+                            message: format!("cannot iterate over type {coll_ty}, expected Array"),
+                        });
+                    }
+                };
+                self.push_scope();
+                self.define_var(var_name, elem_ty);
+                for s in &body.stmts {
+                    self.check_stmt(s)?;
+                }
+                self.pop_scope();
+            }
             Stmt::Loop { body } => {
                 self.check_block(body)?;
             }
