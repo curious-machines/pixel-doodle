@@ -56,7 +56,7 @@ while col < 10 {
     col = col + 1
 }
 
-// Semi-transparent overlay
+// Semi-transparent overlay (using UFCS method syntax)
 const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
-fill(rr, 0x88223366)
-stroke(rr, 3.0, 0xFFFFFFFF)
+rr.fill(0x88223366)
+rr.stroke(3.0, 0xFFFFFFFF)
