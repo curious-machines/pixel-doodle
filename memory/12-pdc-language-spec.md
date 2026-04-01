@@ -1,7 +1,7 @@
 # PDC (Pixel Doodle Code) Language Specification
 
-**Date:** 2026-03-31
-**Status:** Design phase — not yet implemented
+**Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-5 implemented)
+**Status:** Core language implemented (types, variables, control flow, functions, structs, enums, match, imports, stdlib). Arrays, strings, slices, and PDP integration still pending.
 
 PDC is a JIT-compiled language for describing vector scenes and defining processing kernels. It combines VFS's expression language with PDP's resource model. Compiled via Cranelift (portable) and optionally LLVM (performance).
 
