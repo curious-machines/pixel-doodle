@@ -98,6 +98,7 @@ impl Parser {
             TokenKind::Return => self.parse_return(start),
             TokenKind::Import => self.parse_import(start),
             TokenKind::Struct => self.parse_struct_def(start),
+            TokenKind::Enum => self.parse_enum_def(start),
             TokenKind::Fn => self.parse_fn_def(start),
             _ => {
                 // Expression statement or assignment
@@ -308,6 +309,28 @@ impl Parser {
         let span = Span::new(start.start, end);
         Ok(self.ids.spanned(
             Stmt::StructDef(StructDef { name, fields }),
+            span,
+        ))
+    }
+
+    fn parse_enum_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'enum'
+        let (name, _) = self.expect_ident()?;
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let (vname, _) = self.expect_ident()?;
+            variants.push(vname);
+            if *self.peek() == TokenKind::Comma {
+                self.advance();
+            }
+        }
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(
+            Stmt::EnumDef(EnumDef { name, variants }),
             span,
         ))
     }

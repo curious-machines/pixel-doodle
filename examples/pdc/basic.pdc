@@ -1,20 +1,20 @@
-// PDC Phase 4 example: structs
+// PDC Phase 5 example: enums
 import { Circle, Rect, RoundedRect } from geometry
 import { lerp } from math
 
 builtin const width: f32
 builtin const height: f32
 
-// Define a Vec2 struct
 struct Vec2 {
     x: f64,
     y: f64,
 }
 
-// Use Vec2 for center position
+enum Shape { CircleShape, RectShape }
+
 const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)
 
-// Checkerboard grid of circles
+// Use enum to select shape type
 const spacing = 60.0
 var col = 0
 while col < 10 {
@@ -22,18 +22,35 @@ while col < 10 {
     while row < 8 {
         const x = f64(col) * spacing + 50.0
         const y = f64(row) * spacing + 50.0
-        const c = Circle(x, y, 20.0)
-        if (col + row) % 2 == 0 {
-            fill(c, 0xFFFF8800)
-        } else {
-            fill(c, 0xFF4488FF)
+
+        // Alternate between circle and rect based on column
+        var shape_type = Shape.CircleShape
+        if col % 2 == 1 {
+            shape_type = Shape.RectShape
+        }
+
+        if shape_type == Shape.CircleShape {
+            const c = Circle(x, y, 20.0)
+            if (col + row) % 2 == 0 {
+                fill(c, 0xFFFF8800)
+            } else {
+                fill(c, 0xFF4488FF)
+            }
+        }
+        if shape_type == Shape.RectShape {
+            const r = Rect(x - 15.0, y - 15.0, 30.0, 30.0)
+            if (col + row) % 2 == 0 {
+                fill(r, 0xFF44CC44)
+            } else {
+                fill(r, 0xFFCC44CC)
+            }
         }
         row = row + 1
     }
     col = col + 1
 }
 
-// Use struct field access for positioning
+// Rounded rectangle in the center
 const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
-fill(rr, 0xCC44CC44)
+fill(rr, 0x88223366)
 stroke(rr, 3.0, 0xFFFFFFFF)

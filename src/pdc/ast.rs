@@ -12,6 +12,8 @@ pub enum PdcType {
     PathHandle,
     /// User-defined struct type, referenced by name.
     Struct(String),
+    /// User-defined enum type, referenced by name.
+    Enum(String),
     /// Type not yet determined (for inference).
     Unknown,
     /// No return value.
@@ -41,7 +43,7 @@ impl std::fmt::Display for PdcType {
             PdcType::U32 => write!(f, "u32"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
-            PdcType::Struct(name) => write!(f, "{name}"),
+            PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
             PdcType::Unknown => write!(f, "unknown"),
             PdcType::Void => write!(f, "void"),
         }
@@ -166,6 +168,8 @@ pub enum Stmt {
     FnDef(FnDef),
     /// `struct Name { field: type, ... }`
     StructDef(StructDef),
+    /// `enum Name { Variant1, Variant2, ... }`
+    EnumDef(EnumDef),
     /// `import module_name` or `import { names } from module_name`
     Import {
         module: String,
@@ -209,6 +213,13 @@ pub struct StructField {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<StructField>,
+}
+
+/// Enum definition (C-style, no data variants).
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<String>,
 }
 
 /// A complete PDC program (list of top-level statements).

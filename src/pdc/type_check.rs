@@ -25,6 +25,12 @@ pub struct StructInfo {
     pub fields: Vec<(String, PdcType)>,
 }
 
+/// Enum definition info for type checking.
+#[derive(Clone)]
+pub struct EnumInfo {
+    pub variants: Vec<String>,
+}
+
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
     builtins: HashMap<String, BuiltinFn>,
@@ -32,6 +38,8 @@ pub struct TypeChecker {
     pub user_fns: HashMap<String, UserFnSig>,
     /// User-defined struct definitions.
     pub structs: HashMap<String, StructInfo>,
+    /// User-defined enum definitions.
+    pub enums: HashMap<String, EnumInfo>,
     /// Type assigned to each AST node, indexed by node ID.
     pub types: Vec<PdcType>,
 }
@@ -43,6 +51,7 @@ impl TypeChecker {
             builtins: HashMap::new(),
             user_fns: HashMap::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
             types: Vec::new(),
         };
         tc.register_builtins();
@@ -149,6 +158,13 @@ impl TypeChecker {
                     self.structs.insert(sdef.name.clone(), StructInfo {
                         fields: sdef.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
                     });
+                }
+                Stmt::EnumDef(edef) => {
+                    self.enums.insert(edef.name.clone(), EnumInfo {
+                        variants: edef.variants.clone(),
+                    });
+                    // Register enum name as a variable so EnumName.Variant resolves
+                    self.define_var(&edef.name, PdcType::Enum(edef.name.clone()));
                 }
                 _ => {}
             }
@@ -261,7 +277,7 @@ impl TypeChecker {
                     self.check_expr(expr)?;
                 }
             }
-            Stmt::Import { .. } | Stmt::StructDef(_) => {
+            Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {
                 // Already registered in first pass
             }
             Stmt::FnDef(fndef) => {
@@ -436,24 +452,40 @@ impl TypeChecker {
             }
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.check_expr(object)?;
-                if let PdcType::Struct(name) = &obj_ty {
-                    let info = self.structs.get(name).cloned().ok_or_else(|| PdcError::Type {
-                        span: expr.span,
-                        message: format!("undefined struct '{name}'"),
-                    })?;
-                    let field_ty = info.fields.iter()
-                        .find(|(n, _)| n == field)
-                        .map(|(_, t)| t.clone())
-                        .ok_or_else(|| PdcError::Type {
+                match &obj_ty {
+                    PdcType::Struct(name) => {
+                        let info = self.structs.get(name).cloned().ok_or_else(|| PdcError::Type {
                             span: expr.span,
-                            message: format!("struct '{name}' has no field '{field}'"),
+                            message: format!("undefined struct '{name}'"),
                         })?;
-                    field_ty
-                } else {
-                    return Err(PdcError::Type {
-                        span: expr.span,
-                        message: format!("cannot access field '{field}' on type {obj_ty}"),
-                    });
+                        info.fields.iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, t)| t.clone())
+                            .ok_or_else(|| PdcError::Type {
+                                span: expr.span,
+                                message: format!("struct '{name}' has no field '{field}'"),
+                            })?
+                    }
+                    PdcType::Enum(name) => {
+                        let info = self.enums.get(name).cloned().ok_or_else(|| PdcError::Type {
+                            span: expr.span,
+                            message: format!("undefined enum '{name}'"),
+                        })?;
+                        if !info.variants.contains(field) {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("enum '{name}' has no variant '{field}'"),
+                            });
+                        }
+                        // Enum variant has the enum's type
+                        PdcType::Enum(name.clone())
+                    }
+                    _ => {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("cannot access field '{field}' on type {obj_ty}"),
+                        });
+                    }
                 }
             }
             Expr::StructConstruct { name, fields } => {
@@ -509,6 +541,16 @@ impl TypeChecker {
                 Ok(PdcType::Bool)
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+                // Enum comparison: same enum type
+                if let (PdcType::Enum(a), PdcType::Enum(b)) = (left, right) {
+                    if a != b {
+                        return Err(PdcError::Type {
+                            span,
+                            message: format!("cannot compare different enum types {a} and {b}"),
+                        });
+                    }
+                    return Ok(PdcType::Bool);
+                }
                 let _ = self.unify_numeric(left, right, span)?;
                 Ok(PdcType::Bool)
             }

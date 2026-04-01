@@ -29,6 +29,7 @@ pub enum TokenKind {
     Import,
     From,
     Struct,
+    Enum,
 
     // Operators
     Plus,
@@ -99,6 +100,7 @@ pub fn keyword_lookup(s: &str) -> Option<TokenKind> {
         "match" => Some(TokenKind::Match),
         "import" => Some(TokenKind::Import),
         "struct" => Some(TokenKind::Struct),
+        "enum" => Some(TokenKind::Enum),
         "from" => Some(TokenKind::From),
         "true" => Some(TokenKind::BoolLit(true)),
         "false" => Some(TokenKind::BoolLit(false)),

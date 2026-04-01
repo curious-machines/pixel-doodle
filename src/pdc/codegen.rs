@@ -13,7 +13,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
-use super::type_check::{StructInfo, UserFnSig};
+use super::type_check::{EnumInfo, StructInfo, UserFnSig};
 
 /// Compiled PDC function type.
 pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
@@ -35,6 +35,7 @@ pub fn compile(
     builtins_layout: &[(&str, PdcType)],
     user_fns: &HashMap<String, UserFnSig>,
     structs: &HashMap<String, StructInfo>,
+    enums: &HashMap<String, EnumInfo>,
 ) -> Result<CompiledProgram, PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -140,6 +141,7 @@ pub fn compile(
             user_fn_ids: &user_fn_ids,
             user_fns,
             structs,
+            enums,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
@@ -220,6 +222,7 @@ pub fn compile(
             user_fn_ids: &user_fn_ids,
             user_fns,
             structs,
+            enums,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
@@ -288,6 +291,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::Bool => I8,
         PdcType::PathHandle => I32,
         PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
+        PdcType::Enum(_) => I32, // enums are u32 constants
         PdcType::Void => I32,
         PdcType::Unknown => pointer_type,
     }
@@ -309,6 +313,7 @@ struct CodegenCtx<'a, 'b> {
     #[allow(dead_code)]
     user_fns: &'a HashMap<String, UserFnSig>,
     structs: &'a HashMap<String, StructInfo>,
+    enums: &'a HashMap<String, EnumInfo>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
 }
@@ -442,7 +447,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 }
                 self.block_terminated = true;
             }
-            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) => {
+            Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {
                 // Already handled
             }
         }
@@ -706,8 +711,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
             }
             Expr::FieldAccess { object, field } => {
-                let obj_val = self.emit_expr(object)?;
                 let obj_ty = self.node_type(object.id).clone();
+
+                // Enum variant access: EnumName.Variant → integer constant
+                if let PdcType::Enum(ref ename) = obj_ty {
+                    let info = self.enums.get(ename).ok_or_else(|| PdcError::Codegen {
+                        message: format!("undefined enum '{ename}'"),
+                    })?.clone();
+                    let idx = info.variants.iter().position(|v| v == field)
+                        .ok_or_else(|| PdcError::Codegen {
+                            message: format!("enum '{ename}' has no variant '{field}'"),
+                        })?;
+                    return Ok(self.builder.ins().iconst(I32, idx as i64));
+                }
+
+                let obj_val = self.emit_expr(object)?;
 
                 if let PdcType::Struct(ref sname) = obj_ty {
                     let info = self.structs.get(sname).ok_or_else(|| PdcError::Codegen {

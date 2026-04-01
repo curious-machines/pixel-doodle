@@ -104,7 +104,7 @@ fn main(
     pixels[pixel_idx] = color;
 }
 
-/// Apply fill rule and composite over the current color.
+/// Apply fill rule and composite over the current color with alpha blending.
 fn resolve_path(bg: u32, winding: i32, path_id: u32) -> u32 {
     let rule = path_fill_rules[path_id];
     var filled = false;
@@ -114,7 +114,32 @@ fn resolve_path(bg: u32, winding: i32, path_id: u32) -> u32 {
         filled = (winding & 1) != 0;
     }
     if filled {
-        return path_colors[path_id];
+        let src = path_colors[path_id];
+        let sa = f32((src >> 24u) & 0xFFu) / 255.0;
+
+        // Fully opaque: skip blending
+        if sa >= 1.0 {
+            return src;
+        }
+
+        // Alpha blend: src over dst
+        let sr = f32((src >> 16u) & 0xFFu);
+        let sg = f32((src >> 8u) & 0xFFu);
+        let sb = f32(src & 0xFFu);
+
+        let dr = f32((bg >> 16u) & 0xFFu);
+        let dg = f32((bg >> 8u) & 0xFFu);
+        let db = f32(bg & 0xFFu);
+
+        let inv_sa = 1.0 - sa;
+        let or = sr * sa + dr * inv_sa;
+        let og = sg * sa + dg * inv_sa;
+        let ob = sb * sa + db * inv_sa;
+
+        let rb = u32(clamp(or, 0.0, 255.0));
+        let gb = u32(clamp(og, 0.0, 255.0));
+        let bb = u32(clamp(ob, 0.0, 255.0));
+        return 0xFF000000u | (rb << 16u) | (gb << 8u) | bb;
     }
     return bg;
 }
