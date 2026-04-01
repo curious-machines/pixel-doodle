@@ -67,6 +67,9 @@ const tc = Circle(info.0, info.1, info.2)
 tc.fill(0xFF00CCCC)
 tc.stroke(2.0, 0xFFFFFFFF)
 
+// Single-element tuple (trailing comma)
+const single = (42.0,)
+
 // Tuple destructuring
 const (dx, dy, dr) = info
 const tc2 = Circle(dx + 80.0, dy, dr * 0.7)
