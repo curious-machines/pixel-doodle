@@ -241,12 +241,19 @@ pub enum MatchPattern {
     Wildcard,
 }
 
+/// Enum variant field.
+#[derive(Debug, Clone)]
+pub struct EnumVariantField {
+    pub name: String,
+    pub ty: PdcType,
+}
+
 /// Enum variant definition.
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: String,
-    /// Payload types (empty for C-style variants).
-    pub fields: Vec<PdcType>,
+    /// Payload fields (empty for C-style variants).
+    pub fields: Vec<EnumVariantField>,
 }
 
 /// Enum definition with optional data variants.

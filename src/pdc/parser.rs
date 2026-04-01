@@ -383,13 +383,16 @@ impl Parser {
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             let (vname, _) = self.expect_ident()?;
-            // Optional payload types: Variant(type, type, ...)
+            // Optional payload fields: Variant(name: type, name: type, ...)
             let fields = if *self.peek() == TokenKind::LParen {
                 self.advance();
-                let mut ftypes = Vec::new();
+                let mut flds = Vec::new();
                 if !self.at(&TokenKind::RParen) {
                     loop {
-                        ftypes.push(self.parse_type()?);
+                        let (fname, _) = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let fty = self.parse_type()?;
+                        flds.push(EnumVariantField { name: fname, ty: fty });
                         if *self.peek() == TokenKind::Comma {
                             self.advance();
                         } else {
@@ -398,7 +401,7 @@ impl Parser {
                     }
                 }
                 self.expect(&TokenKind::RParen)?;
-                ftypes
+                flds
             } else {
                 Vec::new()
             };

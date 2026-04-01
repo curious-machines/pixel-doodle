@@ -9,10 +9,10 @@ struct Vec2 {
     y: f64,
 }
 
-// Enum with data variants
+// Enum with named data variant fields
 enum Shape {
-    CircleShape(f64, f64, f64),
-    RectShape(f64, f64, f64, f64),
+    CircleShape(cx: f64, cy: f64, r: f64),
+    RectShape(x: f64, y: f64, w: f64, h: f64),
 }
 
 const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)

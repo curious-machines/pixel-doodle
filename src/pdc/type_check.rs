@@ -29,7 +29,8 @@ pub struct StructInfo {
 #[derive(Clone)]
 pub struct EnumVariantInfo {
     pub name: String,
-    pub fields: Vec<PdcType>,
+    pub field_names: Vec<String>,
+    pub field_types: Vec<PdcType>,
 }
 
 /// Enum definition info for type checking.
@@ -170,7 +171,8 @@ impl TypeChecker {
                     self.enums.insert(edef.name.clone(), EnumInfo {
                         variants: edef.variants.iter().map(|v| EnumVariantInfo {
                             name: v.name.clone(),
-                            fields: v.fields.clone(),
+                            field_names: v.fields.iter().map(|f| f.name.clone()).collect(),
+                            field_types: v.fields.iter().map(|f| f.ty.clone()).collect(),
                         }).collect(),
                     });
                     // Register enum name as a variable so EnumName.Variant resolves
@@ -316,8 +318,10 @@ impl TypeChecker {
                                         // Define destructured bindings in arm scope
                                         if !bindings.is_empty() {
                                             for (bi, bname) in bindings.iter().enumerate() {
-                                                if bi < vi.fields.len() {
-                                                    self.define_var(bname, vi.fields[bi].clone());
+                                                if bi < vi.field_types.len() {
+                                                    if bname != "_" {
+                                                        self.define_var(bname, vi.field_types[bi].clone());
+                                                    }
                                                 }
                                             }
                                         }
@@ -340,8 +344,10 @@ impl TypeChecker {
                             if let Some(info) = self.enums.get(name).cloned() {
                                 if let Some(vi) = info.variants.iter().find(|v| v.name == *variant) {
                                     for (bi, bname) in bindings.iter().enumerate() {
-                                        if bi < vi.fields.len() {
-                                            self.define_var(bname, vi.fields[bi].clone());
+                                        if bi < vi.field_types.len() {
+                                            if bname != "_" {
+                                                        self.define_var(bname, vi.field_types[bi].clone());
+                                                    }
                                         }
                                     }
                                 }
@@ -493,18 +499,18 @@ impl TypeChecker {
                             span: expr.span,
                             message: format!("enum '{ename}' has no variant '{method}'"),
                         })?.clone();
-                    if args.len() != var_info.fields.len() {
+                    if args.len() != var_info.field_types.len() {
                         return Err(PdcError::Type {
                             span: expr.span,
                             message: format!(
                                 "variant '{}.{}' expects {} arguments, got {}",
-                                ename, method, var_info.fields.len(), args.len(),
+                                ename, method, var_info.field_types.len(), args.len(),
                             ),
                         });
                     }
                     for (i, arg) in args.iter().enumerate() {
                         let arg_ty = self.check_expr(arg)?;
-                        self.check_compatible(&arg_ty, &var_info.fields[i], arg.span)?;
+                        self.check_compatible(&arg_ty, &var_info.field_types[i], arg.span)?;
                     }
                     PdcType::Enum(ename.clone())
                 } else if let Some(builtin) = self.builtins.get(method.as_str()) {

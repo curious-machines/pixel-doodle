@@ -387,7 +387,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let is_pointer_type = match &final_ty {
                     PdcType::Struct(_) => true,
                     PdcType::Enum(ename) => {
-                        self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.fields.is_empty()))
+                        self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.field_types.is_empty()))
                     }
                     _ => false,
                 };
@@ -474,7 +474,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         // Determine if this is a simple enum (i32 tag) or data variant (pointer to tagged union)
         let has_data_variants = if let PdcType::Enum(ref ename) = scr_ty {
-            self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.fields.is_empty()))
+            self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.field_types.is_empty()))
         } else {
             false
         };
@@ -516,7 +516,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     if !bindings.is_empty() && has_data_variants {
                         let variant_info = &info.variants[variant_idx];
                         for (bi, bname) in bindings.iter().enumerate() {
-                            let field_ty = &variant_info.fields[bi];
+                            if bname == "_" {
+                                continue; // wildcard: skip binding
+                            }
+                            let field_ty = &variant_info.field_types[bi];
                             let raw = self.builder.ins().load(F64, MemFlags::trusted(), scr_val, (8 + bi * 8) as i32);
                             let val = self.narrow_from_f64(raw, field_ty);
                             let var = self.new_variable(bname, field_ty);
@@ -569,7 +572,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             })?;
 
         // Calculate size: 8 bytes for tag + max(variant payload sizes) * 8
-        let max_fields = info.variants.iter().map(|v| v.fields.len()).max().unwrap_or(0);
+        let max_fields = info.variants.iter().map(|v| v.field_types.len()).max().unwrap_or(0);
         let total_size = (8 + max_fields * 8) as u32; // 8 for tag, 8 per field
 
         let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
@@ -867,7 +870,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                             message: format!("enum '{ename}' has no variant '{field}'"),
                         })?;
                     let variant = &info.variants[idx];
-                    if variant.fields.is_empty() {
+                    if variant.field_types.is_empty() {
                         // Simple enum variant: just the tag value
                         return Ok(self.builder.ins().iconst(I32, idx as i64));
                     } else {
