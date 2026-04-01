@@ -451,3 +451,52 @@ PDC handles computation, scene description, and processing kernels. PDP handles 
 - Processing kernels (flatten, stroke — dispatched by runtime)
 - Standard library (math, geometry, color)
 - User-defined types and functions
+
+## Functional Programming
+
+PDC supports function references (named only, no closures) and `map`. The dividing line for what can be implemented in PDC vs what requires Rust is **closures** — any function that needs a predicate or callback with captured context requires closures, which PDC lacks.
+
+### Status Table
+
+| Function | Description | PDC or Rust? | Why |
+|----------|-------------|:------------:|-----|
+| **map** | Transform each element | PDC ✅ (exists) | Built-in; works with named fn refs |
+| **forEach** | Side-effect per element | PDC ✅ | `for x in arr { ... }` — just a loop |
+| **filter** | Keep elements matching predicate | **Rust** | Requires closure for predicate with context |
+| **reduce / fold** | Accumulate into single value | **Rust** | Accumulator fn needs 2 params; map dispatch wired for 1-param fns; needs captured initial value |
+| **find** | First element matching predicate | **Rust** | Closure problem (same as filter) |
+| **any / some** | True if any element matches | **Rust** | Closure problem |
+| **all / every** | True if all elements match | **Rust** | Closure problem |
+| **flatMap** | Map then flatten | **Rust** | Needs map + flatten; also closure issue |
+| **zip** | Pair elements from two arrays | PDC ✅ | `for i in 0..len(a)` building tuple array |
+| **enumerate** | Pair each element with its index | PDC ✅ | `for i in 0..len(arr)`, build `(i, arr[i])` tuples |
+| **reverse** | Reverse array order | PDC ✅ | Loop from `len-1` down to `0`, push to new array |
+| **sort** | Sort elements | **Either** | PDC can do basic sort; performant sort better in Rust |
+| **take / drop** | First/last N elements | PDC ✅ | `slice(arr, 0, n)` already exists |
+| **contains** | Check if element exists | PDC ✅ | Loop + equality check |
+| **sum / product** | Reduce with +/* | PDC ✅ | Simple accumulator loop — no closure needed |
+| **min / max** | Find extreme value | PDC ✅ | Simple accumulator loop |
+| **groupBy** | Group into map by key | **Rust** | PDC has no map/dictionary type |
+| **partition** | Split into two arrays by predicate | **Rust** | Closure problem for predicate |
+| **scan** | Like reduce but emit intermediates | **Rust** | 2-param accumulator + closure issue |
+| **compose / pipe** | Chain functions | **Rust** | Can't return functions or build pipelines |
+| **curry / partial** | Partially apply arguments | **Rust** | No closures = no captured partial args |
+
+### Key Limitation
+
+Adding closures to PDC would move almost everything to the PDC column except:
+- **groupBy** — needs a dictionary type
+- **compose / curry** — needs returning functions
+
+### Current PDC FP Capabilities
+
+- ✅ Named functions as values (function references)
+- ✅ Higher-order functions via `map()` on arrays
+- ✅ Nested data structures (arrays of arrays)
+- ✅ Pattern matching (enums)
+- ✅ Immutable variables (`const`)
+- ❌ Closures / lambdas
+- ❌ Function type annotations in parameter lists
+- ❌ Returning functions
+- ❌ Generics (uses overloading instead)
+- ❌ Lazy evaluation / iterators

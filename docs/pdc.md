@@ -92,6 +92,9 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Alpha Blending](#alpha-blending)
   - [Painter's Algorithm](#painters-algorithm)
 - [UFCS (Method Syntax)](#ufcs-method-syntax)
+- [Testing](#testing)
+  - [Test Blocks](#test-blocks)
+  - [Assert Functions](#assert-functions)
 
 ## Getting Started
 
@@ -1252,3 +1255,50 @@ p.close()
 p.fill(0xFFFF0000)
 p.stroke(2.0, 0xFF000000)
 ```
+
+## Testing
+
+PDC has built-in test blocks and assertion functions for inline testing of functions and logic.
+
+### Test Blocks
+
+Define tests with the `test` keyword followed by a string name and a block:
+
+```
+fn add(a: f64, b: f64) -> f64 {
+    return a + b
+}
+
+test "add returns correct sum" {
+    assert_eq(add(2.0, 3.0), 5.0)
+    assert_eq(add(-1.0, 1.0), 0.0)
+}
+
+test "add with zero" {
+    assert_eq(add(0.0, 42.0), 42.0)
+}
+```
+
+Test blocks are compiled and executed by the test runner. They do not run during normal program execution.
+
+### Assert Functions
+
+| Function | Description |
+|----------|-------------|
+| `assert_eq(a, b)` | Assert that `a == b`. Works with `f64`, `f32`, `i32`, `u32`, `bool`, and other numeric types. |
+| `assert_near(a, b, epsilon)` | Assert that `abs(a - b) <= epsilon`. All arguments must be `f64`. |
+| `assert_true(cond)` | Assert that `cond` is `true`. |
+
+```
+test "floating point comparison" {
+    const pi = 3.14159
+    assert_near(sin(pi), 0.0, 1e-5)
+}
+
+test "boolean logic" {
+    assert_true(10 > 5)
+    assert_eq(1 + 1, 2)
+}
+```
+
+When an assertion fails, the test reports the expected vs actual values and continues running remaining assertions in the same test block.
