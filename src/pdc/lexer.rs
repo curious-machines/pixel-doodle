@@ -76,6 +76,29 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            // Skip block comments (nestable)
+            if self.peek() == Some(b'/') && self.peek2() == Some(b'*') {
+                self.pos += 2; // consume /*
+                let mut depth = 1u32;
+                while depth > 0 {
+                    match self.peek() {
+                        None => break, // unterminated — let the parser deal with it
+                        Some(b'/') if self.peek2() == Some(b'*') => {
+                            self.pos += 2;
+                            depth += 1;
+                        }
+                        Some(b'*') if self.peek2() == Some(b'/') => {
+                            self.pos += 2;
+                            depth -= 1;
+                        }
+                        _ => {
+                            self.pos += 1;
+                        }
+                    }
+                }
+                continue;
+            }
+
             break;
         }
     }
@@ -95,6 +118,11 @@ impl<'a> Lexer<'a> {
         // Identifiers and keywords
         if ch.is_ascii_alphabetic() || ch == b'_' {
             return self.lex_ident(start);
+        }
+
+        // String literals
+        if ch == b'"' {
+            return self.lex_string(start);
         }
 
         // Numbers (including hex)
@@ -125,7 +153,15 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'*' => {
-                if self.peek() == Some(b'=') {
+                if self.peek() == Some(b'*') {
+                    self.advance();
+                    if self.peek() == Some(b'=') {
+                        self.advance();
+                        TokenKind::StarStarEq
+                    } else {
+                        TokenKind::StarStar
+                    }
+                } else if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::StarEq
                 } else {
@@ -168,7 +204,15 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'<' => {
-                if self.peek() == Some(b'=') {
+                if self.peek() == Some(b'<') {
+                    self.advance();
+                    if self.peek() == Some(b'=') {
+                        self.advance();
+                        TokenKind::LtLtEq
+                    } else {
+                        TokenKind::LtLt
+                    }
+                } else if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::LtEq
                 } else {
@@ -176,21 +220,53 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'>' => {
-                if self.peek() == Some(b'=') {
+                if self.peek() == Some(b'>') {
+                    self.advance();
+                    if self.peek() == Some(b'=') {
+                        self.advance();
+                        TokenKind::GtGtEq
+                    } else {
+                        TokenKind::GtGt
+                    }
+                } else if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::GtEq
                 } else {
                     TokenKind::Gt
                 }
             }
-            b'&' if self.peek() == Some(b'&') => {
-                self.advance();
-                TokenKind::AmpAmp
+            b'&' => {
+                if self.peek() == Some(b'&') {
+                    self.advance();
+                    TokenKind::AmpAmp
+                } else if self.peek() == Some(b'=') {
+                    self.advance();
+                    TokenKind::AmpEq
+                } else {
+                    TokenKind::Amp
+                }
             }
-            b'|' if self.peek() == Some(b'|') => {
-                self.advance();
-                TokenKind::PipePipe
+            b'|' => {
+                if self.peek() == Some(b'|') {
+                    self.advance();
+                    TokenKind::PipePipe
+                } else if self.peek() == Some(b'=') {
+                    self.advance();
+                    TokenKind::PipeEq
+                } else {
+                    TokenKind::Pipe
+                }
             }
+            b'^' => {
+                if self.peek() == Some(b'=') {
+                    self.advance();
+                    TokenKind::CaretEq
+                } else {
+                    TokenKind::Caret
+                }
+            }
+            b'~' => TokenKind::Tilde,
+            b'?' => TokenKind::Question,
             b'(' => TokenKind::LParen,
             b')' => TokenKind::RParen,
             b'{' => TokenKind::LBrace,
@@ -298,6 +374,41 @@ impl<'a> Lexer<'a> {
             .map_err(|_| self.err(start, format!("invalid integer literal '{text}'")))?;
         Ok(Token {
             kind: TokenKind::IntLit(val),
+            span: self.span_from(start),
+        })
+    }
+
+    fn lex_string(&mut self, start: usize) -> Result<Token, PdcError> {
+        self.advance(); // consume opening '"'
+        let mut value = String::new();
+        loop {
+            match self.peek() {
+                None => return Err(self.err(start, "unterminated string literal")),
+                Some(b'"') => {
+                    self.advance();
+                    break;
+                }
+                Some(b'\\') => {
+                    self.advance();
+                    match self.peek() {
+                        Some(b'n') => { self.advance(); value.push('\n'); }
+                        Some(b't') => { self.advance(); value.push('\t'); }
+                        Some(b'r') => { self.advance(); value.push('\r'); }
+                        Some(b'\\') => { self.advance(); value.push('\\'); }
+                        Some(b'"') => { self.advance(); value.push('"'); }
+                        Some(b'0') => { self.advance(); value.push('\0'); }
+                        Some(ch) => return Err(self.err(start, format!("unknown escape sequence '\\{}'", ch as char))),
+                        None => return Err(self.err(start, "unterminated string literal")),
+                    }
+                }
+                Some(ch) => {
+                    self.advance();
+                    value.push(ch as char);
+                }
+            }
+        }
+        Ok(Token {
+            kind: TokenKind::StringLit(value),
             span: self.span_from(start),
         })
     }

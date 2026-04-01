@@ -3,7 +3,7 @@
 **Date:** 2026-03-31 (design), 2026-04-01 (Phase 1-7+ implemented)
 **Status:** Core language implemented. See `docs/pdc.md` for the complete user-facing reference.
 
-**Implemented:** All numeric types (i8-i64, u8-u64, f32, f64), bool, Path, strings (handle-based, UTF-8, concat/slice/len/char_at), slices (slice\<T\> views into arrays), structs, enums (simple + data variants), match (with destructuring, dot-shorthand, exhaustiveness), tuples (construction, element access, destructuring, len), arrays (Array\<T\> with proper element-sized storage, bracket notation, for-each, map, broadcasting), imports (direct, namespaced, and file-based with circular detection), stdlib (geometry, math), compound assignment (all operators), named function arguments, const enforcement, UFCS, alpha blending, `**` exponentiation, bitwise operators (`& | ^ ~ << >>`), ternary `?:`, function references/map, function overloading, for-each destructuring, richer fill/stroke styling (FillRule, LineCap, LineJoin), block comments (`/* */` with nesting), type aliases (`type Name = Type`), inclusive range loops (`..=`), exp2/inversesqrt math builtins.
+**Implemented:** All numeric types (i8-i64, u8-u64, f32, f64), bool, Path, strings (handle-based, UTF-8, concat/slice/len/char_at), slices (slice\<T\> views into arrays), structs, enums (simple + data variants), match (with destructuring, dot-shorthand, exhaustiveness), tuples (construction, element access, destructuring, len), arrays (Array\<T\> with proper element-sized storage, bracket notation, for-each, map, broadcasting), imports (direct, namespaced, and file-based with circular detection), `pub` visibility with per-module isolation, stdlib (geometry, math), compound assignment (all operators), named function arguments, const enforcement, UFCS, alpha blending, `**` exponentiation, bitwise operators (`& | ^ ~ << >>`), ternary `?:`, function references/map, function overloading, for-each destructuring, richer fill/stroke styling (FillRule, LineCap, LineJoin), block comments (`/* */` with nesting), type aliases (`type Name = Type`), inclusive range loops (`..=`), exp2/inversesqrt math builtins.
 
 **Not yet implemented:** SOA layout annotation, LLVM backend, PDP integration.
 
@@ -373,7 +373,6 @@ const custom = my_shapes.star(5, 30.0)
 
 ### Deferred
 
-- `pub` visibility control
 - Re-exports
 
 ## Comments

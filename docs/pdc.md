@@ -975,6 +975,33 @@ import { star, hexagon } from "./my_shapes"
 
 File imports resolve `.pdc` files relative to the importing file's directory. The `.pdc` extension is added automatically if omitted. Circular imports are detected and produce a compile error.
 
+### Visibility (`pub`)
+
+Module definitions are private by default. Use `pub` to make them importable:
+
+```
+pub const PI = 3.14159
+pub fn lerp(a: f64, b: f64, t: f64) -> f64 { return a + (b - a) * t }
+pub struct Vec2 { x: f64, y: f64 }
+pub enum Shape { Circle, Rect }
+pub type Coord = f64
+```
+
+Private items are usable within their own module but cannot be imported by other modules. A `pub` function can freely call private helpers in the same module.
+
+Attempting to import a private item produces a compile error:
+
+```
+import { helper } from math    // ERROR: 'helper' is not exported from module 'math'
+```
+
+Importing a name that collides with a local definition is also an error:
+
+```
+import { lerp } from math
+fn lerp(a: f64, b: f64, t: f64) -> f64 { ... }  // ERROR: 'lerp' already defined
+```
+
 ### Geometry Module
 
 Shape constructors that return `Path` handles:

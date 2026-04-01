@@ -45,21 +45,33 @@ pub struct EnumInfo {
     pub variants: Vec<EnumVariantInfo>,
 }
 
+/// Tracks which names a module exports (pub items).
+#[derive(Clone, Default)]
+pub struct ModuleExports {
+    pub names: HashSet<String>,
+}
+
 pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
     /// Variables declared as const — assignments to these are rejected.
     const_vars: HashSet<String>,
     builtins: HashMap<String, BuiltinFn>,
     /// User-defined function signatures (supports overloading).
+    /// Module functions are stored with qualified keys: "math::lerp".
     pub user_fns: HashMap<String, OverloadSet>,
-    /// User-defined struct definitions.
+    /// User-defined struct definitions. Module structs: "module::Name".
     pub structs: HashMap<String, StructInfo>,
-    /// User-defined enum definitions.
+    /// User-defined enum definitions. Module enums: "module::Name".
     pub enums: HashMap<String, EnumInfo>,
     /// Type aliases: `type Name = ExistingType`
     pub type_aliases: HashMap<String, PdcType>,
     /// Type assigned to each AST node, indexed by node ID.
     pub types: Vec<PdcType>,
+    /// Per-module export info.
+    module_exports: HashMap<String, ModuleExports>,
+    /// Alias map: unqualified name → qualified "module::name".
+    /// Created by import statements.
+    pub fn_aliases: HashMap<String, String>,
 }
 
 impl TypeChecker {
@@ -73,6 +85,8 @@ impl TypeChecker {
             enums: HashMap::new(),
             type_aliases: HashMap::new(),
             types: Vec::new(),
+            module_exports: HashMap::new(),
+            fn_aliases: HashMap::new(),
         };
         tc.register_builtins();
         tc
@@ -246,17 +260,209 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), PdcError> {
-        // First pass: register all struct and function signatures
-        for stmt in &program.stmts {
-            match &stmt.node {
-                Stmt::TypeAlias { name, ty } => {
+        // ── Phase A: Register all module definitions with qualified names ──
+        for module in &program.modules {
+            let mod_name = &module.name;
+            let mut exports = ModuleExports::default();
+
+            // Sub-pass 1: type aliases
+            for stmt in &module.stmts {
+                if let Stmt::TypeAlias { vis, name, ty } = &stmt.node {
+                    let qualified = format!("{mod_name}::{name}");
                     let resolved = self.resolve_type(ty);
-                    self.type_aliases.insert(name.clone(), resolved);
+                    self.type_aliases.insert(qualified, resolved);
+                    if *vis == Visibility::Public {
+                        exports.names.insert(name.clone());
+                    }
                 }
-                _ => {}
+            }
+
+            // Sub-pass 2: functions, structs, enums
+            for stmt in &module.stmts {
+                match &stmt.node {
+                    Stmt::FnDef(fndef) => {
+                        let qualified = format!("{mod_name}::{}", fndef.name);
+                        let sig = UserFnSig {
+                            params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
+                            ret: self.resolve_type(&fndef.return_type),
+                        };
+                        self.user_fns.entry(qualified)
+                            .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                            .sigs.push(sig);
+                        if fndef.vis == Visibility::Public {
+                            exports.names.insert(fndef.name.clone());
+                        }
+                    }
+                    Stmt::StructDef(sdef) => {
+                        let qualified = format!("{mod_name}::{}", sdef.name);
+                        self.structs.insert(qualified, StructInfo {
+                            fields: sdef.fields.iter().map(|f| (f.name.clone(), self.resolve_type(&f.ty))).collect(),
+                        });
+                        if sdef.vis == Visibility::Public {
+                            exports.names.insert(sdef.name.clone());
+                        }
+                    }
+                    Stmt::EnumDef(edef) => {
+                        let qualified = format!("{mod_name}::{}", edef.name);
+                        self.enums.insert(qualified.clone(), EnumInfo {
+                            variants: edef.variants.iter().map(|v| EnumVariantInfo {
+                                name: v.name.clone(),
+                                field_names: v.fields.iter().map(|f| f.name.clone()).collect(),
+                                field_types: v.fields.iter().map(|f| f.ty.clone()).collect(),
+                            }).collect(),
+                        });
+                        if edef.vis == Visibility::Public {
+                            exports.names.insert(edef.name.clone());
+                        }
+                    }
+                    Stmt::ConstDecl { vis, name, .. } | Stmt::VarDecl { vis, name, .. } => {
+                        if *vis == Visibility::Public {
+                            exports.names.insert(name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            self.module_exports.insert(mod_name.clone(), exports);
+        }
+
+        // ── Phase B: Type-check module bodies ──
+        // Each module gets a scope mapping unqualified names → qualified entries
+        for module in &program.modules {
+            let mod_name = &module.name;
+            self.push_scope();
+
+            // Map all module-internal names (qualified) into this scope as unqualified
+            for stmt in &module.stmts {
+                match &stmt.node {
+                    Stmt::FnDef(fndef) => {
+                        // Make the qualified overload set accessible by unqualified name too
+                        let qualified = format!("{mod_name}::{}", fndef.name);
+                        if let Some(overloads) = self.user_fns.get(&qualified).cloned() {
+                            self.user_fns.entry(fndef.name.clone())
+                                .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                                .sigs.extend(overloads.sigs);
+                        }
+                    }
+                    Stmt::StructDef(sdef) => {
+                        let qualified = format!("{mod_name}::{}", sdef.name);
+                        if let Some(info) = self.structs.get(&qualified).cloned() {
+                            self.structs.insert(sdef.name.clone(), info);
+                        }
+                    }
+                    Stmt::EnumDef(edef) => {
+                        let qualified = format!("{mod_name}::{}", edef.name);
+                        if let Some(info) = self.enums.get(&qualified).cloned() {
+                            self.enums.insert(edef.name.clone(), info);
+                        }
+                        self.define_var(&edef.name, PdcType::Enum(edef.name.clone()));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Type-check the module's statements
+            for stmt in &module.stmts {
+                self.check_stmt(stmt)?;
+            }
+
+            // Persist module const/var types with qualified names in the global scope
+            for stmt in &module.stmts {
+                match &stmt.node {
+                    Stmt::ConstDecl { vis: _, name, .. } | Stmt::VarDecl { vis: _, name, .. } => {
+                        if let Some(ty) = self.lookup_var(name).cloned() {
+                            let qualified = format!("{mod_name}::{name}");
+                            self.scopes[0].insert(qualified, ty);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Clean up unqualified aliases from this module
+            for stmt in &module.stmts {
+                match &stmt.node {
+                    Stmt::FnDef(fndef) => { self.user_fns.remove(&fndef.name); }
+                    Stmt::StructDef(sdef) => { self.structs.remove(&sdef.name); }
+                    Stmt::EnumDef(edef) => { self.enums.remove(&edef.name); }
+                    _ => {}
+                }
+            }
+
+            self.pop_scope();
+        }
+
+        // ── Phase C: Process main program imports ──
+        for stmt in &program.stmts {
+            if let Stmt::Import { module, names } = &stmt.node {
+                let exports = self.module_exports.get(module).cloned().unwrap_or_default();
+
+                if names.is_empty() {
+                    // Namespaced import: `import math`
+                    self.define_var(module, PdcType::Module(module.clone()));
+                } else {
+                    // Direct import: `import { lerp, PI } from math`
+                    for name in names {
+                        if !exports.names.contains(name) {
+                            return Err(PdcError::Type {
+                                span: stmt.span,
+                                message: format!("'{name}' is not exported from module '{module}'"),
+                            });
+                        }
+                        let qualified = format!("{module}::{name}");
+
+                        // Check for collision with existing names
+                        if self.user_fns.contains_key(name) || self.lookup_var(name).is_some() {
+                            return Err(PdcError::Type {
+                                span: stmt.span,
+                                message: format!("'{name}' is already defined; conflicts with import from '{module}'"),
+                            });
+                        }
+
+                        // Create aliases for functions
+                        if self.user_fns.contains_key(&qualified) {
+                            let overloads = self.user_fns.get(&qualified).cloned().unwrap();
+                            self.user_fns.insert(name.clone(), overloads);
+                            self.fn_aliases.insert(name.clone(), qualified.clone());
+                        }
+
+                        // Create aliases for structs
+                        if let Some(info) = self.structs.get(&qualified).cloned() {
+                            self.structs.insert(name.clone(), info);
+                        }
+
+                        // Create aliases for enums
+                        if let Some(info) = self.enums.get(&qualified).cloned() {
+                            self.enums.insert(name.clone(), info);
+                            self.define_var(name, PdcType::Enum(name.clone()));
+                        }
+
+                        // Create aliases for type aliases
+                        if let Some(ty) = self.type_aliases.get(&qualified).cloned() {
+                            self.type_aliases.insert(name.clone(), ty);
+                        }
+
+                        // Create aliases for const/var
+                        if let Some(ty) = self.lookup_var(&qualified).cloned() {
+                            self.define_var(name, ty);
+                        }
+                    }
+                }
             }
         }
-        // Second sub-pass: register structs and functions (aliases now available)
+
+        // ── Phase D: Register and check main program ──
+
+        // Pass 1: type aliases
+        for stmt in &program.stmts {
+            if let Stmt::TypeAlias { vis: _, name, ty } = &stmt.node {
+                let resolved = self.resolve_type(ty);
+                self.type_aliases.insert(name.clone(), resolved);
+            }
+        }
+
+        // Pass 2: functions, structs, enums
         for stmt in &program.stmts {
             match &stmt.node {
                 Stmt::FnDef(fndef) => {
@@ -281,14 +487,13 @@ impl TypeChecker {
                             field_types: v.fields.iter().map(|f| f.ty.clone()).collect(),
                         }).collect(),
                     });
-                    // Register enum name as a variable so EnumName.Variant resolves
                     self.define_var(&edef.name, PdcType::Enum(edef.name.clone()));
                 }
                 _ => {}
             }
         }
 
-        // Second pass: type check everything
+        // Pass 3: type check main statements
         for stmt in &program.stmts {
             self.check_stmt(stmt)?;
         }
@@ -302,7 +507,7 @@ impl TypeChecker {
                 self.define_var(name, resolved);
                 self.const_vars.insert(name.clone());
             }
-            Stmt::ConstDecl { name, ty, value } => {
+            Stmt::ConstDecl { vis: _, name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
                     let resolved = self.resolve_type(declared);
@@ -314,7 +519,7 @@ impl TypeChecker {
                 self.define_var(name, final_ty);
                 self.const_vars.insert(name.clone());
             }
-            Stmt::VarDecl { name, ty, value } => {
+            Stmt::VarDecl { vis: _, name, ty, value } => {
                 let val_ty = self.check_expr(value)?;
                 let final_ty = if let Some(declared) = ty {
                     let resolved = self.resolve_type(declared);
@@ -814,19 +1019,31 @@ impl TypeChecker {
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.check_expr(object)?;
 
-                // Module namespaced call: math.sin(x) → sin(x)
-                if let PdcType::Module(_) = &obj_ty {
+                // Module namespaced call: math.sin(x) → math::sin(x)
+                if let PdcType::Module(mod_name) = &obj_ty {
+                    let qualified = format!("{mod_name}::{method}");
+
+                    // Check pub visibility
+                    if let Some(exports) = self.module_exports.get(mod_name.as_str()) {
+                        if !exports.names.contains(method.as_str()) {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("'{method}' is not exported from module '{mod_name}'"),
+                            });
+                        }
+                    }
+
                     // Check args
                     let mut arg_types = Vec::new();
                     for arg in args.iter() {
                         arg_types.push(self.check_expr(arg)?);
                     }
-                    // Try user function first
-                    if let Some(overloads) = self.user_fns.get(method.as_str()).cloned() {
+                    // Try user function with qualified name
+                    if let Some(overloads) = self.user_fns.get(&qualified).cloned() {
                         let sig = self.resolve_overload(&overloads, &arg_types)
                             .ok_or_else(|| PdcError::Type {
                                 span: expr.span,
-                                message: format!("no matching overload for '{method}'"),
+                                message: format!("no matching overload for '{mod_name}.{method}'"),
                             })?;
                         for (i, arg) in args.iter().enumerate() {
                             self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
@@ -834,7 +1051,7 @@ impl TypeChecker {
                         self.set_type(expr.id, sig.ret.clone());
                         return Ok(sig.ret);
                     }
-                    // Try builtin
+                    // Try builtin (builtins are unqualified — sin, cos, etc.)
                     if let Some(builtin) = self.builtins.get(method.as_str()) {
                         let ret = builtin.ret.clone();
                         self.set_type(expr.id, ret.clone());
@@ -842,7 +1059,7 @@ impl TypeChecker {
                     }
                     return Err(PdcError::Type {
                         span: expr.span,
-                        message: format!("module has no function '{method}'"),
+                        message: format!("module '{mod_name}' has no function '{method}'"),
                     });
                 }
 
@@ -1092,12 +1309,21 @@ impl TypeChecker {
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.check_expr(object)?;
                 match &obj_ty {
-                    PdcType::Module(_) => {
-                        // Module namespaced field: math.PI → PI
-                        self.lookup_var(field).cloned()
+                    PdcType::Module(mod_name) => {
+                        // Module namespaced field: math.PI → math::PI
+                        if let Some(exports) = self.module_exports.get(mod_name.as_str()) {
+                            if !exports.names.contains(field.as_str()) {
+                                return Err(PdcError::Type {
+                                    span: expr.span,
+                                    message: format!("'{field}' is not exported from module '{mod_name}'"),
+                                });
+                            }
+                        }
+                        let qualified = format!("{mod_name}::{field}");
+                        self.lookup_var(&qualified).cloned()
                             .ok_or_else(|| PdcError::Type {
                                 span: expr.span,
-                                message: format!("module has no member '{field}'"),
+                                message: format!("module '{mod_name}' has no member '{field}'"),
                             })?
                     }
                     PdcType::Struct(name) => {

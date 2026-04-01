@@ -1,7 +1,7 @@
 // PDC Standard Library: geometry
 // Shape constructors that return Path handles.
 
-fn Circle(cx: f64, cy: f64, r: f64) -> Path {
+pub fn Circle(cx: f64, cy: f64, r: f64) -> Path {
     const k = r * 0.5522847498
     var p = Path()
     p.move_to(cx + r, cy)
@@ -13,7 +13,7 @@ fn Circle(cx: f64, cy: f64, r: f64) -> Path {
     return p
 }
 
-fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
+pub fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     var p = Path()
     p.move_to(x, y)
     p.line_to(x + w, y)
@@ -23,7 +23,7 @@ fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     return p
 }
 
-fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
+pub fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
     const k = r * 0.5522847498
     var p = Path()
     p.move_to(x + r, y)
@@ -39,14 +39,14 @@ fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
     return p
 }
 
-fn Line(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
+pub fn Line(x0: f64, y0: f64, x1: f64, y1: f64) -> Path {
     var p = Path()
     p.move_to(x0, y0)
     p.line_to(x1, y1)
     return p
 }
 
-fn Triangle(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> Path {
+pub fn Triangle(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> Path {
     var p = Path()
     p.move_to(x0, y0)
     p.line_to(x1, y1)

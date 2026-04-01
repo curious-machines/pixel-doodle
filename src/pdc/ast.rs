@@ -1,5 +1,12 @@
 use super::span::Spanned;
 
+/// Visibility of a definition within a module.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 /// PDC types known at compile time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PdcType {
@@ -28,7 +35,7 @@ pub enum PdcType {
     Tuple(Vec<PdcType>),
     /// Slice type: view into array without copying.
     Slice(Box<PdcType>),
-        /// Function reference type: fn(params) -> ret
+    /// Function reference type: fn(params) -> ret
     FnRef {
         params: Vec<PdcType>,
         ret: Box<PdcType>,
@@ -199,14 +206,16 @@ pub enum Expr {
 pub enum Stmt {
     /// `builtin const name: type`
     BuiltinDecl { name: String, ty: PdcType },
-    /// `const name [: type] = expr`
+    /// `[pub] const name [: type] = expr`
     ConstDecl {
+        vis: Visibility,
         name: String,
         ty: Option<PdcType>,
         value: Spanned<Expr>,
     },
-    /// `var name [: type] = expr`
+    /// `[pub] var name [: type] = expr`
     VarDecl {
+        vis: Visibility,
         name: String,
         ty: Option<PdcType>,
         value: Spanned<Expr>,
@@ -272,14 +281,15 @@ pub enum Stmt {
     Continue,
     /// `return [expr]`
     Return(Option<Spanned<Expr>>),
-    /// `fn name(params) [-> type] { body }`
+    /// `[pub] fn name(params) [-> type] { body }`
     FnDef(FnDef),
-    /// `struct Name { field: type, ... }`
+    /// `[pub] struct Name { field: type, ... }`
     StructDef(StructDef),
-    /// `enum Name { Variant1, Variant2, ... }`
+    /// `[pub] enum Name { Variant1, Variant2, ... }`
     EnumDef(EnumDef),
-    /// `type Name = ExistingType`
+    /// `[pub] type Name = ExistingType`
     TypeAlias {
+        vis: Visibility,
         name: String,
         ty: PdcType,
     },
@@ -308,6 +318,7 @@ pub struct Param {
 /// Function definition.
 #[derive(Debug, Clone)]
 pub struct FnDef {
+    pub vis: Visibility,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: PdcType,
@@ -324,6 +335,7 @@ pub struct StructField {
 /// Struct definition.
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    pub vis: Visibility,
     pub name: String,
     pub fields: Vec<StructField>,
 }
@@ -367,12 +379,21 @@ pub struct EnumVariant {
 /// Enum definition with optional data variants.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    pub vis: Visibility,
     pub name: String,
     pub variants: Vec<EnumVariant>,
 }
 
-/// A complete PDC program (list of top-level statements).
+/// A parsed module unit.
+#[derive(Debug)]
+pub struct ModuleUnit {
+    pub name: String,
+    pub stmts: Vec<Spanned<Stmt>>,
+}
+
+/// A complete PDC program: imported modules + main program statements.
 #[derive(Debug)]
 pub struct Program {
+    pub modules: Vec<ModuleUnit>,
     pub stmts: Vec<Spanned<Stmt>>,
 }

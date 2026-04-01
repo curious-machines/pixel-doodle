@@ -1,27 +1,23 @@
 // PDC Standard Library: math
 // Common math functions and constants built on the built-in intrinsics.
 
-// Constants - defined at module level.
-// Note: these must be visible to functions in this module.
-// Currently, top-level constants are compiled into each function
-// that references them via the codegen's global constant pass.
-const PI = 3.14159265358979323846
-const TAU = 6.28318530717958647692
-const E = 2.71828182845904523536
+pub const PI = 3.14159265358979323846
+pub const TAU = 6.28318530717958647692
+pub const E = 2.71828182845904523536
 
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
+pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
     return a + (b - a) * t
 }
 
-fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     return min(max(x, lo), hi)
 }
 
-fn saturate(x: f64) -> f64 {
+pub fn saturate(x: f64) -> f64 {
     return min(max(x, 0.0), 1.0)
 }
 
-fn sign(x: f64) -> f64 {
+pub fn sign(x: f64) -> f64 {
     if x > 0.0 {
         return 1.0
     }
@@ -31,26 +27,26 @@ fn sign(x: f64) -> f64 {
     return 0.0
 }
 
-fn step(edge: f64, x: f64) -> f64 {
+pub fn step(edge: f64, x: f64) -> f64 {
     if x < edge {
         return 0.0
     }
     return 1.0
 }
 
-fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+pub fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
     const t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
     return t * t * (3.0 - 2.0 * t)
 }
 
-fn degrees(rad: f64) -> f64 {
+pub fn degrees(rad: f64) -> f64 {
     return rad * 180.0 / PI
 }
 
-fn radians(deg: f64) -> f64 {
+pub fn radians(deg: f64) -> f64 {
     return deg * PI / 180.0
 }
 
-fn inversesqrt(x: f64) -> f64 {
+pub fn inversesqrt(x: f64) -> f64 {
     return 1.0 / sqrt(x)
 }

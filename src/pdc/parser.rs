@@ -3,23 +3,23 @@ use super::error::PdcError;
 use super::span::{IdAlloc, Span, Spanned};
 use super::token::{Token, TokenKind};
 
-pub fn parse(tokens: Vec<Token>) -> Result<Program, PdcError> {
-    let mut parser = Parser::new(tokens);
-    parser.parse_program()
+pub fn parse(tokens: Vec<Token>, ids: &mut IdAlloc) -> Result<Vec<Spanned<Stmt>>, PdcError> {
+    let mut parser = Parser::new(tokens, ids);
+    parser.parse_stmts()
 }
 
-struct Parser {
+struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
-    ids: IdAlloc,
+    ids: &'a mut IdAlloc,
 }
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+impl<'a> Parser<'a> {
+    fn new(tokens: Vec<Token>, ids: &'a mut IdAlloc) -> Self {
         Self {
             tokens,
             pos: 0,
-            ids: IdAlloc::new(),
+            ids,
         }
     }
 
@@ -67,22 +67,42 @@ impl Parser {
         }
     }
 
-    fn parse_program(&mut self) -> Result<Program, PdcError> {
+    fn parse_stmts(&mut self) -> Result<Vec<Spanned<Stmt>>, PdcError> {
         let mut stmts = Vec::new();
         while *self.peek() != TokenKind::Eof {
             stmts.push(self.parse_stmt()?);
         }
-        Ok(Program { stmts })
+        Ok(stmts)
     }
 
     // ── Statement parsing ──
 
     fn parse_stmt(&mut self) -> Result<Spanned<Stmt>, PdcError> {
         let start = self.span();
+
+        // Handle `pub` prefix
+        if *self.peek() == TokenKind::Pub {
+            self.advance(); // consume 'pub'
+            let vis = Visibility::Public;
+            return match self.peek().clone() {
+                TokenKind::Const => self.parse_const_decl(start, vis),
+                TokenKind::Var => self.parse_var_decl(start, vis),
+                TokenKind::Fn => self.parse_fn_def(start, vis),
+                TokenKind::Struct => self.parse_struct_def(start, vis),
+                TokenKind::Enum => self.parse_enum_def(start, vis),
+                TokenKind::Type => self.parse_type_alias(start, vis),
+                _ => Err(PdcError::Parse {
+                    span: self.span(),
+                    message: format!("'pub' can only precede fn, const, var, struct, enum, or type; got {:?}", self.peek()),
+                }),
+            };
+        }
+
+        let vis = Visibility::Private;
         match self.peek().clone() {
             TokenKind::Builtin => self.parse_builtin_decl(start),
-            TokenKind::Const => self.parse_const_decl(start),
-            TokenKind::Var => self.parse_var_decl(start),
+            TokenKind::Const => self.parse_const_decl(start, vis),
+            TokenKind::Var => self.parse_var_decl(start, vis),
             TokenKind::If => self.parse_if(start),
             TokenKind::While => self.parse_while(start),
             TokenKind::For => self.parse_for(start),
@@ -98,10 +118,10 @@ impl Parser {
             }
             TokenKind::Return => self.parse_return(start),
             TokenKind::Import => self.parse_import(start),
-            TokenKind::Struct => self.parse_struct_def(start),
-            TokenKind::Enum => self.parse_enum_def(start),
-            TokenKind::Type => self.parse_type_alias(start),
-            TokenKind::Fn => self.parse_fn_def(start),
+            TokenKind::Struct => self.parse_struct_def(start, vis),
+            TokenKind::Enum => self.parse_enum_def(start, vis),
+            TokenKind::Type => self.parse_type_alias(start, vis),
+            TokenKind::Fn => self.parse_fn_def(start, vis),
             _ => {
                 // Expression statement or assignment
                 let expr = self.parse_expr()?;
@@ -182,7 +202,7 @@ impl Parser {
         Ok(self.ids.spanned(Stmt::BuiltinDecl { name, ty }, span))
     }
 
-    fn parse_const_decl(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_const_decl(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'const'
         // Tuple destructuring: const (a, b, c) = expr
         if *self.peek() == TokenKind::LParen {
@@ -198,10 +218,10 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let value = self.parse_expr()?;
         let span = Span::new(start.start, value.span.end);
-        Ok(self.ids.spanned(Stmt::ConstDecl { name, ty, value }, span))
+        Ok(self.ids.spanned(Stmt::ConstDecl { vis, name, ty, value }, span))
     }
 
-    fn parse_var_decl(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_var_decl(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'var'
         // Tuple destructuring: var (a, b, c) = expr
         if *self.peek() == TokenKind::LParen {
@@ -217,7 +237,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let value = self.parse_expr()?;
         let span = Span::new(start.start, value.span.end);
-        Ok(self.ids.spanned(Stmt::VarDecl { name, ty, value }, span))
+        Ok(self.ids.spanned(Stmt::VarDecl { vis, name, ty, value }, span))
     }
 
     fn parse_tuple_destructure(&mut self, start: Span, is_const: bool) -> Result<Spanned<Stmt>, PdcError> {
@@ -382,17 +402,17 @@ impl Parser {
         Ok(self.ids.spanned(Stmt::Return(value), span))
     }
 
-    fn parse_type_alias(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_type_alias(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'type'
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::Eq)?;
         let ty = self.parse_type()?;
         let end = self.tokens[self.pos - 1].span.end;
         let span = Span::new(start.start, end);
-        Ok(self.ids.spanned(Stmt::TypeAlias { name, ty }, span))
+        Ok(self.ids.spanned(Stmt::TypeAlias { vis, name, ty }, span))
     }
 
-    fn parse_fn_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_fn_def(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'fn'
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
@@ -427,6 +447,7 @@ impl Parser {
         let span = Span::new(start.start, end);
         Ok(self.ids.spanned(
             Stmt::FnDef(FnDef {
+                vis,
                 name,
                 params,
                 return_type,
@@ -436,7 +457,7 @@ impl Parser {
         ))
     }
 
-    fn parse_struct_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_struct_def(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'struct'
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::LBrace)?;
@@ -455,7 +476,7 @@ impl Parser {
         let end = self.tokens[self.pos - 1].span.end;
         let span = Span::new(start.start, end);
         Ok(self.ids.spanned(
-            Stmt::StructDef(StructDef { name, fields }),
+            Stmt::StructDef(StructDef { vis, name, fields }),
             span,
         ))
     }
@@ -533,7 +554,7 @@ impl Parser {
         })
     }
 
-    fn parse_enum_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+    fn parse_enum_def(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'enum'
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::LBrace)?;
@@ -572,7 +593,7 @@ impl Parser {
         let end = self.tokens[self.pos - 1].span.end;
         let span = Span::new(start.start, end);
         Ok(self.ids.spanned(
-            Stmt::EnumDef(EnumDef { name, variants }),
+            Stmt::EnumDef(EnumDef { vis, name, variants }),
             span,
         ))
     }

@@ -6,6 +6,7 @@ pub enum TokenKind {
     IntLit(i64),
     FloatLit(f64),
     BoolLit(bool),
+    StringLit(String),
 
     // Identifier
     Ident(String),
@@ -30,11 +31,14 @@ pub enum TokenKind {
     From,
     Struct,
     Enum,
+    Type,
+    Pub,
 
     // Operators
     Plus,
     Minus,
     Star,
+    StarStar, // **
     Slash,
     Percent,
     Eq,       // =
@@ -42,18 +46,30 @@ pub enum TokenKind {
     BangEq,   // !=
     Lt,       // <
     LtEq,     // <=
+    LtLt,     // <<
     Gt,       // >
     GtEq,     // >=
+    GtGt,     // >>
+    Amp,      // &
     AmpAmp,   // &&
+    Pipe,     // |
     PipePipe, // ||
+    Caret,    // ^
+    Tilde,    // ~
     Bang,     // !
 
     // Assignment operators
     PlusEq,
     MinusEq,
     StarEq,
+    StarStarEq, // **=
     SlashEq,
     PercentEq,
+    AmpEq,      // &=
+    PipeEq,     // |=
+    CaretEq,    // ^=
+    LtLtEq,     // <<=
+    GtGtEq,     // >>=
 
     // Delimiters
     LParen,
@@ -64,6 +80,7 @@ pub enum TokenKind {
     RBracket,
 
     // Punctuation
+    Question,  // ?
     Comma,
     Colon,
     Dot,
@@ -103,6 +120,8 @@ pub fn keyword_lookup(s: &str) -> Option<TokenKind> {
         "struct" => Some(TokenKind::Struct),
         "enum" => Some(TokenKind::Enum),
         "from" => Some(TokenKind::From),
+        "type" => Some(TokenKind::Type),
+        "pub" => Some(TokenKind::Pub),
         "true" => Some(TokenKind::BoolLit(true)),
         "false" => Some(TokenKind::BoolLit(false)),
         _ => None,

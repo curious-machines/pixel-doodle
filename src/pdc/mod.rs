@@ -8,16 +8,17 @@ pub mod span;
 pub mod token;
 pub mod type_check;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path as FsPath;
 
 use crate::vector::flatten::{self, Path};
 use crate::vector::stroke::{self, StrokeStyle};
 use crate::vector::{self, VectorScene, FILL_EVEN_ODD, FILL_NONZERO};
 
+use ast::{ModuleUnit, Program};
 use error::PdcError;
 use runtime::{DrawCommand, PdcContext, SceneBuilder};
-use span::Span;
+use span::{IdAlloc, Span};
 
 /// Embedded standard library modules.
 const STDLIB_GEOMETRY: &str = include_str!("stdlib/geometry.pdc");
@@ -47,7 +48,6 @@ fn resolve_module(name: &str, base_dir: Option<&FsPath>) -> Result<String, PdcEr
 fn extract_module_name(trimmed: &str) -> &str {
     if trimmed.contains(" from ") {
         let raw = trimmed.rsplit(" from ").next().unwrap().trim();
-        // Strip surrounding quotes if present: `"./path"` → `./path`
         raw.trim_matches('"')
     } else {
         let raw = trimmed.strip_prefix("import ").unwrap().trim();
@@ -55,22 +55,14 @@ fn extract_module_name(trimmed: &str) -> &str {
     }
 }
 
-/// Pre-process source: scan for import statements and prepend the imported
-/// module source code. This ensures all code is parsed with a single ID
-/// allocator, so node IDs are consistent for type checking and codegen.
-///
-/// `base_dir` is the directory of the source file being processed (for
-/// resolving relative imports). `import_stack` tracks the chain of files
-/// currently being processed to detect circular imports.
-fn preprocess_imports(
+/// Recursively collect module source texts from import statements.
+/// Returns a map of module name → source text.
+fn load_modules(
     source: &str,
     base_dir: Option<&FsPath>,
-    imported_modules: &mut HashSet<String>,
+    modules: &mut HashMap<String, String>,
     import_stack: &mut Vec<String>,
-) -> Result<String, PdcError> {
-    let mut prefix = String::new();
-
-    // Quick scan for import lines (before full parsing)
+) -> Result<(), PdcError> {
     for line in source.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("import ") {
@@ -88,8 +80,7 @@ fn preprocess_imports(
                 });
             }
 
-            if !imported_modules.contains(module_name) {
-                imported_modules.insert(module_name.to_string());
+            if !modules.contains_key(module_name) {
                 let module_source = resolve_module(module_name, base_dir)?;
 
                 // Determine base dir for the imported module's own imports
@@ -104,26 +95,54 @@ fn preprocess_imports(
                     None
                 };
 
-                // Recursively process imports in the imported module
+                modules.insert(module_name.to_string(), module_source.clone());
+
+                // Recursively load modules that this module imports
                 import_stack.push(module_name.to_string());
-                let processed = preprocess_imports(
+                load_modules(
                     &module_source,
                     child_base.as_deref().or(base_dir),
-                    imported_modules,
+                    modules,
                     import_stack,
                 )?;
                 import_stack.pop();
-
-                prefix.push_str(&processed);
-                prefix.push('\n');
             }
         }
     }
+    Ok(())
+}
 
-    // Prepend module code, then the original source (with import lines kept —
-    // the parser will parse and skip them)
-    prefix.push_str(source);
-    Ok(prefix)
+/// Load and parse all modules and the main source into a Program.
+fn load_and_parse(
+    source: &str,
+    base_dir: Option<&FsPath>,
+) -> Result<Program, PdcError> {
+    // 1. Collect all module sources
+    let mut module_sources: HashMap<String, String> = HashMap::new();
+    let mut import_stack = Vec::new();
+    load_modules(source, base_dir, &mut module_sources, &mut import_stack)?;
+
+    // 2. Parse each module with a shared IdAlloc
+    let mut ids = IdAlloc::new();
+    let mut modules = Vec::new();
+
+    for (name, mod_source) in &module_sources {
+        let tokens = lexer::lex(mod_source)?;
+        let stmts = parser::parse(tokens, &mut ids)?;
+        modules.push(ModuleUnit {
+            name: name.clone(),
+            stmts,
+        });
+    }
+
+    // 3. Parse main source
+    let main_tokens = lexer::lex(source)?;
+    let main_stmts = parser::parse(main_tokens, &mut ids)?;
+
+    Ok(Program {
+        modules,
+        stmts: main_stmts,
+    })
 }
 
 /// Compile and execute a PDC source file, producing a VectorScene.
@@ -139,30 +158,22 @@ pub fn compile_and_run(
     tile_size: u32,
     source_path: Option<&FsPath>,
 ) -> Result<VectorScene, PdcError> {
-    // 1. Preprocess imports (prepend stdlib source)
+    // 1. Load and parse all modules + main
     let base_dir = source_path.and_then(|p| p.parent());
-    let mut imported_modules = HashSet::new();
-    let mut import_stack = Vec::new();
-    let full_source = preprocess_imports(source, base_dir, &mut imported_modules, &mut import_stack)?;
+    let program = load_and_parse(source, base_dir)?;
 
-    // 2. Lex
-    let tokens = lexer::lex(&full_source)?;
-
-    // 3. Parse (single parse with consistent IDs)
-    let program = parser::parse(tokens)?;
-
-    // 4. Type check
+    // 2. Type check
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    // 5. Compile
+    // 3. Compile
     let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums)?;
+    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases)?;
 
-    // 6. Execute
+    // 4. Execute
     let builtins = [width as f64, height as f64];
     let mut scene_builder = SceneBuilder::new();
     let mut ctx = PdcContext {
@@ -173,7 +184,7 @@ pub fn compile_and_run(
         (compiled.fn_ptr)(&mut ctx);
     }
 
-    // 7. Convert draw commands to paths
+    // 5. Convert draw commands to paths
     let mut paths: Vec<Path> = Vec::new();
     let mut path_colors: Vec<u32> = Vec::new();
     let mut path_fill_rules: Vec<u32> = Vec::new();
@@ -221,7 +232,7 @@ pub fn compile_and_run(
         }
     }
 
-    // 8. Flatten all paths and bin tiles
+    // 6. Flatten all paths and bin tiles
     let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
     Ok(vector::bin_tiles_pub(
         &segments,

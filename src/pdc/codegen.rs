@@ -29,6 +29,11 @@ pub struct BuiltinInfo {
     pub ty: PdcType,
 }
 
+/// Mangle a qualified name for JIT symbols: "math::lerp" → "math__lerp"
+fn mangle_name(qualified: &str) -> String {
+    qualified.replace("::", "__")
+}
+
 pub fn compile(
     program: &Program,
     types: &[PdcType],
@@ -36,6 +41,7 @@ pub fn compile(
     user_fns: &HashMap<String, OverloadSet>,
     structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, EnumInfo>,
+    fn_aliases: &HashMap<String, String>,
 ) -> Result<CompiledProgram, PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -63,7 +69,8 @@ pub fn compile(
 
     // Collect top-level constants (will be emitted at the start of each function)
     let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
-    let mut fn_defs: Vec<&FnDef> = Vec::new();
+    // (qualified_name, fn_def) — qualified name is "module::fn" for modules, plain "fn" for main
+    let mut fn_defs: Vec<(String, &FnDef)> = Vec::new();
     let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
 
     // Only collect constants whose values are pure literals or literal
@@ -80,9 +87,26 @@ pub fn compile(
         }
     }
 
+    // Collect from modules (qualified names)
+    for module in &program.modules {
+        for stmt in &module.stmts {
+            match &stmt.node {
+                Stmt::FnDef(fndef) => {
+                    let qualified = format!("{}::{}", module.name, fndef.name);
+                    fn_defs.push((qualified, fndef));
+                }
+                Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
+                    top_level_consts.push(stmt);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Collect from main program (unqualified names)
     for stmt in &program.stmts {
         match &stmt.node {
-            Stmt::FnDef(fndef) => fn_defs.push(fndef),
+            Stmt::FnDef(fndef) => fn_defs.push((fndef.name.clone(), fndef)),
             Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
                 top_level_consts.push(stmt);
             }
@@ -92,7 +116,7 @@ pub fn compile(
 
     // Track overload counts for mangled names
     let mut overload_counts: HashMap<String, usize> = HashMap::new();
-    for fndef in &fn_defs {
+    for (qualified_name, fndef) in &fn_defs {
         let mut sig = jit_module.make_signature();
         sig.call_conv = call_conv;
         // First param: ctx pointer
@@ -105,11 +129,12 @@ pub fn compile(
             sig.returns.push(AbiParam::new(pdc_type_to_cl(&fndef.return_type, pointer_type)));
         }
 
-        let idx = overload_counts.entry(fndef.name.clone()).or_insert(0);
+        let base = mangle_name(qualified_name);
+        let idx = overload_counts.entry(qualified_name.clone()).or_insert(0);
         let mangled = if *idx == 0 {
-            format!("pdc_userfn_{}", fndef.name)
+            format!("pdc_userfn_{base}")
         } else {
-            format!("pdc_userfn_{}_{}", fndef.name, idx)
+            format!("pdc_userfn_{base}_{idx}")
         };
         *idx += 1;
 
@@ -124,12 +149,13 @@ pub fn compile(
 
     // Compile each user function
     let mut compile_overload_counts: HashMap<String, usize> = HashMap::new();
-    for fndef in &fn_defs {
-        let idx = compile_overload_counts.entry(fndef.name.clone()).or_insert(0);
+    for (qualified_name, fndef) in &fn_defs {
+        let base = mangle_name(qualified_name);
+        let idx = compile_overload_counts.entry(qualified_name.clone()).or_insert(0);
         let mangled = if *idx == 0 {
-            format!("pdc_userfn_{}", fndef.name)
+            format!("pdc_userfn_{base}")
         } else {
-            format!("pdc_userfn_{}_{}", fndef.name, idx)
+            format!("pdc_userfn_{base}_{idx}")
         };
         *idx += 1;
         let func_id = user_fn_ids[&mangled];
@@ -161,6 +187,7 @@ pub fn compile(
             user_fns,
             structs,
             enums,
+            fn_aliases,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
@@ -242,10 +269,25 @@ pub fn compile(
             user_fns,
             structs,
             enums,
+            fn_aliases,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
 
+        // Emit module-level statements (const/var init) before main code
+        for module in &program.modules {
+            for stmt in &module.stmts {
+                if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) | Stmt::TypeAlias { .. }) {
+                    continue;
+                }
+                cg.emit_stmt(stmt)?;
+                if cg.block_terminated {
+                    break;
+                }
+            }
+        }
+
+        // Emit main program statements
         for stmt in &program.stmts {
             if matches!(&stmt.node, Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::TypeAlias { .. }) {
                 continue;
@@ -339,6 +381,8 @@ struct CodegenCtx<'a, 'b> {
     user_fns: &'a HashMap<String, OverloadSet>,
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
+    /// Alias map: unqualified name → qualified "module::name".
+    fn_aliases: &'a HashMap<String, String>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
 }
@@ -403,7 +447,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let var = self.new_variable(name, &declared_ty);
                 self.builder.def_var(var, val);
             }
-            Stmt::ConstDecl { name, ty, value } | Stmt::VarDecl { name, ty, value } => {
+            Stmt::ConstDecl { vis: _, name, ty, value } | Stmt::VarDecl { vis: _, name, ty, value } => {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
@@ -995,18 +1039,29 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         _arg_ty: &PdcType,
         ret_ty: &PdcType,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        // Resolve through alias map (alias first for correct JIT symbol)
+        let resolved = if let Some(qualified) = self.fn_aliases.get(fn_name) {
+            qualified.clone()
+        } else if self.user_fns.contains_key(fn_name) {
+            fn_name.to_string()
+        } else {
+            fn_name.to_string()
+        };
+
         // Check user-defined functions first
-        if let Some(overloads) = self.user_fns.get(fn_name) {
+        if let Some(overloads) = self.user_fns.get(&resolved) {
+            let overloads = overloads.clone();
             // Find single-arg overload
             let (overload_idx, _sig) = overloads.sigs.iter().enumerate()
                 .find(|(_, sig)| sig.params.len() == 1)
                 .ok_or_else(|| PdcError::Codegen {
                     message: format!("no single-arg overload for '{fn_name}'"),
                 })?;
+            let base = mangle_name(&resolved);
             let mangled = if overload_idx == 0 {
-                format!("pdc_userfn_{fn_name}")
+                format!("pdc_userfn_{base}")
             } else {
-                format!("pdc_userfn_{fn_name}_{overload_idx}")
+                format!("pdc_userfn_{base}_{overload_idx}")
             };
             let func_id = self.user_fn_ids[&mangled];
             let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -1396,9 +1451,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 args,
             } => {
                 let obj_ty = self.node_type(object.id).clone();
-                // Module namespaced call: math.sin(x) → sin(x)
-                if let PdcType::Module(_) = obj_ty {
-                    return self.emit_call(method, args, expr.id);
+                // Module namespaced call: math.sin(x) → math::sin(x)
+                if let PdcType::Module(ref mod_name) = obj_ty {
+                    let qualified = format!("{mod_name}::{method}");
+                    return self.emit_call(&qualified, args, expr.id);
                 }
                 // Tuple len(): compile-time constant
                 if let PdcType::Tuple(ref elems) = obj_ty {
@@ -1582,11 +1638,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             Expr::FieldAccess { object, field } => {
                 let obj_ty = self.node_type(object.id).clone();
 
-                // Module namespaced field: math.PI → PI (emit as variable read)
-                if let PdcType::Module(_) = obj_ty {
-                    let (var, _) = self.variables.get(field).cloned().ok_or_else(|| {
+                // Module namespaced field: math.PI → math::PI (emit as variable read)
+                if let PdcType::Module(ref mod_name) = obj_ty {
+                    let qualified = format!("{mod_name}::{field}");
+                    // Try qualified name first, fall back to unqualified (for imported consts)
+                    let var_name = if self.variables.contains_key(&qualified) {
+                        qualified
+                    } else {
+                        field.clone()
+                    };
+                    let (var, _) = self.variables.get(&var_name).cloned().ok_or_else(|| {
                         PdcError::Codegen {
-                            message: format!("module has no member '{field}'"),
+                            message: format!("module '{mod_name}' has no member '{field}'"),
                         }
                     })?;
                     return Ok(self.builder.use_var(var));
@@ -1712,7 +1775,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
 
         // User-defined function (with overload resolution)
-        if let Some(overloads) = self.user_fns.get(name) {
+        // Resolve through alias map first: "Circle" → "geometry::Circle" if imported
+        // Alias takes priority because it maps to the qualified name used for JIT symbols
+        let resolved_name = if let Some(qualified) = self.fn_aliases.get(name) {
+            qualified.clone()
+        } else if self.user_fns.contains_key(name) {
+            name.to_string()
+        } else {
+            String::new() // will fall through to runtime function
+        };
+
+        if let Some(overloads) = self.user_fns.get(&resolved_name) {
+            let overloads = overloads.clone();
             // Collect argument types for overload resolution
             let arg_types: Vec<PdcType> = args.iter().map(|a| self.node_type(a.id).clone()).collect();
 
@@ -1730,10 +1804,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     message: format!("no matching overload for '{name}'"),
                 })?;
 
+            let base = mangle_name(&resolved_name);
             let mangled = if overload_idx == 0 {
-                format!("pdc_userfn_{name}")
+                format!("pdc_userfn_{base}")
             } else {
-                format!("pdc_userfn_{name}_{overload_idx}")
+                format!("pdc_userfn_{base}_{overload_idx}")
             };
             let func_id = self.user_fn_ids[&mangled];
 
