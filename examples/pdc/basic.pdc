@@ -15,6 +15,19 @@ enum Shape {
     RectShape(x: f64, y: f64, w: f64, h: f64),
 }
 
+// Operator overloading for Vec2
+operator +(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2(x: a.x + b.x, y: a.y + b.y)
+}
+
+operator -(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2(x: a.x - b.x, y: a.y - b.y)
+}
+
+operator -(v: Vec2) -> Vec2 {
+    return Vec2(x: -v.x, y: -v.y)
+}
+
 const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)
 
 // Grid with alternating shapes using data variant enums

@@ -143,6 +143,67 @@ pub enum UnaryOp {
     BitNot,
 }
 
+use super::token::TokenKind;
+
+pub fn token_to_op_name(token: &TokenKind) -> Option<&'static str> {
+    match token {
+        TokenKind::Plus => Some("__op_add__"),
+        TokenKind::Minus => Some("__op_sub__"),
+        TokenKind::Star => Some("__op_mul__"),
+        TokenKind::Slash => Some("__op_div__"),
+        TokenKind::Percent => Some("__op_mod__"),
+        TokenKind::StarStar => Some("__op_pow__"),
+        TokenKind::EqEq => Some("__op_eq__"),
+        TokenKind::BangEq => Some("__op_neq__"),
+        TokenKind::Lt => Some("__op_lt__"),
+        TokenKind::LtEq => Some("__op_lteq__"),
+        TokenKind::Gt => Some("__op_gt__"),
+        TokenKind::GtEq => Some("__op_gteq__"),
+        TokenKind::Amp => Some("__op_bitand__"),
+        TokenKind::Pipe => Some("__op_bitor__"),
+        TokenKind::Caret => Some("__op_bitxor__"),
+        TokenKind::LtLt => Some("__op_shl__"),
+        TokenKind::GtGt => Some("__op_shr__"),
+        TokenKind::AmpAmp => Some("__op_and__"),
+        TokenKind::PipePipe => Some("__op_or__"),
+        TokenKind::Bang => Some("__op_not__"),
+        TokenKind::Tilde => Some("__op_bitnot__"),
+        _ => None,
+    }
+}
+
+pub fn binop_to_op_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "__op_add__",
+        BinOp::Sub => "__op_sub__",
+        BinOp::Mul => "__op_mul__",
+        BinOp::Div => "__op_div__",
+        BinOp::Mod => "__op_mod__",
+        BinOp::Pow => "__op_pow__",
+        BinOp::Eq => "__op_eq__",
+        BinOp::NotEq => "__op_neq__",
+        BinOp::Lt => "__op_lt__",
+        BinOp::LtEq => "__op_lteq__",
+        BinOp::Gt => "__op_gt__",
+        BinOp::GtEq => "__op_gteq__",
+        BinOp::And => "__op_and__",
+        BinOp::Or => "__op_or__",
+        BinOp::BitAnd => "__op_bitand__",
+        BinOp::BitOr => "__op_bitor__",
+        BinOp::BitXor => "__op_bitxor__",
+        BinOp::Shl => "__op_shl__",
+        BinOp::Shr => "__op_shr__",
+    }
+}
+
+pub fn unaryop_to_op_name(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Neg => "__op_neg__",
+        UnaryOp::Not => "__op_not__",
+        UnaryOp::BitNot => "__op_bitnot__",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     Literal(Literal),

@@ -72,6 +72,9 @@ pub struct TypeChecker {
     /// Alias map: unqualified name → qualified "module::name".
     /// Created by import statements.
     pub fn_aliases: HashMap<String, String>,
+    /// Operator overloads: key = mangled op name (e.g. "__op_add__"),
+    /// value = overload set for different type combinations.
+    pub op_overloads: HashMap<String, OverloadSet>,
 }
 
 impl TypeChecker {
@@ -87,6 +90,7 @@ impl TypeChecker {
             types: Vec::new(),
             module_exports: HashMap::new(),
             fn_aliases: HashMap::new(),
+            op_overloads: HashMap::new(),
         };
         tc.register_builtins();
         tc
@@ -286,6 +290,11 @@ impl TypeChecker {
                             params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
                             ret: self.resolve_type(&fndef.return_type),
                         };
+                        if fndef.name.starts_with("__op_") {
+                            self.op_overloads.entry(fndef.name.clone())
+                                .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                                .sigs.push(sig.clone());
+                        }
                         self.user_fns.entry(qualified)
                             .or_insert_with(|| OverloadSet { sigs: Vec::new() })
                             .sigs.push(sig);
@@ -470,6 +479,11 @@ impl TypeChecker {
                         params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
                         ret: self.resolve_type(&fndef.return_type),
                     };
+                    if fndef.name.starts_with("__op_") {
+                        self.op_overloads.entry(fndef.name.clone())
+                            .or_insert_with(|| OverloadSet { sigs: Vec::new() })
+                            .sigs.push(sig.clone());
+                    }
                     self.user_fns.entry(fndef.name.clone())
                         .or_insert_with(|| OverloadSet { sigs: Vec::new() })
                         .sigs.push(sig);
@@ -880,6 +894,14 @@ impl TypeChecker {
             }
             Expr::UnaryOp { op, operand } => {
                 let t = self.check_expr(operand)?;
+                // Check for user-defined unary operator overload
+                let uop_name = unaryop_to_op_name(*op);
+                if let Some(overloads) = self.op_overloads.get(uop_name) {
+                    if let Some(sig) = self.resolve_overload(overloads, &[t.clone()]) {
+                        self.set_type(expr.id, sig.ret.clone());
+                        return Ok(sig.ret);
+                    }
+                }
                 match op {
                     UnaryOp::Neg => {
                         if !t.is_numeric() {
@@ -1437,6 +1459,15 @@ impl TypeChecker {
         right: &PdcType,
         span: super::span::Span,
     ) -> Result<PdcType, PdcError> {
+        // Check for user-defined operator overload
+        let op_name = binop_to_op_name(op);
+        if let Some(overloads) = self.op_overloads.get(op_name) {
+            let arg_types = [left.clone(), right.clone()];
+            if let Some(sig) = self.resolve_overload(overloads, &arg_types) {
+                return Ok(sig.ret);
+            }
+        }
+
         // Array broadcasting: array op array, array op scalar, scalar op array
         let is_arithmetic_or_cmp = matches!(op,
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow |

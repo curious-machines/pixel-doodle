@@ -338,6 +338,13 @@ fn eliminate_dead_code(program: &mut Program) {
         let mod_name = &module.name;
         module.stmts.retain(|stmt| {
             if let Stmt::FnDef(fndef) = &stmt.node {
+                // Always keep operator overloads — they're referenced
+                // implicitly by operator expressions, not by name.
+                // TODO: a post-typecheck DCE pass could prune unused
+                // operator overloads using operand type information.
+                if fndef.name.starts_with("__op_") {
+                    return true;
+                }
                 let qualified = format!("{mod_name}::{}", fndef.name);
                 reachable.contains(&qualified)
             } else {
@@ -376,7 +383,7 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases)?;
+    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
 
     // 4. Execute
     let builtins = [width as f64, height as f64];

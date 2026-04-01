@@ -42,6 +42,7 @@ pub fn compile(
     structs: &HashMap<String, StructInfo>,
     enums: &HashMap<String, EnumInfo>,
     fn_aliases: &HashMap<String, String>,
+    op_overloads: &HashMap<String, OverloadSet>,
 ) -> Result<CompiledProgram, PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -188,6 +189,7 @@ pub fn compile(
             structs,
             enums,
             fn_aliases,
+            op_overloads,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
@@ -270,6 +272,7 @@ pub fn compile(
             structs,
             enums,
             fn_aliases,
+            op_overloads,
             struct_vars: HashMap::new(),
             block_terminated: false,
         };
@@ -383,6 +386,8 @@ struct CodegenCtx<'a, 'b> {
     enums: &'a HashMap<String, EnumInfo>,
     /// Alias map: unqualified name → qualified "module::name".
     fn_aliases: &'a HashMap<String, String>,
+    /// Operator overloads for user-defined operator dispatch.
+    op_overloads: &'a HashMap<String, OverloadSet>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
 }
@@ -1403,6 +1408,19 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let rt = self.node_type(right.id).clone();
                 let result_ty = self.node_type(expr.id).clone();
 
+                // Check for user-defined operator overload
+                let op_name = binop_to_op_name(*op);
+                if let Some(overloads) = self.op_overloads.get(op_name) {
+                    let arg_types = [lt.clone(), rt.clone()];
+                    if let Some((idx, _sig)) = overloads.sigs.iter().enumerate().find(|(_, sig)| {
+                        sig.params.len() == 2 && sig.params[0] == arg_types[0] && sig.params[1] == arg_types[1]
+                    }) {
+                        let lval = self.emit_expr(left)?;
+                        let rval = self.emit_expr(right)?;
+                        return self.emit_operator_call(op_name, idx, &[lval, rval]);
+                    }
+                }
+
                 // Array broadcasting
                 if let PdcType::Array(_) = &result_ty {
                     return self.emit_array_broadcast(*op, left, right, &lt, &rt, &result_ty);
@@ -1413,8 +1431,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 self.emit_binary_op(*op, lval, rval, &lt, &rt, &result_ty)
             }
             Expr::UnaryOp { op, operand } => {
+                let operand_ty = self.node_type(operand.id).clone();
+
+                // Check for user-defined unary operator overload
+                let uop_name = unaryop_to_op_name(*op);
+                if let Some(overloads) = self.op_overloads.get(uop_name) {
+                    if let Some((idx, _sig)) = overloads.sigs.iter().enumerate().find(|(_, sig)| {
+                        sig.params.len() == 1 && sig.params[0] == operand_ty
+                    }) {
+                        let val = self.emit_expr(operand)?;
+                        return self.emit_operator_call(uop_name, idx, &[val]);
+                    }
+                }
+
                 let val = self.emit_expr(operand)?;
-                let ty = self.node_type(operand.id);
+                let ty = &operand_ty;
                 match op {
                     UnaryOp::Neg => {
                         if ty.is_float() {
@@ -2028,6 +2059,36 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
 
         val
+    }
+
+    fn emit_operator_call(
+        &mut self,
+        op_name: &str,
+        overload_idx: usize,
+        args: &[cranelift_codegen::ir::Value],
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let base = mangle_name(op_name);
+        let mangled = if overload_idx == 0 {
+            format!("pdc_userfn_{base}")
+        } else {
+            format!("pdc_userfn_{base}_{overload_idx}")
+        };
+        let func_id = *self.user_fn_ids.get(&mangled)
+            .ok_or_else(|| PdcError::Codegen {
+                message: format!("operator function '{}' not found", mangled),
+            })?;
+
+        let mut call_args = vec![self.ctx_ptr];
+        call_args.extend_from_slice(args);
+
+        let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
+        let call = self.builder.ins().call(func_ref, &call_args);
+        let results = self.builder.inst_results(call);
+        if results.is_empty() {
+            Ok(self.builder.ins().iconst(I32, 0))
+        } else {
+            Ok(results[0])
+        }
     }
 
     fn emit_binary_op(

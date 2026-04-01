@@ -91,9 +91,10 @@ impl<'a> Parser<'a> {
                 TokenKind::Struct => self.parse_struct_def(start, vis),
                 TokenKind::Enum => self.parse_enum_def(start, vis),
                 TokenKind::Type => self.parse_type_alias(start, vis),
+                TokenKind::Operator => self.parse_operator_def(start, vis),
                 _ => Err(PdcError::Parse {
                     span: self.span(),
-                    message: format!("'pub' can only precede fn, const, var, struct, enum, or type; got {:?}", self.peek()),
+                    message: format!("'pub' can only precede fn, const, var, struct, enum, type, or operator; got {:?}", self.peek()),
                 }),
             };
         }
@@ -122,6 +123,7 @@ impl<'a> Parser<'a> {
             TokenKind::Enum => self.parse_enum_def(start, vis),
             TokenKind::Type => self.parse_type_alias(start, vis),
             TokenKind::Fn => self.parse_fn_def(start, vis),
+            TokenKind::Operator => self.parse_operator_def(start, vis),
             _ => {
                 // Expression statement or assignment
                 let expr = self.parse_expr()?;
@@ -435,6 +437,84 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::RParen)?;
 
         // Return type
+        let return_type = if *self.peek() == TokenKind::Arrow {
+            self.advance();
+            self.parse_type()?
+        } else {
+            PdcType::Void
+        };
+
+        let body = self.parse_block()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(
+            Stmt::FnDef(FnDef {
+                vis,
+                name,
+                params,
+                return_type,
+                body,
+            }),
+            span,
+        ))
+    }
+
+    fn parse_operator_def(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'operator'
+
+        let op_token = self.peek().clone();
+        let base_name = token_to_op_name(&op_token)
+            .ok_or_else(|| PdcError::Parse {
+                span: self.span(),
+                message: format!("expected an operator after 'operator' keyword, got {:?}", op_token),
+            })?;
+        self.advance(); // consume the operator token
+
+        self.expect(&TokenKind::LParen)?;
+
+        let mut params = Vec::new();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                let (pname, _) = self.expect_ident()?;
+                self.expect(&TokenKind::Colon)?;
+                let pty = self.parse_type()?;
+                params.push(Param { name: pname, ty: pty });
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+
+        // Validate arity and determine final name
+        let is_unary_only = matches!(op_token, TokenKind::Bang | TokenKind::Tilde);
+        let is_minus = matches!(op_token, TokenKind::Minus);
+
+        let name = if is_unary_only {
+            if params.len() != 1 {
+                return Err(PdcError::Parse {
+                    span: start,
+                    message: format!("unary operator requires exactly 1 parameter, got {}", params.len()),
+                });
+            }
+            base_name.to_string()
+        } else if is_minus && params.len() == 1 {
+            "__op_neg__".to_string()
+        } else if params.len() == 2 {
+            base_name.to_string()
+        } else {
+            return Err(PdcError::Parse {
+                span: start,
+                message: format!(
+                    "binary operator requires exactly 2 parameters{}, got {}",
+                    if is_minus { " (or 1 for unary -)" } else { "" },
+                    params.len(),
+                ),
+            });
+        };
+
         let return_type = if *self.peek() == TokenKind::Arrow {
             self.advance();
             self.parse_type()?

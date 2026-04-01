@@ -38,7 +38,7 @@
         },
         {
           "name": "keyword.declaration.pdc",
-          "match": "\\b(const|var|fn|struct|enum|type|import|from|pub)\\b"
+          "match": "\\b(const|var|fn|struct|enum|type|import|from|pub|operator)\\b"
         },
         {
           "name": "keyword.other.pdc",
