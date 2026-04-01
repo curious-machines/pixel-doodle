@@ -16,12 +16,14 @@ pub enum DrawCommand {
     Stroke { path_handle: u32, width: f32, color: u32 },
 }
 
-/// Accumulates paths and draw commands during PDC execution.
+/// Accumulates paths, draw commands, and arrays during PDC execution.
 pub struct SceneBuilder {
     /// Curves per path handle.
     pub paths: Vec<PathData>,
     /// Draw commands in submission order.
     pub draws: Vec<DrawCommand>,
+    /// Runtime arrays (handle-based).
+    pub arrays: Vec<Vec<f64>>,
 }
 
 pub struct PathData {
@@ -35,6 +37,7 @@ impl SceneBuilder {
         Self {
             paths: Vec::new(),
             draws: Vec::new(),
+            arrays: Vec::new(),
         }
     }
 
@@ -202,6 +205,48 @@ pub extern "C" fn pdc_atan2(y: f64, x: f64) -> f64 { y.atan2(x) }
 #[unsafe(no_mangle)]
 pub extern "C" fn pdc_fmod(a: f64, b: f64) -> f64 { a % b }
 
+// ── Array runtime functions ──
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_new(ctx: *mut PdcContext) -> u32 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let handle = scene.arrays.len() as u32;
+    scene.arrays.push(Vec::new());
+    handle
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_push(ctx: *mut PdcContext, handle: u32, value: f64) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].push(value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_len(ctx: *mut PdcContext, handle: u32) -> i32 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].len() as i32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_get(ctx: *mut PdcContext, handle: u32, index: i32) -> f64 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &scene.arrays[handle as usize];
+    if (index as usize) < arr.len() {
+        arr[index as usize]
+    } else {
+        0.0 // TODO: trap on out-of-bounds
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_set(ctx: *mut PdcContext, handle: u32, index: i32, value: f64) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &mut scene.arrays[handle as usize];
+    if (index as usize) < arr.len() {
+        arr[index as usize] = value;
+    }
+}
+
 /// Return all runtime symbols for JIT registration.
 pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
@@ -237,5 +282,11 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_max", pdc_max as *const u8),
         ("pdc_atan2", pdc_atan2 as *const u8),
         ("pdc_fmod", pdc_fmod as *const u8),
+        // Arrays
+        ("pdc_array_new", pdc_array_new as *const u8),
+        ("pdc_array_push", pdc_array_push as *const u8),
+        ("pdc_array_len", pdc_array_len as *const u8),
+        ("pdc_array_get", pdc_array_get as *const u8),
+        ("pdc_array_set", pdc_array_set as *const u8),
     ]
 }

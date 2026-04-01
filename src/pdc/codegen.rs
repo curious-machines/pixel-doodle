@@ -292,6 +292,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::PathHandle => I32,
         PdcType::Struct(_) => pointer_type, // structs are pointers to stack memory
         PdcType::Enum(_) => I32, // enums are u32 constants
+        PdcType::ArrayF64 => I32, // arrays are handles (u32)
         PdcType::Void => I32,
         PdcType::Unknown => pointer_type,
     }
@@ -1024,12 +1025,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         // Runtime function call
         let runtime_name = match name {
             "Path" => "pdc_path".to_string(),
+            "array_new" => "pdc_array_new".to_string(),
+            "push" => "pdc_array_push".to_string(),
+            "len" => "pdc_array_len".to_string(),
+            "get" => "pdc_array_get".to_string(),
+            "set" => "pdc_array_set".to_string(),
             other => format!("pdc_{}", other),
         };
 
         let takes_ctx = matches!(
             name,
             "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
+            | "array_new" | "push" | "len" | "get" | "set"
         );
 
         let mut arg_vals = Vec::new();
@@ -1074,8 +1081,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
-            "Path" => Some(I32),
-            "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke" => None,
+            "Path" | "array_new" => Some(I32),
+            "len" => Some(I32),
+            "get" => Some(F64),
+            "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
+            | "push" | "set" => None,
             _ => Some(F64),
         }
     }

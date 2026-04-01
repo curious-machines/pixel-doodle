@@ -60,3 +60,16 @@ while col < 10 {
 const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
 rr.fill(0x88223366)
 rr.stroke(3.0, 0xFFFFFFFF)
+
+// Array example: store radii, then draw circles from the array
+var radii = array_new()
+radii.push(15.0)
+radii.push(25.0)
+radii.push(35.0)
+
+for i in 0..radii.len() {
+    const r = radii.get(i)
+    const c = Circle(center.x + f64(i) * 80.0 - 80.0, center.y + 180.0, r)
+    c.fill(0xAAFF4444)
+    c.stroke(2.0, 0xFFFFFFFF)
+}

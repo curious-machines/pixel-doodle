@@ -107,6 +107,33 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
+        // Array functions
+        self.builtins.insert("array_new".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::ArrayF64,
+            takes_ctx: true,
+        });
+        self.builtins.insert("push".into(), BuiltinFn {
+            params: vec![PdcType::ArrayF64, PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("len".into(), BuiltinFn {
+            params: vec![PdcType::ArrayF64],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+        self.builtins.insert("get".into(), BuiltinFn {
+            params: vec![PdcType::ArrayF64, PdcType::I32],
+            ret: PdcType::F64,
+            takes_ctx: true,
+        });
+        self.builtins.insert("set".into(), BuiltinFn {
+            params: vec![PdcType::ArrayF64, PdcType::I32, PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64],

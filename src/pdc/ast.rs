@@ -14,6 +14,8 @@ pub enum PdcType {
     Struct(String),
     /// User-defined enum type, referenced by name.
     Enum(String),
+    /// Array of f64 values (handle-based, runtime-managed).
+    ArrayF64,
     /// Type not yet determined (for inference).
     Unknown,
     /// No return value.
@@ -44,6 +46,7 @@ impl std::fmt::Display for PdcType {
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
+            PdcType::ArrayF64 => write!(f, "array<f64>"),
             PdcType::Unknown => write!(f, "unknown"),
             PdcType::Void => write!(f, "void"),
         }
