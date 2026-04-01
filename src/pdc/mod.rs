@@ -1038,10 +1038,14 @@ mod tests {
         let results = run_pdc_tests(&source, None).expect("run_pdc_tests failed");
         let mut failures = Vec::new();
         for r in &results {
+            let status = if r.passed { "PASS" } else { "FAIL" };
+            println!("  {status}: {}", r.name);
             if !r.passed {
+                println!("        {}", r.message);
                 failures.push(format!("  '{}': {}", r.name, r.message));
             }
         }
+        println!("  {}/{} passed", results.len() - failures.len(), results.len());
         assert!(
             failures.is_empty(),
             "PDC tests failed ({}/{} passed):\n{}",
@@ -1156,10 +1160,14 @@ mod tests {
             .unwrap_or_else(|e| panic!("{module_name} stdlib tests failed to compile: {e}"));
         let mut failures = Vec::new();
         for r in &results {
+            let status = if r.passed { "PASS" } else { "FAIL" };
+            println!("  {status}: {module_name}::{}", r.name);
             if !r.passed {
+                println!("        {}", r.message);
                 failures.push(format!("  '{}': {}", r.name, r.message));
             }
         }
+        println!("  {}/{} passed", results.len() - failures.len(), results.len());
         assert!(
             failures.is_empty(),
             "{module_name} stdlib tests failed ({}/{} passed):\n{}",
