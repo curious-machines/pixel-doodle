@@ -38,7 +38,7 @@
         },
         {
           "name": "keyword.declaration.pdc",
-          "match": "\\b(const|var|fn|struct|enum|type|import|from|pub|operator)\\b"
+          "match": "\\b(const|var|fn|struct|enum|type|import|from|pub|operator|test)\\b"
         },
         {
           "name": "keyword.other.pdc",
@@ -142,7 +142,7 @@
           }
         },
         {
-          "match": "\\b(fill|stroke|close|move_to|line_to|quad_to|cubic_to|sin|cos|tan|asin|acos|atan|atan2|sqrt|abs|floor|ceil|round|exp|exp2|ln|log2|log10|fract|min|max|fmod|pow|push|pop|len|get|set|map)\\s*\\(",
+          "match": "\\b(fill|stroke|close|move_to|line_to|quad_to|cubic_to|sin|cos|tan|asin|acos|atan|atan2|sqrt|abs|floor|ceil|round|exp|exp2|ln|log2|log10|fract|min|max|fmod|pow|push|pop|len|get|set|map|assert_eq|assert_near|assert_true)\\s*\\(",
           "captures": {
             "1": { "name": "entity.name.function.pdc" }
           }

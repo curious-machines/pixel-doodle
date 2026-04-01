@@ -71,3 +71,7 @@ Golden images are stored locally in `tests/golden/` (not tracked in git). Genera
 - Bug fixes: write a failing test first that reproduces the bug, then fix the code so it passes
 - PDC functions must be testable from Rust via `compile_only` + `call_fn`
 - An implementation is not complete until `cargo test` passes with zero failures
+
+## VS Code Extension
+
+The PDC syntax highlighting extension is at `editors/vscode-pdc/`. Whenever PDC syntax changes (new keywords, operators, built-in functions), update `syntaxes/pdc.tmLanguage.json` to match.
