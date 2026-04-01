@@ -158,6 +158,11 @@ pub enum Stmt {
     },
     /// `loop { body }` — infinite loop, exit with break
     Loop { body: Block },
+    /// `match expr { pattern => { body }, ... }`
+    Match {
+        scrutinee: Spanned<Expr>,
+        arms: Vec<MatchArm>,
+    },
     /// `break`
     Break,
     /// `continue`
@@ -215,11 +220,40 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
 }
 
-/// Enum definition (C-style, no data variants).
+/// A match arm: pattern => { body }
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Block,
+}
+
+/// A pattern in a match arm.
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    /// Enum variant, optionally with destructuring bindings:
+    /// `EnumName.Variant` or `EnumName.Variant(a, b, c)`
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+    },
+    /// Catch-all wildcard (future)
+    Wildcard,
+}
+
+/// Enum variant definition.
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    /// Payload types (empty for C-style variants).
+    pub fields: Vec<PdcType>,
+}
+
+/// Enum definition with optional data variants.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
-    pub variants: Vec<String>,
+    pub variants: Vec<EnumVariant>,
 }
 
 /// A complete PDC program (list of top-level statements).

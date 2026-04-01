@@ -1,6 +1,5 @@
-// PDC Phase 5 example: enums
+// PDC Phase 5 complete: enums with data variants + match destructuring
 import { Circle, Rect, RoundedRect } from geometry
-import { lerp } from math
 
 builtin const width: f32
 builtin const height: f32
@@ -10,11 +9,15 @@ struct Vec2 {
     y: f64,
 }
 
-enum Shape { CircleShape, RectShape }
+// Enum with data variants
+enum Shape {
+    CircleShape(f64, f64, f64),
+    RectShape(f64, f64, f64, f64),
+}
 
 const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)
 
-// Use enum to select shape type
+// Grid with alternating shapes using data variant enums
 const spacing = 60.0
 var col = 0
 while col < 10 {
@@ -23,34 +26,37 @@ while col < 10 {
         const x = f64(col) * spacing + 50.0
         const y = f64(row) * spacing + 50.0
 
-        // Alternate between circle and rect based on column
-        var shape_type = Shape.CircleShape
+        // Create shape as a data variant
+        var s = Shape.CircleShape(x, y, 20.0)
         if col % 2 == 1 {
-            shape_type = Shape.RectShape
+            s = Shape.RectShape(x - 15.0, y - 15.0, 30.0, 30.0)
         }
 
-        if shape_type == Shape.CircleShape {
-            const c = Circle(x, y, 20.0)
-            if (col + row) % 2 == 0 {
-                fill(c, 0xFFFF8800)
-            } else {
-                fill(c, 0xFF4488FF)
-            }
-        }
-        if shape_type == Shape.RectShape {
-            const r = Rect(x - 15.0, y - 15.0, 30.0, 30.0)
-            if (col + row) % 2 == 0 {
-                fill(r, 0xFF44CC44)
-            } else {
-                fill(r, 0xFFCC44CC)
-            }
+        // Match with destructuring
+        match s {
+            Shape.CircleShape(cx, cy, r) => {
+                const c = Circle(cx, cy, r)
+                if (col + row) % 2 == 0 {
+                    fill(c, 0xFFFF8800)
+                } else {
+                    fill(c, 0xFF4488FF)
+                }
+            },
+            Shape.RectShape(rx, ry, rw, rh) => {
+                const r = Rect(rx, ry, rw, rh)
+                if (col + row) % 2 == 0 {
+                    fill(r, 0xFF44CC44)
+                } else {
+                    fill(r, 0xFFCC44CC)
+                }
+            },
         }
         row = row + 1
     }
     col = col + 1
 }
 
-// Rounded rectangle in the center
+// Semi-transparent overlay
 const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
 fill(rr, 0x88223366)
 stroke(rr, 3.0, 0xFFFFFFFF)

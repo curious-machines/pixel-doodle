@@ -68,6 +68,7 @@ pub enum TokenKind {
     Colon,
     Dot,
     Arrow,    // ->
+    FatArrow, // =>
     DotDot,   // ..
     DotDotEq, // ..=
 

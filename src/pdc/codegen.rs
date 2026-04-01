@@ -383,8 +383,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
-                // Struct values are pointers to stack slots — store as pointer-type Variable
-                if let PdcType::Struct(ref _sname) = final_ty {
+                // Struct and data-variant enum values are pointers to stack slots
+                let is_pointer_type = match &final_ty {
+                    PdcType::Struct(_) => true,
+                    PdcType::Enum(ename) => {
+                        self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.fields.is_empty()))
+                    }
+                    _ => false,
+                };
+                if is_pointer_type {
                     let var = self.builder.declare_var(self.pointer_type);
                     self.builder.def_var(var, val);
                     self.variables.insert(name.clone(), (var, final_ty));
@@ -447,11 +454,143 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 }
                 self.block_terminated = true;
             }
+            Stmt::Match { scrutinee, arms } => {
+                self.emit_match(scrutinee, arms)?;
+            }
             Stmt::FnDef(_) | Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {
                 // Already handled
             }
         }
         Ok(())
+    }
+
+    fn emit_match(
+        &mut self,
+        scrutinee: &Spanned<Expr>,
+        arms: &[MatchArm],
+    ) -> Result<(), PdcError> {
+        let scr_val = self.emit_expr(scrutinee)?;
+        let scr_ty = self.node_type(scrutinee.id).clone();
+
+        // Determine if this is a simple enum (i32 tag) or data variant (pointer to tagged union)
+        let has_data_variants = if let PdcType::Enum(ref ename) = scr_ty {
+            self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.fields.is_empty()))
+        } else {
+            false
+        };
+
+        // For data variant enums, load the tag from the pointer
+        let tag_val = if has_data_variants {
+            self.builder.ins().load(I32, MemFlags::trusted(), scr_val, 0)
+        } else {
+            scr_val // simple enum: the value IS the tag
+        };
+
+        let merge_block = self.builder.create_block();
+
+        for (i, arm) in arms.iter().enumerate() {
+            let is_last = i == arms.len() - 1;
+
+            match &arm.pattern {
+                MatchPattern::EnumVariant { enum_name, variant, bindings } => {
+                    let info = self.enums.get(enum_name).ok_or_else(|| PdcError::Codegen {
+                        message: format!("undefined enum '{enum_name}'"),
+                    })?.clone();
+                    let variant_idx = info.variants.iter().position(|v| v.name == *variant)
+                        .ok_or_else(|| PdcError::Codegen {
+                            message: format!("enum '{enum_name}' has no variant '{variant}'"),
+                        })?;
+                    let variant_val = self.builder.ins().iconst(I32, variant_idx as i64);
+                    let cmp = self.builder.ins().icmp(IntCC::Equal, tag_val, variant_val);
+
+                    let arm_block = self.builder.create_block();
+                    let next_block = if is_last { merge_block } else { self.builder.create_block() };
+
+                    self.builder.ins().brif(cmp, arm_block, &[], next_block, &[]);
+
+                    self.builder.switch_to_block(arm_block);
+                    self.builder.seal_block(arm_block);
+                    self.block_terminated = false;
+
+                    // Destructure: bind variables from the payload
+                    if !bindings.is_empty() && has_data_variants {
+                        let variant_info = &info.variants[variant_idx];
+                        for (bi, bname) in bindings.iter().enumerate() {
+                            let field_ty = &variant_info.fields[bi];
+                            let raw = self.builder.ins().load(F64, MemFlags::trusted(), scr_val, (8 + bi * 8) as i32);
+                            let val = self.narrow_from_f64(raw, field_ty);
+                            let var = self.new_variable(bname, field_ty);
+                            self.builder.def_var(var, val);
+                        }
+                    }
+
+                    self.emit_block(&arm.body)?;
+                    if !self.block_terminated {
+                        self.builder.ins().jump(merge_block, &[]);
+                    }
+
+                    if !is_last {
+                        self.builder.switch_to_block(next_block);
+                        self.builder.seal_block(next_block);
+                        self.block_terminated = false;
+                    }
+                }
+                MatchPattern::Wildcard => {
+                    self.block_terminated = false;
+                    self.emit_block(&arm.body)?;
+                    if !self.block_terminated {
+                        self.builder.ins().jump(merge_block, &[]);
+                    }
+                }
+            }
+        }
+
+        self.builder.switch_to_block(merge_block);
+        self.builder.seal_block(merge_block);
+        self.block_terminated = false;
+        Ok(())
+    }
+
+    /// Construct a data variant enum value. Allocates a stack slot with
+    /// [tag: i32 (4 bytes), pad (4 bytes), field0: f64, field1: f64, ...]
+    fn emit_enum_construct(
+        &mut self,
+        enum_name: &str,
+        variant_name: &str,
+        args: &[Spanned<Expr>],
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let info = self.enums.get(enum_name).ok_or_else(|| PdcError::Codegen {
+            message: format!("undefined enum '{enum_name}'"),
+        })?.clone();
+
+        let variant_idx = info.variants.iter().position(|v| v.name == variant_name)
+            .ok_or_else(|| PdcError::Codegen {
+                message: format!("enum '{enum_name}' has no variant '{variant_name}'"),
+            })?;
+
+        // Calculate size: 8 bytes for tag + max(variant payload sizes) * 8
+        let max_fields = info.variants.iter().map(|v| v.fields.len()).max().unwrap_or(0);
+        let total_size = (8 + max_fields * 8) as u32; // 8 for tag, 8 per field
+
+        let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+            total_size,
+            0,
+        ));
+
+        // Write tag
+        let tag_val = self.builder.ins().iconst(I32, variant_idx as i64);
+        self.builder.ins().stack_store(tag_val, slot, 0);
+
+        // Write fields
+        for (i, arg) in args.iter().enumerate() {
+            let val = self.emit_expr(arg)?;
+            let arg_ty = self.node_type(arg.id).clone();
+            let store_val = self.widen_to_f64(val, &arg_ty);
+            self.builder.ins().stack_store(store_val, slot, (8 + i * 8) as i32);
+        }
+
+        Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
     }
 
     fn emit_if(
@@ -671,6 +810,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 method,
                 args,
             } => {
+                // Check if this is enum variant construction: EnumName.Variant(args)
+                let obj_ty = self.node_type(object.id).clone();
+                if let PdcType::Enum(ref ename) = obj_ty {
+                    return self.emit_enum_construct(ename, method, args);
+                }
                 let mut all_args = vec![object.as_ref().clone()];
                 all_args.extend(args.iter().cloned());
                 self.emit_call(method, &all_args, expr.id)
@@ -718,11 +862,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let info = self.enums.get(ename).ok_or_else(|| PdcError::Codegen {
                         message: format!("undefined enum '{ename}'"),
                     })?.clone();
-                    let idx = info.variants.iter().position(|v| v == field)
+                    let idx = info.variants.iter().position(|v| v.name == *field)
                         .ok_or_else(|| PdcError::Codegen {
                             message: format!("enum '{ename}' has no variant '{field}'"),
                         })?;
-                    return Ok(self.builder.ins().iconst(I32, idx as i64));
+                    let variant = &info.variants[idx];
+                    if variant.fields.is_empty() {
+                        // Simple enum variant: just the tag value
+                        return Ok(self.builder.ins().iconst(I32, idx as i64));
+                    } else {
+                        // Data variant without args — shouldn't happen (use MethodCall)
+                        return Ok(self.builder.ins().iconst(I32, idx as i64));
+                    }
                 }
 
                 let obj_val = self.emit_expr(object)?;

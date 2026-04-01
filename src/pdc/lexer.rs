@@ -152,6 +152,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::EqEq
+                } else if self.peek() == Some(b'>') {
+                    self.advance();
+                    TokenKind::FatArrow
                 } else {
                     TokenKind::Eq
                 }

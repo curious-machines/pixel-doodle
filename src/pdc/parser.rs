@@ -87,6 +87,7 @@ impl Parser {
             TokenKind::While => self.parse_while(start),
             TokenKind::For => self.parse_for(start),
             TokenKind::Loop => self.parse_loop(start),
+            TokenKind::Match => self.parse_match(start),
             TokenKind::Break => {
                 self.advance();
                 Ok(self.ids.spanned(Stmt::Break, start))
@@ -313,6 +314,67 @@ impl Parser {
         ))
     }
 
+    fn parse_match(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume 'match'
+        let scrutinee = self.parse_expr()?;
+        self.expect(&TokenKind::LBrace)?;
+
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let pattern = self.parse_match_pattern()?;
+            self.expect(&TokenKind::FatArrow)?; // =>
+            let body = self.parse_block()?;
+            // Optional comma after arm
+            if *self.peek() == TokenKind::Comma {
+                self.advance();
+            }
+            arms.push(MatchArm { pattern, body });
+        }
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let span = Span::new(start.start, end);
+        Ok(self.ids.spanned(Stmt::Match { scrutinee, arms }, span))
+    }
+
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, PdcError> {
+        // Pattern: EnumName.Variant or EnumName.Variant(a, b, c)
+        let (name, _) = self.expect_ident()?;
+        if *self.peek() == TokenKind::Dot {
+            self.advance();
+            let (variant, _) = self.expect_ident()?;
+            // Optional destructuring bindings
+            let bindings = if *self.peek() == TokenKind::LParen {
+                self.advance();
+                let mut binds = Vec::new();
+                if !self.at(&TokenKind::RParen) {
+                    loop {
+                        let (bname, _) = self.expect_ident()?;
+                        binds.push(bname);
+                        if *self.peek() == TokenKind::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RParen)?;
+                binds
+            } else {
+                Vec::new()
+            };
+            Ok(MatchPattern::EnumVariant {
+                enum_name: name,
+                variant,
+                bindings,
+            })
+        } else {
+            Err(PdcError::Parse {
+                span: self.span(),
+                message: format!("expected match pattern (e.g., EnumName.Variant), got identifier '{name}'"),
+            })
+        }
+    }
+
     fn parse_enum_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'enum'
         let (name, _) = self.expect_ident()?;
@@ -321,7 +383,26 @@ impl Parser {
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             let (vname, _) = self.expect_ident()?;
-            variants.push(vname);
+            // Optional payload types: Variant(type, type, ...)
+            let fields = if *self.peek() == TokenKind::LParen {
+                self.advance();
+                let mut ftypes = Vec::new();
+                if !self.at(&TokenKind::RParen) {
+                    loop {
+                        ftypes.push(self.parse_type()?);
+                        if *self.peek() == TokenKind::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RParen)?;
+                ftypes
+            } else {
+                Vec::new()
+            };
+            variants.push(EnumVariant { name: vname, fields });
             if *self.peek() == TokenKind::Comma {
                 self.advance();
             }
