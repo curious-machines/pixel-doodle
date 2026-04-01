@@ -1,0 +1,25 @@
+// Basic PDC example: blue rectangle + orange circle
+builtin const width: f32
+builtin const height: f32
+
+const cx = width / 2.0
+const cy = height / 2.0
+
+// Blue rectangle
+var r = Path()
+r.move_to(cx - 100.0, cy - 75.0)
+r.line_to(cx + 100.0, cy - 75.0)
+r.line_to(cx + 100.0, cy + 75.0)
+r.line_to(cx - 100.0, cy + 75.0)
+r.close()
+fill(r, 0xFF4488FF)
+
+// Orange circle on top
+const k = 80.0 * 0.5522847498
+var c = Path()
+c.move_to(cx + 80.0, cy)
+c.cubic_to(cx + 80.0, cy - k, cx + k, cy - 80.0, cx, cy - 80.0)
+c.cubic_to(cx - k, cy - 80.0, cx - 80.0, cy - k, cx - 80.0, cy)
+c.cubic_to(cx - 80.0, cy + k, cx - k, cy + 80.0, cx, cy + 80.0)
+c.cubic_to(cx + k, cy + 80.0, cx + 80.0, cy + k, cx + 80.0, cy)
+fill(c, 0xFFFF8800)

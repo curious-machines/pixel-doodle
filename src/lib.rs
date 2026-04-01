@@ -1,6 +1,8 @@
 pub mod display;
 pub mod gpu;
 pub mod jit;
+#[cfg(feature = "cranelift-backend")]
+pub mod pdc;
 pub mod pdp;
 pub mod progressive;
 pub mod texture;

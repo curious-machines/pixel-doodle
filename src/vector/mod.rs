@@ -389,6 +389,19 @@ fn color_from_hash(hash: u32) -> u32 {
 ///
 /// TODO: Further optimization with sorted segments (Option 3) for GPU-side
 /// path skipping.
+/// Public wrapper for bin_tiles, used by PDC integration.
+pub fn bin_tiles_pub(
+    segments: &[[f32; 4]],
+    seg_path_ids: &[u32],
+    path_colors: Vec<u32>,
+    path_fill_rules: Vec<u32>,
+    tile_size: u32,
+    width: u32,
+    height: u32,
+) -> VectorScene {
+    bin_tiles(segments, seg_path_ids, path_colors, path_fill_rules, tile_size, width, height)
+}
+
 fn bin_tiles(
     segments: &[[f32; 4]],
     seg_path_ids: &[u32],
