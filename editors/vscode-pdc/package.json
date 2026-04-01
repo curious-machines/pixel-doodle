@@ -1,0 +1,27 @@
+{
+  "name": "pdc-language",
+  "displayName": "PDC (Pixel Doodle Code)",
+  "description": "Syntax highlighting for .pdc files",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "pdc",
+        "aliases": ["PDC", "Pixel Doodle Code"],
+        "extensions": [".pdc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "pdc",
+        "scopeName": "source.pdc",
+        "path": "./syntaxes/pdc.tmLanguage.json"
+      }
+    ]
+  }
+}

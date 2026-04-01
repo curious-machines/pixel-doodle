@@ -1,0 +1,166 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "PDC",
+  "scopeName": "source.pdc",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#strings" },
+    { "include": "#operators" },
+    { "include": "#function-call" },
+    { "include": "#method-call" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.pdc",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.pdc",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.pdc",
+          "match": "\\b(if|elsif|else|for|in|while|loop|break|continue|return|match)\\b"
+        },
+        {
+          "name": "keyword.declaration.pdc",
+          "match": "\\b(const|var|fn|struct|enum|import|from|extern|buffer)\\b"
+        },
+        {
+          "name": "keyword.other.pdc",
+          "match": "\\b(builtin)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.pdc",
+          "match": "\\b(f16|f32|f64|i8|i16|i32|i64|u8|u16|u32|u64|bool|string|Path|array|slice)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.pdc",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.pdc",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.pdc",
+          "match": "\\b[0-9]+\\.[0-9]*([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.pdc",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.pdc",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.pdc",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.pdc",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.pdc",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.assignment.pdc",
+          "match": "(\\+=|-=|\\*=|/=|%=|\\*\\*=|&=|\\|=|\\^=|<<=|>>=|=)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.pdc",
+          "match": "(\\*\\*|[+\\-*/%])"
+        },
+        {
+          "name": "keyword.operator.range.pdc",
+          "match": "(\\.\\.\\.=|\\.\\.)"
+        },
+        {
+          "name": "keyword.operator.arrow.pdc",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.ternary.pdc",
+          "match": "[?:]"
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.type.pdc" }
+          }
+        },
+        {
+          "match": "\\b(fill|stroke|close|move_to|line_to|quad_to|cubic_to|sin|cos|tan|asin|acos|atan|atan2|sqrt|abs|floor|ceil|round|exp|ln|log2|log10|fract|min|max|fmod)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.function.pdc" }
+          }
+        },
+        {
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "entity.name.function.pdc" }
+          }
+        }
+      ]
+    },
+    "method-call": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\.(fill|stroke|close|move_to|line_to|quad_to|cubic_to)\\s*\\(",
+          "captures": {
+            "1": { "name": "variable.other.pdc" },
+            "2": { "name": "entity.name.function.pdc" }
+          }
+        },
+        {
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\.([a-z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "variable.other.pdc" },
+            "2": { "name": "entity.name.function.pdc" }
+          }
+        }
+      ]
+    }
+  }
+}
