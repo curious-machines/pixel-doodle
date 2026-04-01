@@ -444,7 +444,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             Stmt::While { condition, body } => {
                 self.emit_while(condition, body)?;
             }
-            Stmt::For {
+            Stmt::For { mutable: _,
                 var_name,
                 start,
                 end,
@@ -452,7 +452,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             } => {
                 self.emit_for(var_name, start, end, body)?;
             }
-            Stmt::ForEach {
+            Stmt::ForEach { mutable: _,
                 var_name,
                 collection,
                 body,

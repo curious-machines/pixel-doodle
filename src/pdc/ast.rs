@@ -192,16 +192,18 @@ pub enum Stmt {
         condition: Spanned<Expr>,
         body: Block,
     },
-    /// `for name in start..end { body }` (exclusive range)
+    /// `for [const|var] name in start..end { body }` (exclusive range)
     For {
         var_name: String,
+        mutable: bool,
         start: Spanned<Expr>,
         end: Spanned<Expr>,
         body: Block,
     },
-    /// `for name in collection { body }` (iterate over array)
+    /// `for [const|var] name in collection { body }` (iterate over array)
     ForEach {
         var_name: String,
+        mutable: bool,
         collection: Spanned<Expr>,
         body: Block,
     },

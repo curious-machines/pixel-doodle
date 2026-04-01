@@ -302,7 +302,7 @@ impl TypeChecker {
                 }
                 self.check_block(body)?;
             }
-            Stmt::For {
+            Stmt::For { mutable: _,
                 var_name,
                 start,
                 end,
@@ -329,7 +329,7 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            Stmt::ForEach {
+            Stmt::ForEach { mutable: _,
                 var_name,
                 collection,
                 body,

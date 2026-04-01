@@ -265,6 +265,16 @@ impl Parser {
 
     fn parse_for(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
         self.advance(); // consume 'for'
+        // Optional const/var qualifier (default: const)
+        let mutable = if *self.peek() == TokenKind::Var {
+            self.advance();
+            true
+        } else if *self.peek() == TokenKind::Const {
+            self.advance();
+            false
+        } else {
+            false // default to const
+        };
         let (var_name, _) = self.expect_ident()?;
         self.expect(&TokenKind::In)?;
         let expr = self.parse_expr()?;
@@ -279,6 +289,7 @@ impl Parser {
             Ok(self.ids.spanned(
                 Stmt::For {
                     var_name,
+                    mutable,
                     start: expr,
                     end: range_end,
                     body,
@@ -293,6 +304,7 @@ impl Parser {
             Ok(self.ids.spanned(
                 Stmt::ForEach {
                     var_name,
+                    mutable,
                     collection: expr,
                     body,
                 },
