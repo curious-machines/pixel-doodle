@@ -229,6 +229,30 @@ impl TypeChecker {
                 };
                 self.define_var(name, final_ty);
             }
+            Stmt::TupleDestructure { names, value, .. } => {
+                let val_ty = self.check_expr(value)?;
+                if let PdcType::Tuple(elems) = &val_ty {
+                    if names.len() != elems.len() {
+                        return Err(PdcError::Type {
+                            span: value.span,
+                            message: format!(
+                                "tuple destructure: expected {} names, got {} (tuple has {} elements)",
+                                elems.len(), names.len(), elems.len(),
+                            ),
+                        });
+                    }
+                    for (i, name) in names.iter().enumerate() {
+                        if name != "_" {
+                            self.define_var(name, elems[i].clone());
+                        }
+                    }
+                } else {
+                    return Err(PdcError::Type {
+                        span: value.span,
+                        message: format!("cannot destructure non-tuple type {val_ty}"),
+                    });
+                }
+            }
             Stmt::Assign { name, value } => {
                 let expected = self.lookup_var(name).cloned().ok_or_else(|| PdcError::Type {
                     span: stmt.span,
@@ -553,6 +577,18 @@ impl TypeChecker {
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.check_expr(object)?;
 
+                // Tuple methods: len
+                if let PdcType::Tuple(_) = &obj_ty {
+                    match method.as_str() {
+                        "len" => PdcType::I32,
+                        _ => {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("tuple has no method '{method}'"),
+                            });
+                        }
+                    }
+                } else
                 // Array methods: push, len, get, set
                 if let PdcType::Array(ref elem_ty) = obj_ty {
                     match method.as_str() {

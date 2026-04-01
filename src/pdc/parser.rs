@@ -163,7 +163,11 @@ impl Parser {
     }
 
     fn parse_const_decl(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
-        self.advance();
+        self.advance(); // consume 'const'
+        // Tuple destructuring: const (a, b, c) = expr
+        if *self.peek() == TokenKind::LParen {
+            return self.parse_tuple_destructure(start, true);
+        }
         let (name, _) = self.expect_ident()?;
         let ty = if *self.peek() == TokenKind::Colon {
             self.advance();
@@ -178,7 +182,11 @@ impl Parser {
     }
 
     fn parse_var_decl(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
-        self.advance();
+        self.advance(); // consume 'var'
+        // Tuple destructuring: var (a, b, c) = expr
+        if *self.peek() == TokenKind::LParen {
+            return self.parse_tuple_destructure(start, false);
+        }
         let (name, _) = self.expect_ident()?;
         let ty = if *self.peek() == TokenKind::Colon {
             self.advance();
@@ -190,6 +198,27 @@ impl Parser {
         let value = self.parse_expr()?;
         let span = Span::new(start.start, value.span.end);
         Ok(self.ids.spanned(Stmt::VarDecl { name, ty, value }, span))
+    }
+
+    fn parse_tuple_destructure(&mut self, start: Span, is_const: bool) -> Result<Spanned<Stmt>, PdcError> {
+        self.advance(); // consume '('
+        let mut names = Vec::new();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                let (name, _) = self.expect_ident()?;
+                names.push(name);
+                if *self.peek() == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        self.expect(&TokenKind::Eq)?;
+        let value = self.parse_expr()?;
+        let span = Span::new(start.start, value.span.end);
+        Ok(self.ids.spanned(Stmt::TupleDestructure { names, value, is_const }, span))
     }
 
     fn parse_if(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {

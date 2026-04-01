@@ -172,6 +172,12 @@ pub enum Stmt {
     },
     /// `name = expr`
     Assign { name: String, value: Spanned<Expr> },
+    /// `const (a, b, c) = expr` or `var (a, b, c) = expr`
+    TupleDestructure {
+        names: Vec<String>,
+        value: Spanned<Expr>,
+        is_const: bool,
+    },
     /// Expression statement (function call, method call)
     ExprStmt(Spanned<Expr>),
     /// `if cond { body } [elsif cond { body }]* [else { body }]`

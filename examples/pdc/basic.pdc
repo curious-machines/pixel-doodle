@@ -61,11 +61,16 @@ const rr = RoundedRect(center.x - 100.0, center.y - 75.0, 200.0, 150.0, 20.0)
 rr.fill(0x88223366)
 rr.stroke(3.0, 0xFFFFFFFF)
 
-// Tuple example: position + size pair
+// Tuple example: construction, element access, and destructuring
 const info = (center.x - 200.0, center.y + 160.0, 30.0)
 const tc = Circle(info.0, info.1, info.2)
 tc.fill(0xFF00CCCC)
 tc.stroke(2.0, 0xFFFFFFFF)
+
+// Tuple destructuring
+const (dx, dy, dr) = info
+const tc2 = Circle(dx + 80.0, dy, dr * 0.7)
+tc2.fill(0xFFCC00CC)
 
 // Array example: store radii, then draw circles from the array
 var radii = Array<f64>()

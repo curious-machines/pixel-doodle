@@ -403,6 +403,22 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     self.builder.def_var(var, converted);
                 }
             }
+            Stmt::TupleDestructure { names, value, .. } => {
+                let tuple_ptr = self.emit_expr(value)?;
+                let val_ty = self.node_type(value.id).clone();
+                if let PdcType::Tuple(ref elems) = val_ty {
+                    for (i, name) in names.iter().enumerate() {
+                        if name == "_" {
+                            continue;
+                        }
+                        let elem_ty = &elems[i];
+                        let raw = self.builder.ins().load(F64, MemFlags::trusted(), tuple_ptr, (i * 8) as i32);
+                        let val = self.narrow_from_f64(raw, elem_ty);
+                        let var = self.new_variable(name, elem_ty);
+                        self.builder.def_var(var, val);
+                    }
+                }
+            }
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
                 let (var, var_ty) = self.variables.get(name).cloned().ok_or_else(|| {
@@ -867,8 +883,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 method,
                 args,
             } => {
-                // Check if this is enum variant construction: EnumName.Variant(args)
                 let obj_ty = self.node_type(object.id).clone();
+                // Tuple len(): compile-time constant
+                if let PdcType::Tuple(ref elems) = obj_ty {
+                    if method == "len" {
+                        return Ok(self.builder.ins().iconst(I32, elems.len() as i64));
+                    }
+                }
+                // Check if this is enum variant construction: EnumName.Variant(args)
                 if let PdcType::Enum(ref ename) = obj_ty {
                     return self.emit_enum_construct(ename, method, args);
                 }
