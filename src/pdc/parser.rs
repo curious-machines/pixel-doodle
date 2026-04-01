@@ -105,7 +105,7 @@ impl Parser {
                 // Expression statement or assignment
                 let expr = self.parse_expr()?;
 
-                // Simple assignment: name = expr
+                // Simple assignment or index assignment
                 if *self.peek() == TokenKind::Eq {
                     if let Expr::Variable(name) = &expr.node {
                         let name = name.clone();
@@ -113,6 +113,19 @@ impl Parser {
                         let value = self.parse_expr()?;
                         let span = Span::new(start.start, value.span.end);
                         return Ok(self.ids.spanned(Stmt::Assign { name, value }, span));
+                    }
+                    if let Expr::Index { object, index } = expr.node {
+                        self.advance(); // consume '='
+                        let value = self.parse_expr()?;
+                        let span = Span::new(start.start, value.span.end);
+                        return Ok(self.ids.spanned(
+                            Stmt::IndexAssign {
+                                object: *object,
+                                index: *index,
+                                value,
+                            },
+                            span,
+                        ));
                     }
                 }
 
@@ -803,6 +816,22 @@ impl Parser {
                             span,
                         );
                     }
+                }
+                TokenKind::LBracket => {
+                    self.advance(); // consume '['
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = Span::new(
+                        expr.span.start,
+                        self.tokens[self.pos - 1].span.end,
+                    );
+                    expr = self.ids.spanned(
+                        Expr::Index {
+                            object: Box::new(expr),
+                            index: Box::new(index),
+                        },
+                        span,
+                    );
                 }
                 _ => break,
             }

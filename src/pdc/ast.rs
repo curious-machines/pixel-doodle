@@ -151,6 +151,11 @@ pub enum Expr {
         object: Box<Spanned<Expr>>,
         index: usize,
     },
+    /// Array index access: `expr[index]`
+    Index {
+        object: Box<Spanned<Expr>>,
+        index: Box<Spanned<Expr>>,
+    },
 }
 
 /// A statement within a block or at top level.
@@ -172,6 +177,12 @@ pub enum Stmt {
     },
     /// `name = expr`
     Assign { name: String, value: Spanned<Expr> },
+    /// `expr[index] = value`
+    IndexAssign {
+        object: Spanned<Expr>,
+        index: Spanned<Expr>,
+        value: Spanned<Expr>,
+    },
     /// `const (a, b, c) = expr` or `var (a, b, c) = expr`
     TupleDestructure {
         names: Vec<String>,

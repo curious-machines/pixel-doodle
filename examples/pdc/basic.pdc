@@ -75,11 +75,17 @@ const (dx, dy, dr) = info
 const tc2 = Circle(dx + 80.0, dy, dr * 0.7)
 tc2.fill(0xFFCC00CC)
 
-// Array example: for-each iteration
+// Array example: bracket notation and for-each iteration
 var radii = Array<f64>()
 radii.push(15.0)
 radii.push(25.0)
 radii.push(35.0)
+
+// Bracket read: radii[0]
+const first_r = radii[0]
+
+// Bracket write: radii[2] = 45.0
+radii[2] = 45.0
 
 var xi = 0
 for r in radii {

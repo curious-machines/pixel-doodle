@@ -403,6 +403,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     self.builder.def_var(var, converted);
                 }
             }
+            Stmt::IndexAssign { object, index, value } => {
+                let obj_ty = self.node_type(object.id).clone();
+                if let PdcType::Array(ref elem_ty) = obj_ty {
+                    let arr_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    let val = self.emit_expr(value)?;
+                    let val_ty = self.node_type(value.id).clone();
+                    let converted = self.convert_value(val, &val_ty, elem_ty);
+                    let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                    let elem_size = elem_cl.bytes() as u32;
+                    let store_val = self.float_to_int_if_needed(converted, elem_cl);
+                    let set_name = format!("pdc_array_set_{elem_size}");
+                    self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr, arr_handle, idx, store_val], None)?;
+                }
+            }
             Stmt::TupleDestructure { names, value, .. } => {
                 let tuple_ptr = self.emit_expr(value)?;
                 let val_ty = self.node_type(value.id).clone();
@@ -1116,6 +1131,23 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
                 // Return pointer to slot
                 Ok(self.builder.ins().stack_addr(self.pointer_type, slot, 0))
+            }
+            Expr::Index { object, index } => {
+                let obj_ty = self.node_type(object.id).clone();
+                if let PdcType::Array(ref elem_ty) = obj_ty {
+                    let arr_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                    let elem_size = elem_cl.bytes() as u32;
+                    let get_name = format!("pdc_array_get_{elem_size}");
+                    let int_type = match elem_size {
+                        1 => I8, 2 => I16, 4 => I32, _ => I64,
+                    };
+                    let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, idx], Some(int_type))?;
+                    Ok(self.int_to_float_if_needed(raw, elem_cl))
+                } else {
+                    Err(PdcError::Codegen { message: "cannot index non-array type".into() })
+                }
             }
             Expr::TupleConstruct { elements } => {
                 let size = (elements.len() * 8) as u32;

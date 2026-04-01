@@ -271,6 +271,19 @@ impl TypeChecker {
                     });
                 }
             }
+            Stmt::IndexAssign { object, index, value } => {
+                let obj_ty = self.check_expr(object)?;
+                self.check_expr(index)?;
+                let val_ty = self.check_expr(value)?;
+                if let PdcType::Array(ref elem_ty) = obj_ty {
+                    self.check_compatible(&val_ty, elem_ty, value.span)?;
+                } else {
+                    return Err(PdcError::Type {
+                        span: object.span,
+                        message: format!("cannot index-assign non-array type {obj_ty}"),
+                    });
+                }
+            }
             Stmt::Assign { name, value } => {
                 if self.const_vars.contains(name) {
                     return Err(PdcError::Type {
@@ -747,6 +760,18 @@ impl TypeChecker {
                     return Err(PdcError::Type {
                         span: expr.span,
                         message: format!("undefined method '{method}'"),
+                    });
+                }
+            }
+            Expr::Index { object, index } => {
+                let obj_ty = self.check_expr(object)?;
+                self.check_expr(index)?;
+                if let PdcType::Array(elem_ty) = &obj_ty {
+                    *elem_ty.clone()
+                } else {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("cannot index non-array type {obj_ty}"),
                     });
                 }
             }
