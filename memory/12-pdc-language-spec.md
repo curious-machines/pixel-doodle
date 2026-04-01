@@ -171,6 +171,20 @@ const r = c.radius                    // field access (rule 1)
 const moved = c.translate(10.0, 20.0) // UFCS: translate(c, 10.0, 20.0) (rule 2)
 ```
 
+### Default Parameter Values
+
+Parameters can have default values. Omitted arguments use the default. Defaults must be trailing — required parameters cannot follow defaulted ones. Default expressions are evaluated fresh at each call site.
+
+```
+fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64 = 0.0) -> Path {
+    if r == 0.0 { return Rect(x, y, w, h) }
+    // ... rounded rect logic
+}
+
+RoundedRect(x: 10.0, y: 10.0, w: 100.0, h: 50.0)           // r defaults to 0.0
+RoundedRect(x: 10.0, y: 10.0, w: 100.0, h: 50.0, r: 8.0)   // r = 8.0
+```
+
 ### Deferred
 
 - Closures/lambdas

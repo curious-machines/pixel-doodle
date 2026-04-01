@@ -148,6 +148,18 @@ pub fn compile(
         user_fn_ids.insert(mangled, func_id);
     }
 
+    // Build per-module intra-module alias maps: "Rect" → "geometry::Rect" for all module fns
+    let mut module_aliases: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for (qualified_name, _) in &fn_defs {
+        if let Some(sep) = qualified_name.find("::") {
+            let mod_name = &qualified_name[..sep];
+            let fn_name = &qualified_name[sep + 2..];
+            module_aliases.entry(mod_name.to_string())
+                .or_default()
+                .insert(fn_name.to_string(), qualified_name.clone());
+        }
+    }
+
     // Compile each user function
     let mut compile_overload_counts: HashMap<String, usize> = HashMap::new();
     for (qualified_name, fndef) in &fn_defs {
@@ -175,6 +187,24 @@ pub fn compile(
         let ctx_ptr = builder.block_params(entry)[0];
         let builtin_map = build_builtin_map(builtins_layout);
 
+        // For module functions, merge intra-module aliases so unqualified
+        // sibling calls (e.g. Rect() inside geometry::RoundedRect) resolve.
+        let combined_aliases;
+        let effective_aliases = if let Some(sep) = qualified_name.find("::") {
+            let mod_name = &qualified_name[..sep];
+            if let Some(mod_map) = module_aliases.get(mod_name) {
+                combined_aliases = fn_aliases.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .chain(mod_map.iter().map(|(k, v)| (k.clone(), v.clone())))
+                    .collect::<HashMap<_, _>>();
+                &combined_aliases
+            } else {
+                fn_aliases
+            }
+        } else {
+            fn_aliases
+        };
+
         let mut cg = CodegenCtx {
             builder: &mut builder,
             module: &mut jit_module,
@@ -188,10 +218,11 @@ pub fn compile(
             user_fns,
             structs,
             enums,
-            fn_aliases,
+            fn_aliases: effective_aliases,
             op_overloads,
             struct_vars: HashMap::new(),
             block_terminated: false,
+            loop_stack: Vec::new(),
         };
 
         // Define parameters as variables
@@ -275,6 +306,7 @@ pub fn compile(
             op_overloads,
             struct_vars: HashMap::new(),
             block_terminated: false,
+            loop_stack: Vec::new(),
         };
 
         // Emit module-level statements (const/var init) before main code
@@ -390,6 +422,16 @@ struct CodegenCtx<'a, 'b> {
     op_overloads: &'a HashMap<String, OverloadSet>,
     /// Set to true after a terminator instruction (return, break, continue).
     block_terminated: bool,
+    /// Stack of loop contexts for break/continue targets.
+    loop_stack: Vec<LoopContext>,
+}
+
+/// Tracks the jump targets for break and continue within a loop.
+struct LoopContext {
+    /// Block to jump to on `continue` (header for while/for/foreach, body for loop).
+    continue_block: cranelift_codegen::ir::Block,
+    /// Block to jump to on `break`.
+    exit_block: cranelift_codegen::ir::Block,
 }
 
 impl<'a, 'b> CodegenCtx<'a, 'b> {
@@ -569,6 +611,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
                 let header_block = self.builder.create_block();
                 let body_block = self.builder.create_block();
+                let latch_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
 
                 self.builder.ins().jump(header_block, &[]);
@@ -617,15 +660,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     self.builder.def_var(var, elem_val);
                 }
 
+                self.loop_stack.push(LoopContext { continue_block: latch_block, exit_block });
                 self.emit_block(body)?;
+                self.loop_stack.pop();
                 if !self.block_terminated {
-                    // Increment index
-                    let idx_val = self.builder.use_var(idx_var);
-                    let one = self.builder.ins().iconst(I32, 1);
-                    let next = self.builder.ins().iadd(idx_val, one);
-                    self.builder.def_var(idx_var, next);
-                    self.builder.ins().jump(header_block, &[]);
+                    self.builder.ins().jump(latch_block, &[]);
                 }
+
+                // Latch: increment index and jump back to header
+                self.builder.switch_to_block(latch_block);
+                self.builder.seal_block(latch_block);
+                let idx_val = self.builder.use_var(idx_var);
+                let one = self.builder.ins().iconst(I32, 1);
+                let next = self.builder.ins().iadd(idx_val, one);
+                self.builder.def_var(idx_var, next);
+                self.builder.ins().jump(header_block, &[]);
 
                 self.builder.seal_block(header_block);
                 self.builder.switch_to_block(exit_block);
@@ -636,12 +685,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 self.emit_loop(body)?;
             }
             Stmt::Break => {
-                // Jump to the loop exit block (stored in a side channel — simplified: use trap for now)
-                // TODO: proper break/continue with block tracking
-                self.builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+                let lc = self.loop_stack.last().ok_or_else(|| PdcError::Codegen {
+                    message: "break outside of loop".into(),
+                })?;
+                self.builder.ins().jump(lc.exit_block, &[]);
+                self.block_terminated = true;
             }
             Stmt::Continue => {
-                self.builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+                let lc = self.loop_stack.last().ok_or_else(|| PdcError::Codegen {
+                    message: "continue outside of loop".into(),
+                })?;
+                self.builder.ins().jump(lc.continue_block, &[]);
+                self.block_terminated = true;
             }
             Stmt::Return(value) => {
                 if let Some(expr) = value {
@@ -1309,7 +1364,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
         self.block_terminated = false;
+        self.loop_stack.push(LoopContext { continue_block: header_block, exit_block });
         self.emit_block(body)?;
+        self.loop_stack.pop();
         if !self.block_terminated {
             self.builder.ins().jump(header_block, &[]);
         }
@@ -1339,6 +1396,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         let header_block = self.builder.create_block();
         let body_block = self.builder.create_block();
+        let latch_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
         self.builder.ins().jump(header_block, &[]);
@@ -1350,19 +1408,25 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let cond = self.builder.ins().icmp(cc, i_val, end_val);
         self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
 
-        // Body
+        // Body — continue jumps to latch (increment then re-check)
         self.builder.switch_to_block(body_block);
         self.builder.seal_block(body_block);
         self.block_terminated = false;
+        self.loop_stack.push(LoopContext { continue_block: latch_block, exit_block });
         self.emit_block(body)?;
+        self.loop_stack.pop();
         if !self.block_terminated {
-            // Increment
-            let i_val = self.builder.use_var(var);
-            let one = self.builder.ins().iconst(I32, 1);
-            let next = self.builder.ins().iadd(i_val, one);
-            self.builder.def_var(var, next);
-            self.builder.ins().jump(header_block, &[]);
+            self.builder.ins().jump(latch_block, &[]);
         }
+
+        // Latch: increment and jump back to header
+        self.builder.switch_to_block(latch_block);
+        self.builder.seal_block(latch_block);
+        let i_val = self.builder.use_var(var);
+        let one = self.builder.ins().iconst(I32, 1);
+        let next = self.builder.ins().iadd(i_val, one);
+        self.builder.def_var(var, next);
+        self.builder.ins().jump(header_block, &[]);
 
         self.builder.seal_block(header_block);
         self.builder.switch_to_block(exit_block);
@@ -1373,19 +1437,23 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn emit_loop(&mut self, body: &Block) -> Result<(), PdcError> {
         let body_block = self.builder.create_block();
-        let _exit_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
 
         self.builder.ins().jump(body_block, &[]);
 
         self.builder.switch_to_block(body_block);
         self.block_terminated = false;
+        self.loop_stack.push(LoopContext { continue_block: body_block, exit_block });
         self.emit_block(body)?;
+        self.loop_stack.pop();
         if !self.block_terminated {
             self.builder.ins().jump(body_block, &[]);
         }
 
         self.builder.seal_block(body_block);
-        // exit_block would be used by break — deferred
+        self.builder.switch_to_block(exit_block);
+        self.builder.seal_block(exit_block);
+        self.block_terminated = false;
         Ok(())
     }
 
@@ -1821,11 +1889,12 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             // Collect argument types for overload resolution
             let arg_types: Vec<PdcType> = args.iter().map(|a| self.node_type(a.id).clone()).collect();
 
-            // Find matching overload
+            // Find matching overload (supports default params: args can be fewer than params)
             let (overload_idx, sig) = overloads.sigs.iter().enumerate()
                 .find(|(_, sig)| {
-                    sig.params.len() == arg_types.len() &&
-                    sig.params.iter().zip(&arg_types).all(|(p, a)| {
+                    let n = arg_types.len();
+                    n >= sig.required && n <= sig.params.len() &&
+                    sig.params[..n].iter().zip(&arg_types).all(|(p, a)| {
                         p == a || (p.is_numeric() && a.is_numeric()) ||
                         matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
                     })
@@ -1844,11 +1913,22 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let func_id = self.user_fn_ids[&mangled];
 
             let mut arg_vals = vec![self.ctx_ptr];
+            // Emit provided arguments
             for (i, arg) in args.iter().enumerate() {
                 let val = self.emit_expr(arg)?;
                 let from_ty = self.node_type(arg.id).clone();
                 let to_ty = &sig.params[i];
                 let converted = self.convert_value(val, &from_ty, to_ty);
+                arg_vals.push(converted);
+            }
+            // Emit default expressions for missing arguments
+            for i in args.len()..sig.params.len() {
+                let default_idx = i - sig.required;
+                let default_expr = &sig.defaults[default_idx];
+                let val = self.emit_expr(default_expr)?;
+                let from_ty = self.node_type(default_expr.id).clone();
+                let to_ty = &sig.params[i];
+                let converted = self.convert_value(val, &from_ty, &to_ty);
                 arg_vals.push(converted);
             }
 

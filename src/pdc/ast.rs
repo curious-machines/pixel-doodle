@@ -374,6 +374,8 @@ pub struct Block {
 pub struct Param {
     pub name: String,
     pub ty: PdcType,
+    /// Optional default value expression (evaluated fresh at each call site).
+    pub default: Option<Spanned<Expr>>,
 }
 
 /// Function definition.

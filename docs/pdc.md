@@ -45,6 +45,7 @@ PDC is a JIT-compiled language for describing vector scenes. It compiles to nati
   - [Void Functions](#void-functions)
   - [Recursion](#recursion)
   - [Named Arguments](#named-arguments)
+  - [Default Parameter Values](#default-parameter-values)
   - [Function Overloading](#function-overloading)
   - [Function References and Map](#function-references-and-map)
 - [Structs](#structs-1)
@@ -561,6 +562,22 @@ draw_circle(radius: 50.0, cx: 100.0, cy: 200.0)
 ```
 
 Named arguments are also used for struct construction (see [Struct Construction](#struct-construction)).
+
+### Default Parameter Values
+
+Parameters can have default values. When a call omits trailing arguments, the defaults are used. Required parameters cannot follow defaulted ones.
+
+```
+fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64 = 0.0) -> Path {
+    if r == 0.0 { return Rect(x, y, w, h) }
+    // ... build rounded rect
+}
+
+RoundedRect(x: 10.0, y: 10.0, w: 100.0, h: 50.0)           // r = 0.0
+RoundedRect(x: 10.0, y: 10.0, w: 100.0, h: 50.0, r: 8.0)   // r = 8.0
+```
+
+Default expressions are evaluated fresh at each call site (no shared state).
 
 ### Function Overloading
 

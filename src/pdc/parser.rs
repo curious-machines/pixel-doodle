@@ -421,12 +421,26 @@ impl<'a> Parser<'a> {
 
         // Parse parameters
         let mut params = Vec::new();
+        let mut seen_default = false;
         if !self.at(&TokenKind::RParen) {
             loop {
-                let (pname, _) = self.expect_ident()?;
+                let (pname, pspan) = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 let pty = self.parse_type()?;
-                params.push(Param { name: pname, ty: pty });
+                let default = if self.at(&TokenKind::Eq) {
+                    self.advance(); // consume '='
+                    seen_default = true;
+                    Some(self.parse_expr()?)
+                } else {
+                    if seen_default {
+                        return Err(PdcError::Parse {
+                            span: pspan,
+                            message: format!("parameter '{pname}' must have a default value (required parameters cannot follow defaulted ones)"),
+                        });
+                    }
+                    None
+                };
+                params.push(Param { name: pname, ty: pty, default });
                 if *self.peek() == TokenKind::Comma {
                     self.advance();
                 } else {
@@ -478,7 +492,7 @@ impl<'a> Parser<'a> {
                 let (pname, _) = self.expect_ident()?;
                 self.expect(&TokenKind::Colon)?;
                 let pty = self.parse_type()?;
-                params.push(Param { name: pname, ty: pty });
+                params.push(Param { name: pname, ty: pty, default: None });
                 if *self.peek() == TokenKind::Comma {
                     self.advance();
                 } else {

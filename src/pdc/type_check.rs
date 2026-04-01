@@ -17,6 +17,11 @@ struct BuiltinFn {
 pub struct UserFnSig {
     pub params: Vec<PdcType>,
     pub ret: PdcType,
+    /// Number of required (non-defaulted) parameters.
+    pub required: usize,
+    /// Default value expressions for trailing optional parameters.
+    /// Length = params.len() - required. Index 0 = first optional param.
+    pub defaults: Vec<Spanned<Expr>>,
 }
 
 /// Overload set: one or more signatures for the same function name.
@@ -286,10 +291,7 @@ impl TypeChecker {
                 match &stmt.node {
                     Stmt::FnDef(fndef) => {
                         let qualified = format!("{mod_name}::{}", fndef.name);
-                        let sig = UserFnSig {
-                            params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
-                            ret: self.resolve_type(&fndef.return_type),
-                        };
+                        let sig = self.sig_from_fndef(fndef);
                         if fndef.name.starts_with("__op_") {
                             self.op_overloads.entry(fndef.name.clone())
                                 .or_insert_with(|| OverloadSet { sigs: Vec::new() })
@@ -475,10 +477,7 @@ impl TypeChecker {
         for stmt in &program.stmts {
             match &stmt.node {
                 Stmt::FnDef(fndef) => {
-                    let sig = UserFnSig {
-                        params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
-                        ret: self.resolve_type(&fndef.return_type),
-                    };
+                    let sig = self.sig_from_fndef(fndef);
                     if fndef.name.starts_with("__op_") {
                         self.op_overloads.entry(fndef.name.clone())
                             .or_insert_with(|| OverloadSet { sigs: Vec::new() })
@@ -825,6 +824,13 @@ impl TypeChecker {
                 // Already registered in first pass
             }
             Stmt::FnDef(fndef) => {
+                // Type-check default value expressions in the outer scope
+                for param in &fndef.params {
+                    if let Some(ref default_expr) = param.default {
+                        let default_ty = self.check_expr(default_expr)?;
+                        self.check_compatible(&default_ty, &param.ty, default_expr.span)?;
+                    }
+                }
                 // Function bodies see all outer scope variables (top-level consts, builtins)
                 self.push_scope();
                 for param in &fndef.params {
@@ -1618,22 +1624,48 @@ impl TypeChecker {
         }
     }
 
+    /// Build a UserFnSig from a FnDef, capturing default expressions.
+    fn sig_from_fndef(&self, fndef: &FnDef) -> UserFnSig {
+        let required = fndef.params.iter().take_while(|p| p.default.is_none()).count();
+        let defaults: Vec<Spanned<Expr>> = fndef.params[required..]
+            .iter()
+            .map(|p| p.default.clone().unwrap())
+            .collect();
+        UserFnSig {
+            params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
+            ret: self.resolve_type(&fndef.return_type),
+            required,
+            defaults,
+        }
+    }
+
     /// Resolve the best-matching overload for given argument types.
     fn resolve_overload(&self, overloads: &OverloadSet, arg_types: &[PdcType]) -> Option<UserFnSig> {
+        // Check if arg count is in range [required..=total] and types match
+        let matches = |sig: &UserFnSig, exact: bool| -> bool {
+            let n = arg_types.len();
+            if n < sig.required || n > sig.params.len() {
+                return false;
+            }
+            sig.params[..n].iter().zip(arg_types).all(|(p, a)| {
+                if exact {
+                    p == a
+                } else {
+                    p == a || (p.is_numeric() && a.is_numeric()) ||
+                    matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
+                }
+            })
+        };
+
         // Exact match first
         for sig in &overloads.sigs {
-            if sig.params.len() == arg_types.len() &&
-               sig.params.iter().zip(arg_types).all(|(p, a)| p == a) {
+            if matches(sig, true) {
                 return Some(sig.clone());
             }
         }
         // Compatible match (numeric coercion)
         for sig in &overloads.sigs {
-            if sig.params.len() == arg_types.len() &&
-               sig.params.iter().zip(arg_types).all(|(p, a)| {
-                   p == a || (p.is_numeric() && a.is_numeric()) ||
-                   matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
-               }) {
+            if matches(sig, false) {
                 return Some(sig.clone());
             }
         }

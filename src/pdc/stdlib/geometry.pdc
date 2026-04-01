@@ -1,8 +1,12 @@
 // PDC Standard Library: geometry
 // Shape constructors that return Path handles.
 
+// Kappa: cubic Bézier control point distance for 90° circular arcs.
+// 4 * (sqrt(2) - 1) / 3
+const KAPPA = 0.5522847498
+
 pub fn Circle(cx: f64, cy: f64, r: f64) -> Path {
-    const k = r * 0.5522847498
+    const k = r * KAPPA
     var p = Path()
     p.move_to(cx + r, cy)
     p.cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
@@ -23,8 +27,11 @@ pub fn Rect(x: f64, y: f64, w: f64, h: f64) -> Path {
     return p
 }
 
-pub fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
-    const k = r * 0.5522847498
+pub fn RoundedRect(x: f64, y: f64, w: f64, h: f64, r: f64 = 0.0) -> Path {
+    if r == 0.0 {
+        return Rect(x, y, w, h)
+    }
+    const k = r * KAPPA
     var p = Path()
     p.move_to(x + r, y)
     p.line_to(x + w - r, y)

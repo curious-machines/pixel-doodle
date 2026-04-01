@@ -456,3 +456,161 @@ pub fn compile_and_run(
         height,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compile_ok(src: &str) {
+        compile_and_run(src, 200, 200, 0.5, 16, None).expect("compile_and_run failed");
+    }
+
+    fn compile_err(src: &str) -> String {
+        match compile_and_run(src, 200, 200, 0.5, 16, None) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[test]
+    fn break_exits_loop() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            var n: f64 = 0.0
+            loop {
+                n = n + 1.0
+                if n >= 5.0 { break }
+            }
+            Circle(cx: n * 20.0, cy: 100.0, r: 10.0).fill(0xFF0000FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn continue_in_for_loop() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            var count: f64 = 0.0
+            for i in 0..10 {
+                if i % 2 == 0 { continue }
+                count = count + 1.0
+            }
+            Circle(cx: count * 20.0, cy: 100.0, r: 10.0).fill(0xFF0000FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn break_in_for_loop() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            var n: f64 = 0.0
+            for i in 0..100 {
+                if i >= 3 { break }
+                n = n + 1.0
+            }
+            Circle(cx: n * 20.0, cy: 100.0, r: 10.0).fill(0xFF0000FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn continue_in_while_loop() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            var i: i32 = 0
+            var count: f64 = 0.0
+            while i < 10 {
+                i = i + 1
+                if i % 2 == 0 { continue }
+                count = count + 1.0
+            }
+            Circle(cx: count * 20.0, cy: 100.0, r: 10.0).fill(0xFF0000FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn break_outside_loop_errors() {
+        let err = compile_err(
+            r#"
+            builtin const width: f32
+            builtin const height: f32
+            break
+            "#,
+        );
+        assert!(err.contains("break outside of loop"), "got: {err}");
+    }
+
+    #[test]
+    fn default_param_basic() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            fn draw_dot(x: f64, y: f64, r: f64 = 10.0) -> Path {
+                return Circle(cx: x, cy: y, r: r)
+            }
+            draw_dot(100.0, 100.0).fill(0xFF0000FF)
+            draw_dot(200.0, 100.0, 20.0).fill(0x00FF00FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn default_param_multiple() {
+        compile_ok(
+            r#"
+            import { Circle } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            fn make(x: f64, y: f64, r: f64 = 15.0, color: u32 = 0xFF0000FF) -> Path {
+                return Circle(cx: x, cy: y, r: r)
+            }
+            make(50.0, 50.0).fill(0xFF0000FF)
+            make(100.0, 50.0, 20.0).fill(0xFF0000FF)
+            make(150.0, 50.0, 25.0, 0x00FF00FF).fill(0xFF0000FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn rounded_rect_default_radius() {
+        compile_ok(
+            r#"
+            import { RoundedRect } from geometry
+            builtin const width: f32
+            builtin const height: f32
+            RoundedRect(x: 10.0, y: 10.0, w: 100.0, h: 50.0).fill(0xFF0000FF)
+            RoundedRect(x: 10.0, y: 70.0, w: 100.0, h: 50.0, r: 8.0).fill(0x00FF00FF)
+            "#,
+        );
+    }
+
+    #[test]
+    fn default_param_required_after_default_errors() {
+        let err = compile_err(
+            r#"
+            builtin const width: f32
+            builtin const height: f32
+            fn bad(a: f64 = 1.0, b: f64) -> f64 {
+                return a + b
+            }
+            "#,
+        );
+        assert!(err.contains("must have a default value"), "got: {err}");
+    }
+}
