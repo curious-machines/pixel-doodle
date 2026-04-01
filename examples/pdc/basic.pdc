@@ -18,11 +18,12 @@ enum Shape {
 const center = Vec2(x: f64(width) / 2.0, y: f64(height) / 2.0)
 
 // Grid with alternating shapes using data variant enums
+// Outer loop: while (demonstrates while loop)
+// Inner loop: for..in range (demonstrates for loop)
 const spacing = 60.0
 var col = 0
 while col < 10 {
-    var row = 0
-    while row < 8 {
+    for row in 0..8 {
         const x = f64(col) * spacing + 50.0
         const y = f64(row) * spacing + 50.0
 
@@ -32,7 +33,6 @@ while col < 10 {
             s = Shape.RectShape(x - 15.0, y - 15.0, 30.0, 30.0)
         }
 
-        // Match with destructuring
         // Match with dot-shorthand (enum type inferred from scrutinee)
         match s {
             .CircleShape(cx, cy, r) => {
@@ -52,7 +52,6 @@ while col < 10 {
                 }
             },
         }
-        row = row + 1
     }
     col = col + 1
 }
