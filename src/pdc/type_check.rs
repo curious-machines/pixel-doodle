@@ -1694,3 +1694,739 @@ impl TypeChecker {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::lexer;
+    use super::super::parser;
+    use super::super::span::IdAlloc;
+    use super::super::ast::Program;
+
+    const PRELUDE: &str = "builtin const width: f32\nbuiltin const height: f32\n";
+
+    fn check_ok(source: &str) {
+        let full = format!("{PRELUDE}{source}");
+        let tokens = lexer::lex(&full).expect("lex failed");
+        let mut ids = IdAlloc::new();
+        let stmts = parser::parse(tokens, &mut ids).expect("parse failed");
+        let program = Program { modules: vec![], stmts };
+        let mut checker = TypeChecker::new();
+        checker.check_program(&program).expect("type check failed");
+    }
+
+    fn check_err(source: &str, expected_substr: &str) {
+        let full = format!("{PRELUDE}{source}");
+        let tokens = lexer::lex(&full).expect("lex failed");
+        let mut ids = IdAlloc::new();
+        let stmts = parser::parse(tokens, &mut ids).expect("parse failed");
+        let program = Program { modules: vec![], stmts };
+        let mut checker = TypeChecker::new();
+        match checker.check_program(&program) {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(expected_substr),
+                    "error '{}' does not contain '{}'",
+                    msg,
+                    expected_substr,
+                );
+            }
+            Ok(_) => panic!("expected error containing '{}'", expected_substr),
+        }
+    }
+
+    // ── Happy path: variable declarations ──
+
+    #[test]
+    fn var_decl_explicit_type() {
+        check_ok("var x: f64 = 1.0");
+    }
+
+    #[test]
+    fn var_decl_inferred_type() {
+        check_ok("var x = 42");
+    }
+
+    #[test]
+    fn const_decl_explicit_type() {
+        check_ok("const x: i32 = 10");
+    }
+
+    #[test]
+    fn const_decl_inferred_type() {
+        check_ok("const x = 3.14");
+    }
+
+    #[test]
+    fn const_decl_bool() {
+        check_ok("const flag = true");
+    }
+
+    // ── Happy path: function definitions and calls ──
+
+    #[test]
+    fn fn_def_and_call() {
+        check_ok(
+            r#"
+            fn add(a: f64, b: f64) -> f64 {
+                return a + b
+            }
+            var result = add(1.0, 2.0)
+            "#,
+        );
+    }
+
+    #[test]
+    fn fn_void_return() {
+        check_ok(
+            r#"
+            fn do_nothing() -> void {
+                var x = 1
+            }
+            do_nothing()
+            "#,
+        );
+    }
+
+    #[test]
+    fn fn_empty_body() {
+        check_ok(
+            r#"
+            fn noop() -> void {
+            }
+            noop()
+            "#,
+        );
+    }
+
+    #[test]
+    fn fn_recursive() {
+        check_ok(
+            r#"
+            fn countdown(n: i32) -> i32 {
+                if n <= 0 {
+                    return 0
+                }
+                return countdown(n - 1)
+            }
+            var result = countdown(10)
+            "#,
+        );
+    }
+
+    #[test]
+    fn fn_default_params() {
+        check_ok(
+            r#"
+            fn greet(x: f64, y: f64 = 10.0) -> f64 {
+                return x + y
+            }
+            var a = greet(1.0)
+            var b = greet(1.0, 2.0)
+            "#,
+        );
+    }
+
+    // ── Happy path: struct definitions and construction ──
+
+    #[test]
+    fn struct_def_and_construct() {
+        check_ok(
+            r#"
+            struct Point {
+                x: f64,
+                y: f64,
+            }
+            var p = Point(x: 1.0, y: 2.0)
+            "#,
+        );
+    }
+
+    #[test]
+    fn struct_field_access() {
+        check_ok(
+            r#"
+            struct Point {
+                x: f64,
+                y: f64,
+            }
+            var p = Point(x: 1.0, y: 2.0)
+            var xval = p.x
+            "#,
+        );
+    }
+
+    // ── Happy path: enum definitions ──
+
+    #[test]
+    fn enum_def() {
+        check_ok(
+            r#"
+            enum Color {
+                Red,
+                Green,
+                Blue,
+            }
+            var c = Color.Red
+            "#,
+        );
+    }
+
+    #[test]
+    fn enum_match_exhaustive() {
+        check_ok(
+            r#"
+            enum Dir {
+                Up,
+                Down,
+            }
+            var d = Dir.Up
+            match d {
+                .Up => { var x = 1 }
+                .Down => { var x = 2 }
+            }
+            "#,
+        );
+    }
+
+    // ── Happy path: type aliases ──
+
+    #[test]
+    fn type_alias() {
+        check_ok(
+            r#"
+            type Real = f64
+            var x: Real = 1.0
+            "#,
+        );
+    }
+
+    #[test]
+    fn type_alias_cast() {
+        check_ok(
+            r#"
+            type Real = f64
+            var x = Real(42)
+            "#,
+        );
+    }
+
+    // ── Happy path: const vs var semantics ──
+
+    #[test]
+    fn var_can_be_reassigned() {
+        check_ok(
+            r#"
+            var x: i32 = 1
+            x = 2
+            "#,
+        );
+    }
+
+    // ── Happy path: binary operations ──
+
+    #[test]
+    fn binary_op_matching_types() {
+        check_ok("var x = 1 + 2");
+    }
+
+    #[test]
+    fn binary_op_float() {
+        check_ok("var x = 1.0 * 2.0");
+    }
+
+    #[test]
+    fn binary_comparison() {
+        check_ok("var x = 1 < 2");
+    }
+
+    #[test]
+    fn binary_logical() {
+        check_ok("var x = true && false");
+    }
+
+    #[test]
+    fn binary_numeric_widening() {
+        // i32 + f64 should unify to f64
+        check_ok("var x = 1 + 2.0");
+    }
+
+    // ── Happy path: nested scopes ──
+
+    #[test]
+    fn nested_scope_no_leak() {
+        // Variable defined in inner block should not be visible in outer scope.
+        // The inner block is an if-body, which creates a scope.
+        check_ok(
+            r#"
+            var x: i32 = 1
+            if true {
+                var y: i32 = 2
+            }
+            x = 3
+            "#,
+        );
+    }
+
+    // ── Happy path: for loop ──
+
+    #[test]
+    fn for_loop() {
+        check_ok(
+            r#"
+            var sum: i32 = 0
+            for i in 0..10 {
+                sum = sum + i
+            }
+            "#,
+        );
+    }
+
+    // ── Happy path: while loop ──
+
+    #[test]
+    fn while_loop() {
+        check_ok(
+            r#"
+            var i: i32 = 0
+            while i < 10 {
+                i = i + 1
+            }
+            "#,
+        );
+    }
+
+    // ── Happy path: ternary expression ──
+
+    #[test]
+    fn ternary_expr() {
+        check_ok("var x = true ? 1 : 2");
+    }
+
+    // ── Happy path: string operations ──
+
+    #[test]
+    fn string_concat() {
+        check_ok(r#"var s = "hello" + " world""#);
+    }
+
+    // ── Happy path: tuple ──
+
+    #[test]
+    fn tuple_construct_and_index() {
+        check_ok(
+            r#"
+            var t = (1.0, 2.0, 3.0)
+            var x = t.0
+            "#,
+        );
+    }
+
+    // ── Error cases: undefined variable ──
+
+    #[test]
+    fn err_undefined_variable() {
+        check_err("var x = y", "undefined variable 'y'");
+    }
+
+    // ── Error cases: const reassignment ──
+
+    #[test]
+    fn err_const_reassign() {
+        check_err(
+            r#"
+            const x: i32 = 1
+            x = 2
+            "#,
+            "cannot assign to const variable 'x'",
+        );
+    }
+
+    // ── Error cases: builtin const reassignment ──
+
+    #[test]
+    fn err_builtin_const_reassign() {
+        check_err("width = 100.0", "cannot assign to const variable 'width'");
+    }
+
+    // ── Error cases: wrong number of arguments ──
+
+    #[test]
+    fn err_wrong_arg_count_builtin() {
+        check_err("sin(1.0, 2.0)", "expects 1 arguments, got 2");
+    }
+
+    #[test]
+    fn err_wrong_arg_count_user_fn() {
+        check_err(
+            r#"
+            fn add(a: f64, b: f64) -> f64 {
+                return a + b
+            }
+            var x = add(1.0)
+            "#,
+            "no matching overload for 'add'",
+        );
+    }
+
+    // ── Error cases: undefined function ──
+
+    #[test]
+    fn err_undefined_function() {
+        check_err("var x = nonexistent(1)", "undefined function 'nonexistent'");
+    }
+
+    // ── Error cases: non-existent struct field ──
+
+    #[test]
+    fn err_struct_no_such_field_access() {
+        check_err(
+            r#"
+            struct Point {
+                x: f64,
+                y: f64,
+            }
+            var p = Point(x: 1.0, y: 2.0)
+            var z = p.z
+            "#,
+            "has no field 'z'",
+        );
+    }
+
+    #[test]
+    fn err_struct_no_such_field_construct() {
+        check_err(
+            r#"
+            struct Point {
+                x: f64,
+                y: f64,
+            }
+            var p = Point(x: 1.0, z: 2.0)
+            "#,
+            "has no field 'z'",
+        );
+    }
+
+    // ── Error cases: type mismatch in binary ops ──
+
+    #[test]
+    fn err_logical_op_non_bool() {
+        check_err("var x = 1 && 2", "logical operator requires bool, got i32 and i32");
+    }
+
+    #[test]
+    fn err_bitwise_on_float() {
+        check_err(
+            "var x = 1.0 & 2.0",
+            "bitwise operator requires integer types",
+        );
+    }
+
+    // ── Error cases: if condition not bool ──
+
+    #[test]
+    fn err_if_condition_not_bool() {
+        check_err(
+            r#"
+            if 42 {
+                var x = 1
+            }
+            "#,
+            "if condition must be bool",
+        );
+    }
+
+    // ── Error cases: while condition not bool ──
+
+    #[test]
+    fn err_while_condition_not_bool() {
+        check_err(
+            r#"
+            while 1 {
+                var x = 1
+            }
+            "#,
+            "while condition must be bool",
+        );
+    }
+
+    // ── Error cases: for range not integer ──
+
+    #[test]
+    fn err_for_range_not_integer() {
+        check_err(
+            r#"
+            for i in 0.0..10.0 {
+                var x = i
+            }
+            "#,
+            "for range start must be integer",
+        );
+    }
+
+    // ── Error cases: assign to undefined variable ──
+
+    #[test]
+    fn err_assign_undefined_variable() {
+        check_err("x = 5", "undefined variable 'x'");
+    }
+
+    // ── Error cases: type mismatch on assignment ──
+
+    #[test]
+    fn err_assign_type_mismatch() {
+        check_err(
+            r#"
+            var x: bool = true
+            x = 42
+            "#,
+            "type mismatch",
+        );
+    }
+
+    // ── Error cases: negate non-numeric ──
+
+    #[test]
+    fn err_negate_bool() {
+        check_err("var x = -true", "cannot negate type bool");
+    }
+
+    // ── Error cases: not on non-bool ──
+
+    #[test]
+    fn err_not_on_int() {
+        check_err("var x = !42", "cannot apply ! to type i32");
+    }
+
+    // ── Error cases: field access on non-struct ──
+
+    #[test]
+    fn err_field_access_on_int() {
+        check_err(
+            r#"
+            var x: i32 = 1
+            var y = x.foo
+            "#,
+            "cannot access field 'foo' on type i32",
+        );
+    }
+
+    // ── Error cases: index non-array ──
+
+    #[test]
+    fn err_index_non_array() {
+        check_err(
+            r#"
+            var x: i32 = 1
+            var y = x[0]
+            "#,
+            "cannot index type i32",
+        );
+    }
+
+    // ── Error cases: enum non-exhaustive match ──
+
+    #[test]
+    fn err_match_non_exhaustive() {
+        check_err(
+            r#"
+            enum Dir {
+                Up,
+                Down,
+            }
+            var d = Dir.Up
+            match d {
+                .Up => { var x = 1 }
+            }
+            "#,
+            "non-exhaustive match",
+        );
+    }
+
+    // ── Edge cases: shadowing ──
+
+    #[test]
+    fn shadowing_inner_scope() {
+        check_ok(
+            r#"
+            var x: i32 = 1
+            if true {
+                var x: f64 = 2.0
+            }
+            x = 3
+            "#,
+        );
+    }
+
+    // ── Edge cases: inner scope variable not visible outside ──
+
+    #[test]
+    fn err_inner_scope_var_not_visible() {
+        check_err(
+            r#"
+            if true {
+                var inner: i32 = 1
+            }
+            inner = 2
+            "#,
+            "undefined variable 'inner'",
+        );
+    }
+
+    // ── Edge cases: for loop variable is const by default ──
+
+    #[test]
+    fn err_for_loop_var_const() {
+        check_err(
+            r#"
+            for i in 0..10 {
+                i = 5
+            }
+            "#,
+            "cannot assign to const variable 'i'",
+        );
+    }
+
+    // ── Edge cases: type cast ──
+
+    #[test]
+    fn type_cast() {
+        check_ok("var x = f64(42)");
+    }
+
+    #[test]
+    fn err_type_cast_wrong_arg_count() {
+        check_err("var x = f64(1, 2)", "type cast f64() expects 1 argument, got 2");
+    }
+
+    // ── Edge cases: multiple functions (overloading) ──
+
+    #[test]
+    fn fn_overloading() {
+        check_ok(
+            r#"
+            fn double(x: f64) -> f64 {
+                return x * 2.0
+            }
+            fn double(x: i32) -> i32 {
+                return x * 2
+            }
+            var a = double(1.0)
+            var b = double(1)
+            "#,
+        );
+    }
+
+    // ── Edge cases: enum variant with fields ──
+
+    #[test]
+    fn enum_variant_with_fields() {
+        check_ok(
+            r#"
+            enum Shape {
+                Circle(r: f64),
+                Rect(w: f64, h: f64),
+            }
+            var s = Shape.Circle(10.0)
+            "#,
+        );
+    }
+
+    // ── Edge cases: match with wildcard ──
+
+    #[test]
+    fn match_wildcard() {
+        check_ok(
+            r#"
+            enum Dir {
+                Up,
+                Down,
+                Left,
+                Right,
+            }
+            var d = Dir.Up
+            match d {
+                .Up => { var x = 1 }
+                _ => { var x = 0 }
+            }
+            "#,
+        );
+    }
+
+    // ── Edge cases: string comparison ──
+
+    #[test]
+    fn string_equality() {
+        check_ok(r#"var x = "a" == "b""#);
+    }
+
+    // ── Edge cases: ternary type mismatch ──
+
+    #[test]
+    fn err_ternary_type_mismatch() {
+        check_err(
+            r#"var x = true ? 1 : "hello""#,
+            "ternary branches must have compatible types",
+        );
+    }
+
+    // ── Edge cases: ternary condition not bool ──
+
+    #[test]
+    fn err_ternary_condition_not_bool() {
+        check_err(
+            "var x = 42 ? 1 : 2",
+            "ternary condition must be bool",
+        );
+    }
+
+    // ── Edge cases: tuple destructure ──
+
+    #[test]
+    fn tuple_destructure() {
+        check_ok(
+            r#"
+            const (a, b) = (1.0, 2.0)
+            "#,
+        );
+    }
+
+    #[test]
+    fn err_tuple_destructure_wrong_count() {
+        check_err(
+            r#"
+            const (a, b, c) = (1.0, 2.0)
+            "#,
+            "tuple destructure",
+        );
+    }
+
+    // ── Edge cases: array operations ──
+
+    #[test]
+    fn array_construct_and_methods() {
+        check_ok(
+            r#"
+            var arr = Array<f64>()
+            arr.push(1.0)
+            var n = arr.len()
+            "#,
+        );
+    }
+
+    // ── Edge cases: match on non-enum ──
+
+    #[test]
+    fn err_match_non_enum() {
+        check_err(
+            r#"
+            var x: i32 = 1
+            match x {
+                _ => { var y = 1 }
+            }
+            "#,
+            "cannot match non-enum type",
+        );
+    }
+}

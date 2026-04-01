@@ -62,3 +62,11 @@ If the test fails because of an intentional change, update the golden images:
 ```
 
 Golden images are stored locally in `tests/golden/` (not tracked in git). Generate them on first clone with `./test_regression --update`.
+
+### Testing Principles
+
+- All code must have unit tests and integration tests
+- Test known good cases, extreme/boundary cases, and unexpected/invalid input cases
+- Testing must be thorough and exhaustive — all new code must include tests of this calibre
+- Bug fixes: write a failing test first that reproduces the bug, then fix the code so it passes
+- PDC functions must be testable from Rust via `compile_only` + `call_fn`

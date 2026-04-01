@@ -758,6 +758,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<PdcType, PdcError> {
+        // [T] shorthand for Array<T>
+        if *self.peek() == TokenKind::LBracket {
+            self.advance(); // consume '['
+            let elem_ty = self.parse_type()?;
+            self.expect(&TokenKind::RBracket)?;
+            return Ok(PdcType::Array(Box::new(elem_ty)));
+        }
+
         if let TokenKind::Ident(name) = self.peek().clone() {
             if name == "Array" {
                 self.advance(); // consume "Array"
@@ -1286,5 +1294,738 @@ impl<'a> Parser<'a> {
         }
         self.expect(&TokenKind::RParen)?;
         Ok(args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::lexer;
+    use super::super::span::IdAlloc;
+
+    /// Parse source and return the AST statements.
+    fn parse_ok(source: &str) -> Vec<Spanned<Stmt>> {
+        let tokens = lexer::lex(source).expect("lex failed");
+        let mut ids = IdAlloc::new();
+        parse(tokens, &mut ids).expect("parse failed")
+    }
+
+    /// Parse source and expect an error containing the given substring.
+    fn parse_err(source: &str, expected_substr: &str) {
+        let tokens = match lexer::lex(source) {
+            Ok(t) => t,
+            Err(e) => {
+                // Lex error is also acceptable for parse_err
+                let msg = e.to_string();
+                assert!(msg.contains(expected_substr),
+                    "lex error '{}' does not contain '{}'", msg, expected_substr);
+                return;
+            }
+        };
+        let mut ids = IdAlloc::new();
+        match parse(tokens, &mut ids) {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains(expected_substr),
+                    "error '{}' does not contain '{}'", msg, expected_substr);
+            }
+            Ok(_) => panic!("expected error containing '{}'", expected_substr),
+        }
+    }
+
+    /// Parse a single statement.
+    fn parse_one(source: &str) -> Stmt {
+        let stmts = parse_ok(source);
+        assert_eq!(stmts.len(), 1, "expected 1 statement, got {}", stmts.len());
+        stmts.into_iter().next().unwrap().node
+    }
+
+    // ---- Variable and constant declarations ----
+
+    #[test]
+    fn const_decl_with_type() {
+        match parse_one("const x: f64 = 3.14") {
+            Stmt::ConstDecl { name, ty, .. } => {
+                assert_eq!(name, "x");
+                assert_eq!(ty, Some(PdcType::F64));
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn const_decl_without_type() {
+        match parse_one("const x = 42") {
+            Stmt::ConstDecl { name, ty, .. } => {
+                assert_eq!(name, "x");
+                assert_eq!(ty, None);
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn var_decl() {
+        match parse_one("var y: i32 = 0") {
+            Stmt::VarDecl { name, ty, .. } => {
+                assert_eq!(name, "y");
+                assert_eq!(ty, Some(PdcType::I32));
+            }
+            other => panic!("expected VarDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pub_const_decl() {
+        match parse_one("pub const PI = 3.14159") {
+            Stmt::ConstDecl { vis, name, .. } => {
+                assert_eq!(vis, Visibility::Public);
+                assert_eq!(name, "PI");
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_decl() {
+        match parse_one("builtin const width: f32") {
+            Stmt::BuiltinDecl { name, ty } => {
+                assert_eq!(name, "width");
+                assert_eq!(ty, PdcType::F32);
+            }
+            other => panic!("expected BuiltinDecl, got {:?}", other),
+        }
+    }
+
+    // ---- Assignments ----
+
+    #[test]
+    fn simple_assign() {
+        match parse_one("x = 5") {
+            Stmt::Assign { name, .. } => assert_eq!(name, "x"),
+            other => panic!("expected Assign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_assign() {
+        let stmts = parse_ok("var arr: Array<i32> = Array()\narr[0] = 42");
+        assert_eq!(stmts.len(), 2);
+        match &stmts[1].node {
+            Stmt::IndexAssign { .. } => {}
+            other => panic!("expected IndexAssign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compound_assign_plus() {
+        // x += 1 desugars to x = x + 1
+        let stmts = parse_ok("var x = 0\nx += 1");
+        match &stmts[1].node {
+            Stmt::Assign { name, value } => {
+                assert_eq!(name, "x");
+                match &value.node {
+                    Expr::BinaryOp { op, .. } => assert_eq!(*op, BinOp::Add),
+                    other => panic!("expected BinaryOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected Assign, got {:?}", other),
+        }
+    }
+
+    // ---- Function definitions ----
+
+    #[test]
+    fn fn_def_no_params() {
+        match parse_one("fn foo() { return 42 }") {
+            Stmt::FnDef(fndef) => {
+                assert_eq!(fndef.name, "foo");
+                assert_eq!(fndef.params.len(), 0);
+                assert_eq!(fndef.return_type, PdcType::Void);
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fn_def_with_params_and_return() {
+        match parse_one("fn add(a: f64, b: f64) -> f64 { return a + b }") {
+            Stmt::FnDef(fndef) => {
+                assert_eq!(fndef.name, "add");
+                assert_eq!(fndef.params.len(), 2);
+                assert_eq!(fndef.params[0].name, "a");
+                assert_eq!(fndef.params[0].ty, PdcType::F64);
+                assert_eq!(fndef.params[1].name, "b");
+                assert_eq!(fndef.params[1].ty, PdcType::F64);
+                assert_eq!(fndef.return_type, PdcType::F64);
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pub_fn_def() {
+        match parse_one("pub fn greet() { }") {
+            Stmt::FnDef(fndef) => {
+                assert_eq!(fndef.vis, Visibility::Public);
+                assert_eq!(fndef.name, "greet");
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    // ---- Control flow ----
+
+    #[test]
+    fn if_statement() {
+        match parse_one("if x > 0 { return 1 }") {
+            Stmt::If { elsif_clauses, else_body, .. } => {
+                assert!(elsif_clauses.is_empty());
+                assert!(else_body.is_none());
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn if_else() {
+        match parse_one("if x > 0 { return 1 } else { return 0 }") {
+            Stmt::If { else_body, .. } => {
+                assert!(else_body.is_some());
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn if_elsif_else() {
+        match parse_one("if x > 0 { return 1 } elsif x < 0 { return -1 } else { return 0 }") {
+            Stmt::If { elsif_clauses, else_body, .. } => {
+                assert_eq!(elsif_clauses.len(), 1);
+                assert!(else_body.is_some());
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn while_loop() {
+        match parse_one("while x > 0 { x = x - 1 }") {
+            Stmt::While { .. } => {}
+            other => panic!("expected While, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_range_exclusive() {
+        match parse_one("for i in 0..10 { x = i }") {
+            Stmt::For { var_name, inclusive, .. } => {
+                assert_eq!(var_name, "i");
+                assert!(!inclusive);
+            }
+            other => panic!("expected For, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_range_inclusive() {
+        match parse_one("for i in 0..=10 { x = i }") {
+            Stmt::For { var_name, inclusive, .. } => {
+                assert_eq!(var_name, "i");
+                assert!(inclusive);
+            }
+            other => panic!("expected For, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_each_loop() {
+        let stmts = parse_ok("var arr = Array()\nfor x in arr { }");
+        match &stmts[1].node {
+            Stmt::ForEach { var_name, .. } => assert_eq!(var_name, "x"),
+            other => panic!("expected ForEach, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn loop_statement() {
+        match parse_one("loop { break }") {
+            Stmt::Loop { body } => {
+                assert_eq!(body.stmts.len(), 1);
+            }
+            other => panic!("expected Loop, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn break_statement() {
+        match parse_one("break") {
+            Stmt::Break => {}
+            other => panic!("expected Break, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn continue_statement() {
+        match parse_one("continue") {
+            Stmt::Continue => {}
+            other => panic!("expected Continue, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn return_with_value() {
+        match parse_one("return 42") {
+            Stmt::Return(Some(_)) => {}
+            other => panic!("expected Return with value, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn return_no_value() {
+        match parse_one("return") {
+            Stmt::Return(None) => {}
+            other => panic!("expected Return without value, got {:?}", other),
+        }
+    }
+
+    // ---- Struct and enum definitions ----
+
+    #[test]
+    fn struct_def() {
+        match parse_one("struct Point { x: f64, y: f64 }") {
+            Stmt::StructDef(sd) => {
+                assert_eq!(sd.name, "Point");
+                assert_eq!(sd.fields.len(), 2);
+                assert_eq!(sd.fields[0].name, "x");
+                assert_eq!(sd.fields[1].name, "y");
+            }
+            other => panic!("expected StructDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enum_def_simple() {
+        match parse_one("enum Color { Red, Green, Blue }") {
+            Stmt::EnumDef(ed) => {
+                assert_eq!(ed.name, "Color");
+                assert_eq!(ed.variants.len(), 3);
+                assert_eq!(ed.variants[0].name, "Red");
+                assert_eq!(ed.variants[1].name, "Green");
+                assert_eq!(ed.variants[2].name, "Blue");
+            }
+            other => panic!("expected EnumDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_alias() {
+        match parse_one("type Real = f64") {
+            Stmt::TypeAlias { name, ty, .. } => {
+                assert_eq!(name, "Real");
+                assert_eq!(ty, PdcType::F64);
+            }
+            other => panic!("expected TypeAlias, got {:?}", other),
+        }
+    }
+
+    // ---- Import statements ----
+
+    #[test]
+    fn import_module() {
+        match parse_one("import math") {
+            Stmt::Import { module, names } => {
+                assert_eq!(module, "math");
+                assert!(names.is_empty());
+            }
+            other => panic!("expected Import, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn import_named() {
+        match parse_one("import { sin, cos } from math") {
+            Stmt::Import { module, names } => {
+                assert_eq!(module, "math");
+                assert_eq!(names, vec!["sin", "cos"]);
+            }
+            other => panic!("expected Import, got {:?}", other),
+        }
+    }
+
+    // ---- Expressions ----
+
+    #[test]
+    fn binary_op_precedence() {
+        // 1 + 2 * 3 should parse as 1 + (2 * 3)
+        match parse_one("const x = 1 + 2 * 3") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::BinaryOp { op, right, .. } => {
+                        assert_eq!(*op, BinOp::Add);
+                        // right side should be 2 * 3
+                        match &right.node {
+                            Expr::BinaryOp { op, .. } => assert_eq!(*op, BinOp::Mul),
+                            other => panic!("expected BinaryOp, got {:?}", other),
+                        }
+                    }
+                    other => panic!("expected BinaryOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unary_negation() {
+        match parse_one("const x = -5") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::UnaryOp { op, .. } => assert_eq!(*op, UnaryOp::Neg),
+                    other => panic!("expected UnaryOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn logical_not() {
+        match parse_one("const x = !true") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::UnaryOp { op, .. } => assert_eq!(*op, UnaryOp::Not),
+                    other => panic!("expected UnaryOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bitwise_not() {
+        match parse_one("const x = ~0xFF") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::UnaryOp { op, .. } => assert_eq!(*op, UnaryOp::BitNot),
+                    other => panic!("expected UnaryOp, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn function_call_expr() {
+        match parse_one("foo(1, 2, 3)") {
+            Stmt::ExprStmt(expr) => {
+                match &expr.node {
+                    Expr::Call { name, args, .. } => {
+                        assert_eq!(name, "foo");
+                        assert_eq!(args.len(), 3);
+                    }
+                    other => panic!("expected Call, got {:?}", other),
+                }
+            }
+            other => panic!("expected ExprStmt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn method_call_expr() {
+        match parse_one("const x = obj.method(1)") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::MethodCall { method, args, .. } => {
+                        assert_eq!(method, "method");
+                        assert_eq!(args.len(), 1);
+                    }
+                    other => panic!("expected MethodCall, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn field_access_expr() {
+        match parse_one("const x = point.x") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::FieldAccess { field, .. } => {
+                        assert_eq!(field, "x");
+                    }
+                    other => panic!("expected FieldAccess, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_expr() {
+        match parse_one("const x = arr[0]") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::Index { .. } => {}
+                    other => panic!("expected Index, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ternary_expr() {
+        match parse_one("const x = a > b ? a : b") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::Ternary { .. } => {}
+                    other => panic!("expected Ternary, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn comparison_operators() {
+        let ops = vec![
+            ("a == b", BinOp::Eq),
+            ("a != b", BinOp::NotEq),
+            ("a < b", BinOp::Lt),
+            ("a <= b", BinOp::LtEq),
+            ("a > b", BinOp::Gt),
+            ("a >= b", BinOp::GtEq),
+        ];
+        for (src, expected_op) in ops {
+            let full = format!("const x = {}", src);
+            match parse_one(&full) {
+                Stmt::ConstDecl { value, .. } => match &value.node {
+                    Expr::BinaryOp { op, .. } => assert_eq!(*op, expected_op, "for: {}", src),
+                    other => panic!("expected BinaryOp for '{}', got {:?}", src, other),
+                },
+                other => panic!("expected ConstDecl for '{}', got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn logical_operators() {
+        let ops = vec![
+            ("a && b", BinOp::And),
+            ("a || b", BinOp::Or),
+        ];
+        for (src, expected_op) in ops {
+            let full = format!("const x = {}", src);
+            match parse_one(&full) {
+                Stmt::ConstDecl { value, .. } => match &value.node {
+                    Expr::BinaryOp { op, .. } => assert_eq!(*op, expected_op, "for: {}", src),
+                    other => panic!("expected BinaryOp for '{}', got {:?}", src, other),
+                },
+                other => panic!("expected ConstDecl for '{}', got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn bitwise_operators() {
+        let ops = vec![
+            ("a & b", BinOp::BitAnd),
+            ("a | b", BinOp::BitOr),
+            ("a ^ b", BinOp::BitXor),
+            ("a << b", BinOp::Shl),
+            ("a >> b", BinOp::Shr),
+        ];
+        for (src, expected_op) in ops {
+            let full = format!("const x = {}", src);
+            match parse_one(&full) {
+                Stmt::ConstDecl { value, .. } => match &value.node {
+                    Expr::BinaryOp { op, .. } => assert_eq!(*op, expected_op, "for: {}", src),
+                    other => panic!("expected BinaryOp for '{}', got {:?}", src, other),
+                },
+                other => panic!("expected ConstDecl for '{}', got {:?}", src, other),
+            }
+        }
+    }
+
+    #[test]
+    fn power_operator() {
+        match parse_one("const x = 2 ** 10") {
+            Stmt::ConstDecl { value, .. } => match &value.node {
+                Expr::BinaryOp { op, .. } => assert_eq!(*op, BinOp::Pow),
+                other => panic!("expected BinaryOp, got {:?}", other),
+            },
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    // ---- Tuple destructuring ----
+
+    #[test]
+    fn tuple_destructure_const() {
+        match parse_one("const (a, b) = pair") {
+            Stmt::TupleDestructure { names, is_const, .. } => {
+                assert_eq!(names, vec!["a", "b"]);
+                assert!(is_const);
+            }
+            other => panic!("expected TupleDestructure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_destructure_var() {
+        match parse_one("var (x, y, z) = triple") {
+            Stmt::TupleDestructure { names, is_const, .. } => {
+                assert_eq!(names, vec!["x", "y", "z"]);
+                assert!(!is_const);
+            }
+            other => panic!("expected TupleDestructure, got {:?}", other),
+        }
+    }
+
+    // ---- Match statement ----
+
+    #[test]
+    fn match_statement() {
+        let src = "match color { Color.Red => { x = 1 }, Color.Blue => { x = 2 } }";
+        match parse_one(src) {
+            Stmt::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+            }
+            other => panic!("expected Match, got {:?}", other),
+        }
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn empty_block() {
+        match parse_one("fn nothing() { }") {
+            Stmt::FnDef(fndef) => {
+                assert!(fndef.body.stmts.is_empty());
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn nested_if() {
+        // Should parse without error
+        let _ = parse_ok("if a { if b { x = 1 } }");
+    }
+
+    #[test]
+    fn chained_method_calls() {
+        // obj.a().b().c() — should parse as nested method calls
+        match parse_one("const x = obj.a().b().c()") {
+            Stmt::ConstDecl { value, .. } => {
+                match &value.node {
+                    Expr::MethodCall { method, .. } => assert_eq!(method, "c"),
+                    other => panic!("expected MethodCall, got {:?}", other),
+                }
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multiple_statements() {
+        let stmts = parse_ok("const a = 1\nconst b = 2\nconst c = 3");
+        assert_eq!(stmts.len(), 3);
+    }
+
+    // ---- Error cases ----
+
+    #[test]
+    fn error_missing_equals_in_const() {
+        parse_err("const x 5", "expected");
+    }
+
+    #[test]
+    fn error_pub_before_invalid() {
+        parse_err("pub break", "pub");
+    }
+
+    #[test]
+    fn error_missing_brace() {
+        parse_err("if x > 0 { return 1", "expected");
+    }
+
+    // ---- All PDC types parse correctly ----
+
+    #[test]
+    fn all_numeric_types() {
+        let types = vec![
+            ("f32", PdcType::F32),
+            ("f64", PdcType::F64),
+            ("i8", PdcType::I8),
+            ("i16", PdcType::I16),
+            ("i32", PdcType::I32),
+            ("i64", PdcType::I64),
+            ("u8", PdcType::U8),
+            ("u16", PdcType::U16),
+            ("u32", PdcType::U32),
+            ("u64", PdcType::U64),
+            ("bool", PdcType::Bool),
+        ];
+        for (name, expected_ty) in types {
+            let src = format!("const x: {} = 0", name);
+            match parse_one(&src) {
+                Stmt::ConstDecl { ty, .. } => {
+                    assert_eq!(ty, Some(expected_ty), "for type: {}", name);
+                }
+                other => panic!("expected ConstDecl for type {}, got {:?}", name, other),
+            }
+        }
+    }
+
+    #[test]
+    fn string_type() {
+        match parse_one("const s: string = \"hello\"") {
+            Stmt::ConstDecl { ty, .. } => {
+                assert_eq!(ty, Some(PdcType::Str));
+            }
+            other => panic!("expected ConstDecl, got {:?}", other),
+        }
+    }
+
+    // ---- Array shorthand syntax ----
+
+    #[test]
+    fn array_shorthand_type() {
+        // [f64] should parse as Array<f64>
+        match parse_one("fn foo(points: [f64]) { }") {
+            Stmt::FnDef(fndef) => {
+                assert_eq!(fndef.params.len(), 1);
+                assert_eq!(fndef.params[0].ty, PdcType::Array(Box::new(PdcType::F64)));
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_shorthand_nested() {
+        // [[i32]] should parse as Array<Array<i32>>
+        match parse_one("fn foo(matrix: [[i32]]) { }") {
+            Stmt::FnDef(fndef) => {
+                assert_eq!(fndef.params[0].ty,
+                    PdcType::Array(Box::new(PdcType::Array(Box::new(PdcType::I32)))));
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn array_verbose_and_shorthand_equivalent() {
+        // Array<f64> and [f64] should produce the same type
+        let verbose = parse_one("fn foo(a: Array<f64>) { }");
+        let shorthand = parse_one("fn bar(a: [f64]) { }");
+        match (verbose, shorthand) {
+            (Stmt::FnDef(v), Stmt::FnDef(s)) => {
+                assert_eq!(v.params[0].ty, s.params[0].ty);
+            }
+            _ => panic!("expected FnDef"),
+        }
     }
 }

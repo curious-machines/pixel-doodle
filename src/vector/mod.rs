@@ -516,3 +516,338 @@ fn bin_tiles(
         tile_size,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: call bin_tiles_pub with the given segments and default single-path setup.
+    fn bin_single_path(
+        segments: &[[f64; 4]],
+        tile_size: u32,
+        width: u32,
+        height: u32,
+    ) -> VectorScene {
+        let seg_path_ids = vec![0u32; segments.len()];
+        bin_tiles_pub(
+            segments,
+            &seg_path_ids,
+            vec![0xFFFF0000],
+            vec![FILL_EVEN_ODD],
+            tile_size,
+            width,
+            height,
+        )
+    }
+
+    /// Helper: get the segment indices assigned to a specific tile.
+    fn tile_segment_indices(scene: &VectorScene, tile_index: usize) -> &[u32] {
+        let offset = scene.tile_offsets[tile_index] as usize;
+        let count = scene.tile_counts[tile_index] as usize;
+        &scene.tile_indices[offset..offset + count]
+    }
+
+    /// Helper: compute flat tile index from (tx, ty) given tiles_x.
+    fn tile_idx(tx: u32, ty: u32, tiles_x: u32) -> usize {
+        (ty * tiles_x + tx) as usize
+    }
+
+    // ---------------------------------------------------------------
+    // Happy path tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn single_vertical_segment_in_known_tile() {
+        // Vertical segment at x=8, from y=4 to y=12 — entirely within tile (0,0)
+        // with tile_size=16, width=32, height=32
+        let segments = vec![[8.0, 4.0, 8.0, 12.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        // 2x2 tiles
+        assert_eq!(scene.tile_offsets.len(), 4);
+        assert_eq!(scene.tile_counts.len(), 4);
+
+        // Segment should appear in tile (0,0) — and also tile (1,0) because
+        // x_min=8 < tile(1,0).left=16, so the segment is to the LEFT of tile(1,0)
+        // and can contribute crossings for pixels in that tile.
+        assert!(scene.tile_counts[tile_idx(0, 0, 2)] > 0);
+    }
+
+    #[test]
+    fn multiple_segments_different_tiles() {
+        // Segment A: in tile row 0, segment B: in tile row 1
+        // tile_size=16, width=32, height=32 → 2x2 grid
+        let segments = vec![
+            [4.0, 2.0, 4.0, 10.0],  // seg 0: tile row 0
+            [4.0, 20.0, 4.0, 28.0], // seg 1: tile row 1
+        ];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        // Tile (0,0) should have seg 0 but not seg 1
+        let t00 = tile_segment_indices(&scene, tile_idx(0, 0, 2));
+        assert!(t00.contains(&0));
+        assert!(!t00.contains(&1));
+
+        // Tile (0,1) should have seg 1 but not seg 0
+        let t01 = tile_segment_indices(&scene, tile_idx(0, 1, 2));
+        assert!(t01.contains(&1));
+        assert!(!t01.contains(&0));
+    }
+
+    #[test]
+    fn segment_spanning_multiple_tile_rows() {
+        // Segment from y=4 to y=36 spans tile rows 0, 1, and 2
+        // tile_size=16, height=48 → 3 tile rows
+        let segments = vec![[8.0, 4.0, 8.0, 36.0]];
+        let scene = bin_single_path(&segments, 16, 16, 48);
+
+        // tiles_x=1, tiles_y=3 → 3 tiles total
+        assert_eq!(scene.tile_counts.len(), 3);
+
+        // Segment should be in all 3 tile rows
+        assert!(scene.tile_counts[0] > 0, "should be in tile row 0");
+        assert!(scene.tile_counts[1] > 0, "should be in tile row 1");
+        assert!(scene.tile_counts[2] > 0, "should be in tile row 2");
+    }
+
+    #[test]
+    fn multiple_paths_colors_preserved() {
+        let segments = vec![
+            [4.0, 2.0, 4.0, 10.0],  // path 0
+            [4.0, 2.0, 4.0, 10.0],  // path 1
+        ];
+        let seg_path_ids = vec![0, 1];
+        let colors = vec![0xFFFF0000, 0xFF00FF00];
+        let fill_rules = vec![FILL_EVEN_ODD, FILL_NONZERO];
+
+        let scene = bin_tiles_pub(&segments, &seg_path_ids, colors, fill_rules, 16, 32, 32);
+
+        assert_eq!(scene.path_colors, vec![0xFFFF0000, 0xFF00FF00]);
+        assert_eq!(scene.path_fill_rules, vec![FILL_EVEN_ODD, FILL_NONZERO]);
+        assert_eq!(scene.seg_path_ids, vec![0, 1]);
+    }
+
+    // ---------------------------------------------------------------
+    // Edge case tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn empty_segments() {
+        let scene = bin_single_path(&[], 16, 32, 32);
+
+        assert_eq!(scene.segments.len(), 0);
+        assert_eq!(scene.tile_indices.len(), 0);
+        assert!(scene.tile_counts.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn horizontal_segment_filtered_out() {
+        // y0 == y1 → horizontal, should be skipped
+        let segments = vec![[0.0, 10.0, 20.0, 10.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        // Segment is stored in scene.segments (it's copied through) but not binned
+        assert_eq!(scene.segments.len(), 1);
+        assert_eq!(scene.tile_indices.len(), 0);
+        assert!(scene.tile_counts.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn segment_entirely_above_display() {
+        // Both y values negative → above the display
+        let segments = vec![[8.0, -20.0, 8.0, -5.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        assert_eq!(scene.tile_indices.len(), 0);
+        assert!(scene.tile_counts.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn segment_entirely_below_display() {
+        // Both y values past the bottom → below display (height=32)
+        let segments = vec![[8.0, 40.0, 8.0, 50.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        assert_eq!(scene.tile_indices.len(), 0);
+        assert!(scene.tile_counts.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn segment_at_tile_boundary() {
+        // Segment from y=16 to y=16.001 — sits right at tile row boundary
+        // tile_size=16: row 0 is [0,16), row 1 is [16,32)
+        // y_min=16.0, y_max=16.001 → overlaps row 1 only (y_max > 16, y_min < 32)
+        let segments = vec![[8.0, 16.0, 8.0, 16.001]];
+        let scene = bin_single_path(&segments, 16, 16, 32);
+
+        // tiles_x=1, tiles_y=2
+        assert_eq!(scene.tile_counts[0], 0, "should NOT be in tile row 0");
+        assert!(scene.tile_counts[1] > 0, "should be in tile row 1");
+    }
+
+    #[test]
+    fn tile_size_larger_than_display() {
+        // tile_size=256, display is 64x64 → single tile
+        let segments = vec![[8.0, 4.0, 8.0, 50.0]];
+        let scene = bin_single_path(&segments, 256, 64, 64);
+
+        assert_eq!(scene.tile_offsets.len(), 1);
+        assert_eq!(scene.tile_counts.len(), 1);
+        assert!(scene.tile_counts[0] > 0);
+    }
+
+    #[test]
+    fn tile_size_of_one() {
+        // tile_size=1, display 4x4 → 16 tiles
+        // Segment from (2, 1) to (2, 3) spans tile rows 1 and 2
+        let segments = vec![[2.0, 1.0, 2.0, 3.0]];
+        let scene = bin_single_path(&segments, 1, 4, 4);
+
+        let tiles_x = 4u32;
+        assert_eq!(scene.tile_offsets.len(), 16);
+
+        // Segment x_min = 2, so tx_min = 2. Tiles with tx >= 2 in rows 1 and 2 get it.
+        for ty in 0..4u32 {
+            for tx in 0..4u32 {
+                let idx = tile_idx(tx, ty, tiles_x);
+                let count = scene.tile_counts[idx];
+                let should_have = (ty == 1 || ty == 2) && tx >= 2;
+                if should_have {
+                    assert!(count > 0, "tile ({tx},{ty}) should have the segment");
+                } else {
+                    assert_eq!(count, 0, "tile ({tx},{ty}) should be empty");
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Verification tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tile_counts_match_indices() {
+        // Verify structural consistency: sum of tile_counts == tile_indices.len()
+        let segments = vec![
+            [4.0, 2.0, 4.0, 14.0],
+            [20.0, 2.0, 20.0, 14.0],
+            [4.0, 18.0, 4.0, 30.0],
+        ];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        let total_count: u32 = scene.tile_counts.iter().sum();
+        assert_eq!(total_count, scene.tile_indices.len() as u32);
+
+        // Verify offsets are consistent
+        for i in 0..scene.tile_offsets.len() {
+            let offset = scene.tile_offsets[i] as usize;
+            let count = scene.tile_counts[i] as usize;
+            assert!(offset + count <= scene.tile_indices.len());
+        }
+    }
+
+    #[test]
+    fn tile_indices_reference_valid_segments() {
+        let segments = vec![
+            [4.0, 2.0, 4.0, 14.0],
+            [20.0, 18.0, 20.0, 30.0],
+        ];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        for &idx in &scene.tile_indices {
+            assert!(
+                (idx as usize) < scene.segments.len(),
+                "tile_indices contains out-of-bounds segment index {idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn segments_converted_to_f32() {
+        let segments = vec![[1.5, 2.5, 3.5, 4.5]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        assert_eq!(scene.segments.len(), 1);
+        assert_eq!(scene.segments[0], [1.5f32, 2.5, 3.5, 4.5]);
+    }
+
+    #[test]
+    fn x_range_filtering() {
+        // Segment entirely to the right of tile (0,0) should NOT appear in tile (0,0)
+        // but SHOULD appear in tile (1,0).
+        // tile_size=16, width=32 → tiles_x=2
+        // Segment at x=20..20, y=2..14 → x_min=20, tx_min = 20/16 = 1
+        let segments = vec![[20.0, 2.0, 20.0, 14.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        let t00 = tile_segment_indices(&scene, tile_idx(0, 0, 2));
+        let t10 = tile_segment_indices(&scene, tile_idx(1, 0, 2));
+
+        assert!(t00.is_empty(), "segment right of tile (0,0) should not appear there");
+        assert!(!t10.is_empty(), "segment should appear in tile (1,0)");
+    }
+
+    #[test]
+    fn segment_to_left_appears_in_right_tiles() {
+        // Segment at x=2, y=2..14 → x_min=2, tx_min=0
+        // Should appear in BOTH tile (0,0) and tile (1,0) because segments
+        // to the left can contribute crossings.
+        let segments = vec![[2.0, 2.0, 2.0, 14.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        let t00 = tile_segment_indices(&scene, tile_idx(0, 0, 2));
+        let t10 = tile_segment_indices(&scene, tile_idx(1, 0, 2));
+
+        assert!(!t00.is_empty(), "segment should appear in tile (0,0)");
+        assert!(!t10.is_empty(), "segment should also appear in tile (1,0)");
+    }
+
+    #[test]
+    fn segment_past_right_edge_filtered() {
+        // Segment entirely past the right edge of the display (x_min >= width)
+        let segments = vec![[40.0, 2.0, 40.0, 14.0]];
+        let scene = bin_single_path(&segments, 16, 32, 32);
+
+        assert_eq!(scene.tile_indices.len(), 0);
+        assert!(scene.tile_counts.iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn tile_size_stored_in_scene() {
+        let scene = bin_single_path(&[], 24, 64, 64);
+        assert_eq!(scene.tile_size, 24);
+    }
+
+    // ---------------------------------------------------------------
+    // test_scene() integration test
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_scene_produces_valid_scene() {
+        let scene = test_scene(0.5, 16, 256, 256);
+
+        // Should have 7 paths (path IDs 0..6)
+        assert_eq!(scene.path_colors.len(), 7);
+        assert_eq!(scene.path_fill_rules.len(), 7);
+
+        // Should have some segments from flattening
+        assert!(!scene.segments.is_empty(), "test_scene should produce segments");
+        assert_eq!(scene.segments.len(), scene.seg_path_ids.len());
+
+        // Tile grid should be correct: 256/16 = 16x16 = 256 tiles
+        assert_eq!(scene.tile_offsets.len(), 256);
+        assert_eq!(scene.tile_counts.len(), 256);
+
+        // Structural consistency
+        let total_count: u32 = scene.tile_counts.iter().sum();
+        assert_eq!(total_count, scene.tile_indices.len() as u32);
+
+        // At least some tiles should have segments
+        assert!(
+            scene.tile_counts.iter().any(|&c| c > 0),
+            "at least one tile should contain segments"
+        );
+
+        assert_eq!(scene.tile_size, 16);
+    }
+}

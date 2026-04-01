@@ -1,5 +1,5 @@
 /// Byte-offset span in source code.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

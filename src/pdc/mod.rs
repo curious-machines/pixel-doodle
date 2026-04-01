@@ -354,6 +354,56 @@ fn eliminate_dead_code(program: &mut Program) {
     }
 }
 
+/// Compile a PDC source without executing. Returns the compiled program
+/// for inspection and individual function calls from test code.
+///
+/// Unlike `compile_and_run`, this skips dead code elimination so that all
+/// user-defined functions remain available for testing via `call_fn`.
+pub fn compile_only(
+    source: &str,
+    source_path: Option<&FsPath>,
+) -> Result<codegen::CompiledProgram, PdcError> {
+    let base_dir = source_path.and_then(|p| p.parent());
+    let program = load_and_parse(source, base_dir)?;
+    // No DCE — we want all functions available for testing
+    let mut checker = type_check::TypeChecker::new();
+    checker.check_program(&program)?;
+
+    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
+        ("width", ast::PdcType::F32),
+        ("height", ast::PdcType::F32),
+    ];
+    codegen::compile(
+        &program,
+        &checker.types,
+        &builtins_layout,
+        &checker.user_fns,
+        &checker.structs,
+        &checker.enums,
+        &checker.fn_aliases,
+        &checker.op_overloads,
+    )
+}
+
+/// Compile and evaluate a PDC expression, returning its value.
+///
+/// Wraps the expression in a synthetic function, compiles, and calls it.
+/// The `expected_type` must be a valid PDC type name (e.g., "f64", "i32", "bool").
+pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, PdcError> {
+    let source = format!(
+        "builtin const width: f32\nbuiltin const height: f32\n\
+         fn __eval__() -> {expected_type} {{ return {expr} }}\n"
+    );
+    let compiled = compile_only(&source, None)?;
+    let builtins = [200.0f64, 200.0f64];
+    let mut scene_builder = SceneBuilder::new();
+    let mut ctx = PdcContext {
+        builtins: builtins.as_ptr(),
+        scene: &mut scene_builder as *mut _,
+    };
+    unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
+}
+
 /// Compile and execute a PDC source file, producing a VectorScene.
 ///
 /// `source_path` is the optional filesystem path of the `.pdc` file being
@@ -612,5 +662,238 @@ mod tests {
             "#,
         );
         assert!(err.contains("must have a default value"), "got: {err}");
+    }
+
+    // ---- PDC function call tests (compile_only + call_fn + eval_expr) ----
+
+    use codegen::PdcValue;
+
+    fn pdc_header() -> &'static str {
+        "builtin const width: f32\nbuiltin const height: f32\n"
+    }
+
+    fn compile_and_call(source: &str, fn_name: &str, args: &[PdcValue]) -> PdcValue {
+        let full = format!("{}{}", pdc_header(), source);
+        let compiled = compile_only(&full, None).expect("compile_only failed");
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+        };
+        unsafe { compiled.call_fn(fn_name, &mut ctx, args) }.expect("call_fn failed")
+    }
+
+    // ---- eval_expr tests ----
+
+    #[test]
+    fn eval_expr_addition() {
+        assert_eq!(eval_expr("2.0 + 3.0", "f64").unwrap(), PdcValue::F64(5.0));
+    }
+
+    #[test]
+    fn eval_expr_subtraction() {
+        assert_eq!(eval_expr("10.0 - 4.0", "f64").unwrap(), PdcValue::F64(6.0));
+    }
+
+    #[test]
+    fn eval_expr_multiplication() {
+        assert_eq!(eval_expr("3.0 * 7.0", "f64").unwrap(), PdcValue::F64(21.0));
+    }
+
+    #[test]
+    fn eval_expr_division() {
+        assert_eq!(eval_expr("15.0 / 3.0", "f64").unwrap(), PdcValue::F64(5.0));
+    }
+
+    #[test]
+    fn eval_expr_integer_arithmetic() {
+        assert_eq!(eval_expr("10 + 20", "i32").unwrap(), PdcValue::I32(30));
+    }
+
+    #[test]
+    fn eval_expr_integer_division() {
+        assert_eq!(eval_expr("10 / 3", "i32").unwrap(), PdcValue::I32(3));
+    }
+
+    #[test]
+    fn eval_expr_integer_modulo() {
+        assert_eq!(eval_expr("10 % 3", "i32").unwrap(), PdcValue::I32(1));
+    }
+
+    #[test]
+    fn eval_expr_bool_true() {
+        assert_eq!(eval_expr("true", "bool").unwrap(), PdcValue::Bool(true));
+    }
+
+    #[test]
+    fn eval_expr_bool_false() {
+        assert_eq!(eval_expr("false", "bool").unwrap(), PdcValue::Bool(false));
+    }
+
+    #[test]
+    fn eval_expr_comparison() {
+        assert_eq!(eval_expr("5 > 3", "bool").unwrap(), PdcValue::Bool(true));
+        assert_eq!(eval_expr("2 > 3", "bool").unwrap(), PdcValue::Bool(false));
+    }
+
+    #[test]
+    fn eval_expr_float_negation() {
+        assert_eq!(eval_expr("-1.0", "f64").unwrap(), PdcValue::F64(-1.0));
+    }
+
+    #[test]
+    fn eval_expr_division_by_zero_float() {
+        let result = eval_expr("1.0 / 0.0", "f64").unwrap();
+        assert_eq!(result, PdcValue::F64(f64::INFINITY));
+    }
+
+    // ---- call_fn tests ----
+
+    #[test]
+    fn call_fn_add_f64() {
+        let result = compile_and_call(
+            "fn add(a: f64, b: f64) -> f64 { return a + b }",
+            "add", &[PdcValue::F64(2.0), PdcValue::F64(3.0)],
+        );
+        assert_eq!(result, PdcValue::F64(5.0));
+    }
+
+    #[test]
+    fn call_fn_multiply_i32() {
+        let result = compile_and_call(
+            "fn mul(a: i32, b: i32) -> i32 { return a * b }",
+            "mul", &[PdcValue::I32(6), PdcValue::I32(7)],
+        );
+        assert_eq!(result, PdcValue::I32(42));
+    }
+
+    #[test]
+    fn call_fn_no_args() {
+        let result = compile_and_call(
+            "fn pi() -> f64 { return 3.14159 }",
+            "pi", &[],
+        );
+        assert_eq!(result, PdcValue::F64(3.14159));
+    }
+
+    #[test]
+    fn call_fn_bool_return() {
+        let result = compile_and_call(
+            "fn is_positive(x: f64) -> bool { return x > 0.0 }",
+            "is_positive", &[PdcValue::F64(5.0)],
+        );
+        assert_eq!(result, PdcValue::Bool(true));
+
+        let result2 = compile_and_call(
+            "fn is_positive(x: f64) -> bool { return x > 0.0 }",
+            "is_positive", &[PdcValue::F64(-1.0)],
+        );
+        assert_eq!(result2, PdcValue::Bool(false));
+    }
+
+    #[test]
+    fn call_fn_conditional_logic() {
+        let result = compile_and_call(
+            r#"fn abs_val(x: f64) -> f64 {
+                if x < 0.0 { return -x }
+                return x
+            }"#,
+            "abs_val", &[PdcValue::F64(-42.5)],
+        );
+        assert_eq!(result, PdcValue::F64(42.5));
+    }
+
+    #[test]
+    fn call_fn_recursive() {
+        let result = compile_and_call(
+            r#"fn factorial(n: i32) -> i32 {
+                if n <= 1 { return 1 }
+                return n * factorial(n - 1)
+            }"#,
+            "factorial", &[PdcValue::I32(5)],
+        );
+        assert_eq!(result, PdcValue::I32(120));
+    }
+
+    #[test]
+    fn call_fn_three_args() {
+        let result = compile_and_call(
+            "fn clamp(x: f64, lo: f64, hi: f64) -> f64 { if x < lo { return lo } if x > hi { return hi } return x }",
+            "clamp", &[PdcValue::F64(15.0), PdcValue::F64(0.0), PdcValue::F64(10.0)],
+        );
+        assert_eq!(result, PdcValue::F64(10.0));
+    }
+
+    #[test]
+    fn call_fn_loop_with_accumulator() {
+        let result = compile_and_call(
+            r#"fn sum_to(n: i32) -> i32 {
+                var total: i32 = 0
+                for i in 1..=n {
+                    total = total + i
+                }
+                return total
+            }"#,
+            "sum_to", &[PdcValue::I32(10)],
+        );
+        assert_eq!(result, PdcValue::I32(55));
+    }
+
+    // ---- Error cases ----
+
+    #[test]
+    fn call_fn_unknown_name() {
+        let full = format!("{}fn dummy() -> i32 {{ return 0 }}", pdc_header());
+        let compiled = compile_only(&full, None).unwrap();
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+        };
+        let err = unsafe { compiled.call_fn("nonexistent", &mut ctx, &[]) };
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("no compiled function"));
+    }
+
+    #[test]
+    fn call_fn_wrong_arg_count() {
+        let full = format!("{}fn add(a: f64, b: f64) -> f64 {{ return a + b }}", pdc_header());
+        let compiled = compile_only(&full, None).unwrap();
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+        };
+        let err = unsafe { compiled.call_fn("add", &mut ctx, &[PdcValue::F64(1.0)]) };
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("expects 2 args"));
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    fn eval_expr_large_integer() {
+        assert_eq!(eval_expr("2147483647", "i32").unwrap(), PdcValue::I32(i32::MAX));
+    }
+
+    #[test]
+    fn call_fn_zero_return() {
+        let result = compile_and_call(
+            "fn zero() -> f64 { return 0.0 }",
+            "zero", &[],
+        );
+        assert_eq!(result, PdcValue::F64(0.0));
+    }
+
+    #[test]
+    fn call_fn_negative_return() {
+        let result = compile_and_call(
+            "fn neg() -> i32 { return -1 }",
+            "neg", &[],
+        );
+        assert_eq!(result, PdcValue::I32(-1));
     }
 }

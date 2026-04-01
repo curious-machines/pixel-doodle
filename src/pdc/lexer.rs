@@ -439,3 +439,391 @@ impl<'a> Lexer<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: lex source and return just the TokenKinds (excluding Eof).
+    fn kinds(source: &str) -> Vec<TokenKind> {
+        let tokens = lex(source).expect("lex failed");
+        tokens.into_iter().map(|t| t.kind).filter(|k| *k != TokenKind::Eof).collect()
+    }
+
+    /// Helper: lex source and expect a single non-Eof token, returning its kind.
+    fn single(source: &str) -> TokenKind {
+        let k = kinds(source);
+        assert_eq!(k.len(), 1, "expected 1 token, got {}: {:?}", k.len(), k);
+        k.into_iter().next().unwrap()
+    }
+
+    /// Helper: lex source and expect an error containing the given substring.
+    fn lex_err(source: &str, expected_substr: &str) {
+        match lex(source) {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains(expected_substr),
+                    "error '{}' does not contain '{}'", msg, expected_substr);
+            }
+            Ok(tokens) => panic!("expected error containing '{}', got {:?}", expected_substr, tokens),
+        }
+    }
+
+    // ---- Integer literals ----
+
+    #[test]
+    fn integer_zero() {
+        assert_eq!(single("0"), TokenKind::IntLit(0));
+    }
+
+    #[test]
+    fn integer_positive() {
+        assert_eq!(single("42"), TokenKind::IntLit(42));
+    }
+
+    #[test]
+    fn integer_large() {
+        assert_eq!(single("2147483647"), TokenKind::IntLit(2147483647));
+    }
+
+    #[test]
+    fn hex_literal() {
+        assert_eq!(single("0xFF"), TokenKind::IntLit(0xFF));
+    }
+
+    #[test]
+    fn hex_uppercase() {
+        assert_eq!(single("0XAB"), TokenKind::IntLit(0xAB));
+    }
+
+    #[test]
+    fn hex_large() {
+        assert_eq!(single("0xDEADBEEF"), TokenKind::IntLit(0xDEADBEEFu64 as i64));
+    }
+
+    #[test]
+    fn hex_no_digits() {
+        lex_err("0x", "expected hex digits");
+    }
+
+    #[test]
+    fn hex_no_digits_followed_by_space() {
+        lex_err("0x ", "expected hex digits");
+    }
+
+    // ---- Float literals ----
+
+    #[test]
+    fn float_simple() {
+        assert_eq!(single("3.14"), TokenKind::FloatLit(3.14));
+    }
+
+    #[test]
+    fn float_leading_zero() {
+        assert_eq!(single("0.5"), TokenKind::FloatLit(0.5));
+    }
+
+    #[test]
+    fn float_scientific() {
+        assert_eq!(single("1.0e5"), TokenKind::FloatLit(1.0e5));
+    }
+
+    #[test]
+    fn float_scientific_negative_exp() {
+        assert_eq!(single("2.5e-3"), TokenKind::FloatLit(2.5e-3));
+    }
+
+    #[test]
+    fn float_scientific_positive_exp() {
+        assert_eq!(single("1.0E+2"), TokenKind::FloatLit(1.0e+2));
+    }
+
+    #[test]
+    fn float_no_fractional_digits() {
+        // "1." followed by non-digit — should parse as 1.0
+        assert_eq!(single("1.0"), TokenKind::FloatLit(1.0));
+    }
+
+    // ---- Integer vs range disambiguation ----
+
+    #[test]
+    fn integer_before_range() {
+        // "0..10" should lex as IntLit(0), DotDot, IntLit(10)
+        let k = kinds("0..10");
+        assert_eq!(k, vec![TokenKind::IntLit(0), TokenKind::DotDot, TokenKind::IntLit(10)]);
+    }
+
+    // ---- String literals ----
+
+    #[test]
+    fn string_simple() {
+        assert_eq!(single("\"hello\""), TokenKind::StringLit("hello".to_string()));
+    }
+
+    #[test]
+    fn string_empty() {
+        assert_eq!(single("\"\""), TokenKind::StringLit(String::new()));
+    }
+
+    #[test]
+    fn string_escapes() {
+        assert_eq!(single("\"\\n\\t\\r\\\\\\\"\\0\""),
+            TokenKind::StringLit("\n\t\r\\\"\0".to_string()));
+    }
+
+    #[test]
+    fn string_unterminated() {
+        lex_err("\"hello", "unterminated string");
+    }
+
+    #[test]
+    fn string_unknown_escape() {
+        lex_err("\"\\q\"", "unknown escape");
+    }
+
+    #[test]
+    fn string_unterminated_after_escape() {
+        lex_err("\"\\", "unterminated string");
+    }
+
+    // ---- Boolean literals ----
+
+    #[test]
+    fn bool_true() {
+        assert_eq!(single("true"), TokenKind::BoolLit(true));
+    }
+
+    #[test]
+    fn bool_false() {
+        assert_eq!(single("false"), TokenKind::BoolLit(false));
+    }
+
+    // ---- Identifiers ----
+
+    #[test]
+    fn ident_simple() {
+        assert_eq!(single("foo"), TokenKind::Ident("foo".to_string()));
+    }
+
+    #[test]
+    fn ident_with_underscore() {
+        assert_eq!(single("_bar_42"), TokenKind::Ident("_bar_42".to_string()));
+    }
+
+    #[test]
+    fn ident_starting_with_underscore() {
+        assert_eq!(single("_"), TokenKind::Ident("_".to_string()));
+    }
+
+    // ---- Keywords ----
+
+    #[test]
+    fn keywords() {
+        let cases = vec![
+            ("const", TokenKind::Const),
+            ("var", TokenKind::Var),
+            ("builtin", TokenKind::Builtin),
+            ("fn", TokenKind::Fn),
+            ("return", TokenKind::Return),
+            ("if", TokenKind::If),
+            ("else", TokenKind::Else),
+            ("elsif", TokenKind::Elsif),
+            ("for", TokenKind::For),
+            ("in", TokenKind::In),
+            ("while", TokenKind::While),
+            ("loop", TokenKind::Loop),
+            ("break", TokenKind::Break),
+            ("continue", TokenKind::Continue),
+            ("match", TokenKind::Match),
+            ("import", TokenKind::Import),
+            ("from", TokenKind::From),
+            ("struct", TokenKind::Struct),
+            ("enum", TokenKind::Enum),
+            ("type", TokenKind::Type),
+            ("pub", TokenKind::Pub),
+            ("operator", TokenKind::Operator),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(single(src), expected, "keyword: {}", src);
+        }
+    }
+
+    // ---- Operators ----
+
+    #[test]
+    fn single_char_operators() {
+        let cases = vec![
+            ("+", TokenKind::Plus),
+            ("-", TokenKind::Minus),
+            ("*", TokenKind::Star),
+            ("/", TokenKind::Slash),
+            ("%", TokenKind::Percent),
+            ("=", TokenKind::Eq),
+            ("!", TokenKind::Bang),
+            ("<", TokenKind::Lt),
+            (">", TokenKind::Gt),
+            ("&", TokenKind::Amp),
+            ("|", TokenKind::Pipe),
+            ("^", TokenKind::Caret),
+            ("~", TokenKind::Tilde),
+            ("?", TokenKind::Question),
+            (".", TokenKind::Dot),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(single(src), expected, "operator: {}", src);
+        }
+    }
+
+    #[test]
+    fn multi_char_operators() {
+        let cases = vec![
+            ("+=", TokenKind::PlusEq),
+            ("-=", TokenKind::MinusEq),
+            ("*=", TokenKind::StarEq),
+            ("**", TokenKind::StarStar),
+            ("**=", TokenKind::StarStarEq),
+            ("/=", TokenKind::SlashEq),
+            ("%=", TokenKind::PercentEq),
+            ("==", TokenKind::EqEq),
+            ("!=", TokenKind::BangEq),
+            ("<=", TokenKind::LtEq),
+            (">=", TokenKind::GtEq),
+            ("<<", TokenKind::LtLt),
+            (">>", TokenKind::GtGt),
+            ("<<=", TokenKind::LtLtEq),
+            (">>=", TokenKind::GtGtEq),
+            ("&&", TokenKind::AmpAmp),
+            ("||", TokenKind::PipePipe),
+            ("&=", TokenKind::AmpEq),
+            ("|=", TokenKind::PipeEq),
+            ("^=", TokenKind::CaretEq),
+            ("->", TokenKind::Arrow),
+            ("=>", TokenKind::FatArrow),
+            ("..", TokenKind::DotDot),
+            ("..=", TokenKind::DotDotEq),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(single(src), expected, "operator: {}", src);
+        }
+    }
+
+    // ---- Delimiters ----
+
+    #[test]
+    fn delimiters() {
+        let cases = vec![
+            ("(", TokenKind::LParen),
+            (")", TokenKind::RParen),
+            ("{", TokenKind::LBrace),
+            ("}", TokenKind::RBrace),
+            ("[", TokenKind::LBracket),
+            ("]", TokenKind::RBracket),
+            (",", TokenKind::Comma),
+            (":", TokenKind::Colon),
+        ];
+        for (src, expected) in cases {
+            assert_eq!(single(src), expected, "delimiter: {}", src);
+        }
+    }
+
+    // ---- Comments ----
+
+    #[test]
+    fn line_comment_skipped() {
+        assert_eq!(kinds("42 // this is a comment"), vec![TokenKind::IntLit(42)]);
+    }
+
+    #[test]
+    fn block_comment_skipped() {
+        assert_eq!(kinds("42 /* block */ 7"), vec![TokenKind::IntLit(42), TokenKind::IntLit(7)]);
+    }
+
+    #[test]
+    fn nested_block_comment() {
+        assert_eq!(kinds("1 /* outer /* inner */ still comment */ 2"),
+            vec![TokenKind::IntLit(1), TokenKind::IntLit(2)]);
+    }
+
+    #[test]
+    fn comment_only_source() {
+        assert_eq!(kinds("// just a comment"), vec![]);
+    }
+
+    #[test]
+    fn block_comment_only() {
+        assert_eq!(kinds("/* nothing */"), vec![]);
+    }
+
+    // ---- Whitespace ----
+
+    #[test]
+    fn empty_source() {
+        assert_eq!(kinds(""), vec![]);
+    }
+
+    #[test]
+    fn whitespace_only() {
+        assert_eq!(kinds("   \t\n\r  "), vec![]);
+    }
+
+    // ---- Multi-token sequences ----
+
+    #[test]
+    fn adjacent_tokens_no_whitespace() {
+        assert_eq!(kinds("123abc"), vec![TokenKind::IntLit(123), TokenKind::Ident("abc".to_string())]);
+    }
+
+    #[test]
+    fn function_declaration() {
+        let k = kinds("fn add(a: f64, b: f64) -> f64");
+        assert_eq!(k, vec![
+            TokenKind::Fn,
+            TokenKind::Ident("add".to_string()),
+            TokenKind::LParen,
+            TokenKind::Ident("a".to_string()),
+            TokenKind::Colon,
+            TokenKind::Ident("f64".to_string()),
+            TokenKind::Comma,
+            TokenKind::Ident("b".to_string()),
+            TokenKind::Colon,
+            TokenKind::Ident("f64".to_string()),
+            TokenKind::RParen,
+            TokenKind::Arrow,
+            TokenKind::Ident("f64".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn expression_tokens() {
+        let k = kinds("x + 3.0 * y");
+        assert_eq!(k, vec![
+            TokenKind::Ident("x".to_string()),
+            TokenKind::Plus,
+            TokenKind::FloatLit(3.0),
+            TokenKind::Star,
+            TokenKind::Ident("y".to_string()),
+        ]);
+    }
+
+    // ---- Error cases ----
+
+    #[test]
+    fn unexpected_character() {
+        lex_err("@", "unexpected character");
+    }
+
+    #[test]
+    fn unexpected_character_backtick() {
+        lex_err("`", "unexpected character");
+    }
+
+    // ---- Span tracking ----
+
+    #[test]
+    fn span_positions() {
+        let tokens = lex("ab 12").unwrap();
+        // "ab" at 0..2, "12" at 3..5
+        assert_eq!(tokens[0].span, Span::new(0, 2));
+        assert_eq!(tokens[1].span, Span::new(3, 5));
+    }
+}
