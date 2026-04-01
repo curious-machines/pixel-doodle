@@ -16,14 +16,33 @@ pub enum DrawCommand {
     Stroke { path_handle: u32, width: f32, color: u32 },
 }
 
+/// Runtime array with contiguous byte storage.
+pub struct ArrayData {
+    pub bytes: Vec<u8>,
+    pub element_size: usize,
+}
+
+impl ArrayData {
+    fn new(element_size: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            element_size,
+        }
+    }
+
+    fn len(&self) -> usize {
+        if self.element_size == 0 { 0 } else { self.bytes.len() / self.element_size }
+    }
+}
+
 /// Accumulates paths, draw commands, and arrays during PDC execution.
 pub struct SceneBuilder {
     /// Curves per path handle.
     pub paths: Vec<PathData>,
     /// Draw commands in submission order.
     pub draws: Vec<DrawCommand>,
-    /// Runtime arrays (handle-based). Each element is stored as 8 raw bytes.
-    pub arrays: Vec<Vec<u64>>,
+    /// Runtime arrays (handle-based). Contiguous byte storage with known element size.
+    pub arrays: Vec<ArrayData>,
 }
 
 pub struct PathData {
@@ -207,22 +226,17 @@ pub extern "C" fn pdc_fmod(a: f64, b: f64) -> f64 { a % b }
 
 // ── Array runtime functions ──
 
-/// All array elements are stored as u64 (8 bytes). The JIT code is responsible
-/// for bitcasting to/from the actual element type. This supports any type
-/// that fits in 8 bytes: f64, f32 (zero-extended), all integer types, bools,
-/// and pointers (handles, struct/tuple/array pointers).
+// ── Array runtime functions ──
+// Size-specific functions: elements stored at their natural size.
+// The byte buffer is contiguous and GPU-uploadable.
+
+// Array creation — element_size passed from codegen
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_new(ctx: *mut PdcContext) -> u32 {
+pub extern "C" fn pdc_array_new(ctx: *mut PdcContext, element_size: u32) -> u32 {
     let scene = unsafe { &mut *(*ctx).scene };
     let handle = scene.arrays.len() as u32;
-    scene.arrays.push(Vec::new());
+    scene.arrays.push(ArrayData::new(element_size as usize));
     handle
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_push(ctx: *mut PdcContext, handle: u32, value: u64) {
-    let scene = unsafe { &mut *(*ctx).scene };
-    scene.arrays[handle as usize].push(value);
 }
 
 #[unsafe(no_mangle)]
@@ -231,23 +245,105 @@ pub extern "C" fn pdc_array_len(ctx: *mut PdcContext, handle: u32) -> i32 {
     scene.arrays[handle as usize].len() as i32
 }
 
+// Push/get/set by element size — JIT picks the right one.
+
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_get(ctx: *mut PdcContext, handle: u32, index: i32) -> u64 {
+pub extern "C" fn pdc_array_push_1(ctx: *mut PdcContext, handle: u32, value: u8) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_push_2(ctx: *mut PdcContext, handle: u32, value: u16) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_push_4(ctx: *mut PdcContext, handle: u32, value: u32) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_push_8(ctx: *mut PdcContext, handle: u32, value: u64) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_get_1(ctx: *mut PdcContext, handle: u32, index: i32) -> u8 {
     let scene = unsafe { &mut *(*ctx).scene };
     let arr = &scene.arrays[handle as usize];
-    if (index as usize) < arr.len() {
-        arr[index as usize]
-    } else {
-        0
+    let offset = index as usize * arr.element_size;
+    if offset < arr.bytes.len() { arr.bytes[offset] } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_get_2(ctx: *mut PdcContext, handle: u32, index: i32) -> u16 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset + 1 < arr.bytes.len() {
+        u16::from_le_bytes([arr.bytes[offset], arr.bytes[offset + 1]])
+    } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_get_4(ctx: *mut PdcContext, handle: u32, index: i32) -> u32 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset + 3 < arr.bytes.len() {
+        u32::from_le_bytes(arr.bytes[offset..offset + 4].try_into().unwrap())
+    } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_get_8(ctx: *mut PdcContext, handle: u32, index: i32) -> u64 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset + 7 < arr.bytes.len() {
+        u64::from_le_bytes(arr.bytes[offset..offset + 8].try_into().unwrap())
+    } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_set_1(ctx: *mut PdcContext, handle: u32, index: i32, value: u8) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &mut scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset < arr.bytes.len() { arr.bytes[offset] = value; }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_set_2(ctx: *mut PdcContext, handle: u32, index: i32, value: u16) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &mut scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset + 1 < arr.bytes.len() {
+        arr.bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn pdc_array_set(ctx: *mut PdcContext, handle: u32, index: i32, value: u64) {
+pub extern "C" fn pdc_array_set_4(ctx: *mut PdcContext, handle: u32, index: i32, value: u32) {
     let scene = unsafe { &mut *(*ctx).scene };
     let arr = &mut scene.arrays[handle as usize];
-    if (index as usize) < arr.len() {
-        arr[index as usize] = value;
+    let offset = index as usize * arr.element_size;
+    if offset + 3 < arr.bytes.len() {
+        arr.bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_set_8(ctx: *mut PdcContext, handle: u32, index: i32, value: u64) {
+    let scene = unsafe { &mut *(*ctx).scene };
+    let arr = &mut scene.arrays[handle as usize];
+    let offset = index as usize * arr.element_size;
+    if offset + 7 < arr.bytes.len() {
+        arr.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
 }
 
@@ -288,9 +384,18 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_fmod", pdc_fmod as *const u8),
         // Arrays
         ("pdc_array_new", pdc_array_new as *const u8),
-        ("pdc_array_push", pdc_array_push as *const u8),
         ("pdc_array_len", pdc_array_len as *const u8),
-        ("pdc_array_get", pdc_array_get as *const u8),
-        ("pdc_array_set", pdc_array_set as *const u8),
+        ("pdc_array_push_1", pdc_array_push_1 as *const u8),
+        ("pdc_array_push_2", pdc_array_push_2 as *const u8),
+        ("pdc_array_push_4", pdc_array_push_4 as *const u8),
+        ("pdc_array_push_8", pdc_array_push_8 as *const u8),
+        ("pdc_array_get_1", pdc_array_get_1 as *const u8),
+        ("pdc_array_get_2", pdc_array_get_2 as *const u8),
+        ("pdc_array_get_4", pdc_array_get_4 as *const u8),
+        ("pdc_array_get_8", pdc_array_get_8 as *const u8),
+        ("pdc_array_set_1", pdc_array_set_1 as *const u8),
+        ("pdc_array_set_2", pdc_array_set_2 as *const u8),
+        ("pdc_array_set_4", pdc_array_set_4 as *const u8),
+        ("pdc_array_set_8", pdc_array_set_8 as *const u8),
     ]
 }

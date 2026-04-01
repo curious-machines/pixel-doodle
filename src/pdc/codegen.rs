@@ -581,7 +581,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         Ok(())
     }
 
-    /// Emit array method call with type-aware bitcasting to/from u64.
+    /// Emit array method call with size-specific runtime functions.
     fn emit_array_method(
         &mut self,
         object: &Spanned<Expr>,
@@ -590,32 +590,41 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         elem_ty: &PdcType,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
         let handle = self.emit_expr(object)?;
+        let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+        let elem_size = elem_cl.bytes() as u32;
 
         match method {
             "push" => {
                 let val = self.emit_expr(&args[0])?;
                 let val_ty = self.node_type(args[0].id).clone();
                 let converted = self.convert_value(val, &val_ty, elem_ty);
-                let as_u64 = self.to_u64(converted, elem_ty);
-                self.emit_runtime_call("pdc_array_push", &[self.ctx_ptr, handle, as_u64])?;
-                Ok(self.builder.ins().iconst(I32, 0)) // void
+                // For f32/f64: bitcast to integer of same size for the push function
+                let store_val = self.float_to_int_if_needed(converted, elem_cl);
+                let push_name = format!("pdc_array_push_{elem_size}");
+                self.emit_runtime_call_raw(&push_name, &[self.ctx_ptr, handle, store_val], None)?;
+                Ok(self.builder.ins().iconst(I32, 0))
             }
             "len" => {
-                let result = self.emit_runtime_call("pdc_array_len", &[self.ctx_ptr, handle])?;
-                Ok(result)
+                self.emit_runtime_call_raw("pdc_array_len", &[self.ctx_ptr, handle], Some(I32))
             }
             "get" => {
                 let idx = self.emit_expr(&args[0])?;
-                let raw = self.emit_runtime_call("pdc_array_get", &[self.ctx_ptr, handle, idx])?;
-                Ok(self.from_u64(raw, elem_ty))
+                let get_name = format!("pdc_array_get_{elem_size}");
+                let int_type = match elem_size {
+                    1 => I8, 2 => I16, 4 => I32, _ => I64,
+                };
+                let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, handle, idx], Some(int_type))?;
+                // For f32/f64: bitcast back from integer
+                Ok(self.int_to_float_if_needed(raw, elem_cl))
             }
             "set" => {
                 let idx = self.emit_expr(&args[0])?;
                 let val = self.emit_expr(&args[1])?;
                 let val_ty = self.node_type(args[1].id).clone();
                 let converted = self.convert_value(val, &val_ty, elem_ty);
-                let as_u64 = self.to_u64(converted, elem_ty);
-                self.emit_runtime_call("pdc_array_set", &[self.ctx_ptr, handle, idx, as_u64])?;
+                let store_val = self.float_to_int_if_needed(converted, elem_cl);
+                let set_name = format!("pdc_array_set_{elem_size}");
+                self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr, handle, idx, store_val], None)?;
                 Ok(self.builder.ins().iconst(I32, 0))
             }
             _ => Err(PdcError::Codegen {
@@ -624,52 +633,30 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
     }
 
-    /// Bitcast a typed value to u64 for array storage.
-    fn to_u64(&mut self, val: cranelift_codegen::ir::Value, ty: &PdcType) -> cranelift_codegen::ir::Value {
-        let cl = pdc_type_to_cl(ty, self.pointer_type);
+    /// Bitcast float to integer of the same size for passing to runtime functions.
+    fn float_to_int_if_needed(&mut self, val: cranelift_codegen::ir::Value, cl: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::Value {
         match cl {
+            F32 => self.builder.ins().bitcast(I32, MemFlags::new(), val),
             F64 => self.builder.ins().bitcast(I64, MemFlags::new(), val),
-            F32 => {
-                let f64_val = self.builder.ins().fpromote(F64, val);
-                self.builder.ins().bitcast(I64, MemFlags::new(), f64_val)
-            }
-            I64 => val, // already 64-bit
-            I32 => self.builder.ins().sextend(I64, val),
-            I16 => self.builder.ins().sextend(I64, val),
-            I8 => self.builder.ins().sextend(I64, val),
-            _ => self.builder.ins().sextend(I64, val),
+            _ => val,
         }
     }
 
-    /// Bitcast u64 from array storage back to the element type.
-    fn from_u64(&mut self, val: cranelift_codegen::ir::Value, ty: &PdcType) -> cranelift_codegen::ir::Value {
-        let cl = pdc_type_to_cl(ty, self.pointer_type);
+    /// Bitcast integer back to float if the element type is float.
+    fn int_to_float_if_needed(&mut self, val: cranelift_codegen::ir::Value, cl: cranelift_codegen::ir::Type) -> cranelift_codegen::ir::Value {
         match cl {
+            F32 => self.builder.ins().bitcast(F32, MemFlags::new(), val),
             F64 => self.builder.ins().bitcast(F64, MemFlags::new(), val),
-            F32 => {
-                let f64_val = self.builder.ins().bitcast(F64, MemFlags::new(), val);
-                self.builder.ins().fdemote(F32, f64_val)
-            }
-            I64 => val,
-            I32 => self.builder.ins().ireduce(I32, val),
-            I16 => self.builder.ins().ireduce(I16, val),
-            I8 => self.builder.ins().ireduce(I8, val),
-            _ => {
-                // Pointer types (struct, tuple, array handles)
-                if self.pointer_type == I64 {
-                    val
-                } else {
-                    self.builder.ins().ireduce(self.pointer_type, val)
-                }
-            }
+            _ => val,
         }
     }
 
-    /// Helper to emit a direct runtime function call and return the first result (or a dummy).
-    fn emit_runtime_call(
+    /// Emit a direct runtime function call with explicit return type.
+    fn emit_runtime_call_raw(
         &mut self,
         runtime_name: &str,
         args: &[cranelift_codegen::ir::Value],
+        ret_type: Option<cranelift_codegen::ir::Type>,
     ) -> Result<cranelift_codegen::ir::Value, PdcError> {
         let mut sig = self.module.make_signature();
         sig.call_conv = self.call_conv;
@@ -677,13 +664,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let ty = self.builder.func.dfg.value_type(*val);
             sig.params.push(AbiParam::new(ty));
         }
-
-        // Determine return type from function name
-        let has_return = match runtime_name {
-            "pdc_array_len" => { sig.returns.push(AbiParam::new(I32)); true }
-            "pdc_array_get" => { sig.returns.push(AbiParam::new(I64)); true }
-            _ => false,
-        };
+        if let Some(rt) = ret_type {
+            sig.returns.push(AbiParam::new(rt));
+        }
 
         let callee = self.module
             .declare_function(runtime_name, Linkage::Import, &sig)
@@ -695,7 +678,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let call = self.builder.ins().call(func_ref, args);
         let results = self.builder.inst_results(call);
 
-        if has_return && !results.is_empty() {
+        if ret_type.is_some() && !results.is_empty() {
             Ok(results[0])
         } else {
             Ok(self.builder.ins().iconst(I32, 0))
@@ -1199,10 +1182,20 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             return Ok(results[0]);
         }
 
+        // Array constructor: Array<type>() — pass element_size to pdc_array_new
+        if name.starts_with("Array<") {
+            let result_ty = self.node_type(_call_id).clone();
+            let elem_size = if let PdcType::Array(ref et) = result_ty {
+                pdc_type_to_cl(et, self.pointer_type).bytes() as u32
+            } else {
+                8
+            };
+            let size_val = self.builder.ins().iconst(I32, elem_size as i64);
+            return self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32));
+        }
+
         // Runtime function call
-        let runtime_name = if name.starts_with("Array<") {
-            "pdc_array_new".to_string()
-        } else {
+        let runtime_name = {
             match name {
                 "Path" => "pdc_path".to_string(),
                 "push" => "pdc_array_push".to_string(),
@@ -1213,7 +1206,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             }
         };
 
-        let takes_ctx = name.starts_with("Array<") || matches!(
+        let takes_ctx = matches!(
             name,
             "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "push" | "len" | "get" | "set"
@@ -1260,9 +1253,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     }
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
-        if name.starts_with("Array<") {
-            return Some(I32);
-        }
         match name {
             "Path" => Some(I32),
             "len" => Some(I32),
