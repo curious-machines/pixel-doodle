@@ -62,7 +62,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:linebender.org)",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:fontforge.org)"
+      "WebFetch(domain:fontforge.org)",
+      "Bash(find /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle -type f -name *PDC* -o -name *pdc*)",
+      "Bash(find:*)",
+      "Bash(git stash:*)"
     ]
   }
 }
