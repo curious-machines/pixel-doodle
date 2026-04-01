@@ -337,42 +337,54 @@ impl Parser {
     }
 
     fn parse_match_pattern(&mut self) -> Result<MatchPattern, PdcError> {
-        // Pattern: EnumName.Variant or EnumName.Variant(a, b, c)
-        let (name, _) = self.expect_ident()?;
-        if *self.peek() == TokenKind::Dot {
-            self.advance();
-            let (variant, _) = self.expect_ident()?;
-            // Optional destructuring bindings
-            let bindings = if *self.peek() == TokenKind::LParen {
+        // Catch-all wildcard: _
+        if let TokenKind::Ident(name) = self.peek().clone() {
+            if name == "_" {
                 self.advance();
-                let mut binds = Vec::new();
-                if !self.at(&TokenKind::RParen) {
-                    loop {
-                        let (bname, _) = self.expect_ident()?;
-                        binds.push(bname);
-                        if *self.peek() == TokenKind::Comma {
-                            self.advance();
-                        } else {
-                            break;
-                        }
+                return Ok(MatchPattern::Wildcard);
+            }
+        }
+
+        // Dot-prefix shorthand: .Variant or .Variant(a, b, c)
+        // The enum_name will be filled in by the type checker from the scrutinee type.
+        let enum_name = if *self.peek() == TokenKind::Dot {
+            self.advance();
+            String::new() // empty = infer from scrutinee
+        } else {
+            // Full syntax: EnumName.Variant
+            let (name, _) = self.expect_ident()?;
+            self.expect(&TokenKind::Dot)?;
+            name
+        };
+
+        let (variant, _) = self.expect_ident()?;
+
+        // Optional destructuring bindings
+        let bindings = if *self.peek() == TokenKind::LParen {
+            self.advance();
+            let mut binds = Vec::new();
+            if !self.at(&TokenKind::RParen) {
+                loop {
+                    let (bname, _) = self.expect_ident()?;
+                    binds.push(bname);
+                    if *self.peek() == TokenKind::Comma {
+                        self.advance();
+                    } else {
+                        break;
                     }
                 }
-                self.expect(&TokenKind::RParen)?;
-                binds
-            } else {
-                Vec::new()
-            };
-            Ok(MatchPattern::EnumVariant {
-                enum_name: name,
-                variant,
-                bindings,
-            })
+            }
+            self.expect(&TokenKind::RParen)?;
+            binds
         } else {
-            Err(PdcError::Parse {
-                span: self.span(),
-                message: format!("expected match pattern (e.g., EnumName.Variant), got identifier '{name}'"),
-            })
-        }
+            Vec::new()
+        };
+
+        Ok(MatchPattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+        })
     }
 
     fn parse_enum_def(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {

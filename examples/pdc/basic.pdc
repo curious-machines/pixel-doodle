@@ -33,8 +33,9 @@ while col < 10 {
         }
 
         // Match with destructuring
+        // Match with dot-shorthand (enum type inferred from scrutinee)
         match s {
-            Shape.CircleShape(cx, cy, r) => {
+            .CircleShape(cx, cy, r) => {
                 const c = Circle(cx, cy, r)
                 if (col + row) % 2 == 0 {
                     fill(c, 0xFFFF8800)
@@ -42,7 +43,7 @@ while col < 10 {
                     fill(c, 0xFF4488FF)
                 }
             },
-            Shape.RectShape(rx, ry, rw, rh) => {
+            .RectShape(rx, ry, rw, rh) => {
                 const r = Rect(rx, ry, rw, rh)
                 if (col + row) % 2 == 0 {
                     fill(r, 0xFF44CC44)

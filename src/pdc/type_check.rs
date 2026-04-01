@@ -291,73 +291,72 @@ impl TypeChecker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.check_expr(scrutinee)?;
+
+                let enum_name = match &scr_ty {
+                    PdcType::Enum(name) => name.clone(),
+                    _ => return Err(PdcError::Type {
+                        span: scrutinee.span,
+                        message: format!("cannot match non-enum type {scr_ty}"),
+                    }),
+                };
+
+                let info = self.enums.get(&enum_name).cloned().ok_or_else(|| PdcError::Type {
+                    span: scrutinee.span,
+                    message: format!("undefined enum '{enum_name}'"),
+                })?;
+
+                let mut covered_variants: Vec<String> = Vec::new();
+                let mut has_wildcard = false;
+
                 for arm in arms {
+                    self.push_scope();
+
                     match &arm.pattern {
-                        MatchPattern::EnumVariant { enum_name, variant, bindings } => {
-                            // Verify the scrutinee is the right enum type
-                            if let PdcType::Enum(name) = &scr_ty {
-                                if name != enum_name {
-                                    return Err(PdcError::Type {
-                                        span: scrutinee.span,
-                                        message: format!("match pattern {enum_name}.{variant} doesn't match scrutinee type {name}"),
-                                    });
-                                }
-                                let info = self.enums.get(name).cloned().ok_or_else(|| PdcError::Type {
-                                    span: scrutinee.span,
-                                    message: format!("undefined enum '{name}'"),
-                                })?;
-                                let var_info = info.variants.iter().find(|v| v.name == *variant);
-                                match var_info {
-                                    None => {
-                                        return Err(PdcError::Type {
-                                            span: scrutinee.span,
-                                            message: format!("enum '{name}' has no variant '{variant}'"),
-                                        });
-                                    }
-                                    Some(vi) => {
-                                        // Define destructured bindings in arm scope
-                                        if !bindings.is_empty() {
-                                            for (bi, bname) in bindings.iter().enumerate() {
-                                                if bi < vi.field_types.len() {
-                                                    if bname != "_" {
-                                                        self.define_var(bname, vi.field_types[bi].clone());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
+                        MatchPattern::EnumVariant { enum_name: pat_enum, variant, bindings } => {
+                            // Verify enum name matches (or is empty for dot-shorthand)
+                            if !pat_enum.is_empty() && *pat_enum != enum_name {
                                 return Err(PdcError::Type {
                                     span: scrutinee.span,
-                                    message: format!("cannot match non-enum type {scr_ty}"),
+                                    message: format!("match pattern {pat_enum}.{variant} doesn't match scrutinee type {enum_name}"),
                                 });
                             }
-                        }
-                        MatchPattern::Wildcard => {}
-                    }
-                    // Use push_scope/pop_scope for arm body so bindings are scoped
-                    self.push_scope();
-                    // Re-define bindings in new scope for arm body
-                    if let MatchPattern::EnumVariant { enum_name: _, variant, bindings } = &arm.pattern {
-                        if let PdcType::Enum(name) = &scr_ty {
-                            if let Some(info) = self.enums.get(name).cloned() {
-                                if let Some(vi) = info.variants.iter().find(|v| v.name == *variant) {
-                                    for (bi, bname) in bindings.iter().enumerate() {
-                                        if bi < vi.field_types.len() {
-                                            if bname != "_" {
-                                                        self.define_var(bname, vi.field_types[bi].clone());
-                                                    }
-                                        }
-                                    }
+
+                            let vi = info.variants.iter().find(|v| v.name == *variant)
+                                .ok_or_else(|| PdcError::Type {
+                                    span: scrutinee.span,
+                                    message: format!("enum '{enum_name}' has no variant '{variant}'"),
+                                })?;
+
+                            // Define destructured bindings
+                            for (bi, bname) in bindings.iter().enumerate() {
+                                if bname != "_" && bi < vi.field_types.len() {
+                                    self.define_var(bname, vi.field_types[bi].clone());
                                 }
                             }
+
+                            covered_variants.push(variant.clone());
+                        }
+                        MatchPattern::Wildcard => {
+                            has_wildcard = true;
                         }
                     }
+
                     for s in &arm.body.stmts {
                         self.check_stmt(s)?;
                     }
                     self.pop_scope();
+                }
+
+                // Exhaustiveness check
+                if !has_wildcard {
+                    for v in &info.variants {
+                        if !covered_variants.contains(&v.name) {
+                            return Err(PdcError::Type {
+                                span: scrutinee.span,
+                                message: format!("non-exhaustive match: missing variant '{}.{}'", enum_name, v.name),
+                            });
+                        }
+                    }
                 }
             }
             Stmt::Import { .. } | Stmt::StructDef(_) | Stmt::EnumDef(_) => {

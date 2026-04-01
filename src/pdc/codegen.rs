@@ -492,13 +492,22 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let is_last = i == arms.len() - 1;
 
             match &arm.pattern {
-                MatchPattern::EnumVariant { enum_name, variant, bindings } => {
-                    let info = self.enums.get(enum_name).ok_or_else(|| PdcError::Codegen {
-                        message: format!("undefined enum '{enum_name}'"),
+                MatchPattern::EnumVariant { enum_name: pat_enum, variant, bindings } => {
+                    // Resolve enum name (empty = dot-shorthand, infer from scrutinee)
+                    let resolved_name = if pat_enum.is_empty() {
+                        match &scr_ty {
+                            PdcType::Enum(name) => name.clone(),
+                            _ => return Err(PdcError::Codegen { message: "match scrutinee is not an enum".into() }),
+                        }
+                    } else {
+                        pat_enum.clone()
+                    };
+                    let info = self.enums.get(&resolved_name).ok_or_else(|| PdcError::Codegen {
+                        message: format!("undefined enum '{resolved_name}'"),
                     })?.clone();
                     let variant_idx = info.variants.iter().position(|v| v.name == *variant)
                         .ok_or_else(|| PdcError::Codegen {
-                            message: format!("enum '{enum_name}' has no variant '{variant}'"),
+                            message: format!("enum '{resolved_name}' has no variant '{variant}'"),
                         })?;
                     let variant_val = self.builder.ins().iconst(I32, variant_idx as i64);
                     let cmp = self.builder.ins().icmp(IntCC::Equal, tag_val, variant_val);
