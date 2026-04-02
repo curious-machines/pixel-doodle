@@ -6,16 +6,21 @@
 // encounters a new path_id. No path count limit.
 //
 // Supports per-path fill rules: even-odd (0) or nonzero (1).
+//
+// Uniform layout matches GpuSimRunner's SimParams (16 bytes) followed
+// by user args. tile_size, tiles_x, num_paths are passed as user args.
 
 struct Params {
+    // SimParams (offset 0-15)
     width: u32,
     height: u32,
     stride: u32,
+    _pad: u32,
+    // User args (offset 16+)
     tile_size: u32,
     tiles_x: u32,
     num_paths: u32,
-    _pad0: u32,
-    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;

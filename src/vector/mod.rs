@@ -1,6 +1,5 @@
 pub mod flatten;
 pub mod stroke;
-pub mod tile_renderer;
 
 use flatten::{CubicBezier, Curve, Path, Point};
 use stroke::StrokeStyle;
@@ -278,105 +277,6 @@ fn circle_path(cx: f64, cy: f64, r: f64, clockwise: bool, path_id: u32) -> Path 
 
 /// Generate a stress test scene with many filled and stroked circles.
 ///
-/// Each circle gets a fill path and a stroke path, for `2 * count` total paths.
-/// Circles are placed pseudo-randomly using a deterministic hash.
-pub fn test_stress(
-    count: u32,
-    tolerance: f32,
-    tile_size: u32,
-    width: u32,
-    height: u32,
-) -> VectorScene {
-    use rayon::prelude::*;
-
-    let stroke_style = StrokeStyle {
-        width: 2.0,
-        miter_limit: 4.0,
-    };
-
-    // Generate paths in parallel: each circle produces a fill path + stroke path
-    let t_gen = std::time::Instant::now();
-    let path_data: Vec<(Path, Path, u32, u32)> = (0..count)
-        .into_par_iter()
-        .map(|i| {
-            // Deterministic pseudo-random placement
-            let hash = hash_u32(i);
-            let cx = (hash % width) as f64;
-            let cy = ((hash / 7) % height) as f64;
-            let r = 5.0 + (hash % 30) as f64;
-
-            let fill_id = i * 2;
-            let stroke_id = i * 2 + 1;
-
-            let fill = circle_path(cx, cy, r, false, fill_id);
-            let stroke_src = circle_path(cx, cy, r, false, 0); // temp id
-            let stroke = stroke_flattened(&stroke_src, tolerance, &stroke_style, stroke_id);
-
-            let fill_color = color_from_hash(hash);
-            let stroke_color = 0xFF000000; // black strokes
-
-            (fill, stroke, fill_color, stroke_color)
-        })
-        .collect();
-    let gen_ms = t_gen.elapsed().as_secs_f64() * 1000.0;
-
-    // Collect all paths and colors in order
-    let mut paths = Vec::with_capacity(count as usize * 2);
-    let mut path_colors = Vec::with_capacity(count as usize * 2);
-    let mut path_fill_rules = Vec::with_capacity(count as usize * 2);
-
-    for (fill, stroke, fill_color, stroke_color) in path_data {
-        paths.push(fill);
-        path_colors.push(fill_color);
-        path_fill_rules.push(FILL_EVEN_ODD);
-
-        paths.push(stroke);
-        path_colors.push(stroke_color);
-        path_fill_rules.push(FILL_NONZERO);
-    }
-
-    let t_flatten = std::time::Instant::now();
-    let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
-    let flatten_ms = t_flatten.elapsed().as_secs_f64() * 1000.0;
-
-    let t_bin = std::time::Instant::now();
-    let scene = bin_tiles(
-        &segments,
-        &seg_path_ids,
-        path_colors,
-        path_fill_rules,
-        tile_size,
-        width,
-        height,
-    );
-    let bin_ms = t_bin.elapsed().as_secs_f64() * 1000.0;
-
-    eprintln!(
-        "[stress] gen+stroke: {gen_ms:.1}ms, flatten: {flatten_ms:.1}ms, bin: {bin_ms:.1}ms"
-    );
-
-    scene
-}
-
-/// Simple deterministic hash for pseudo-random values.
-fn hash_u32(mut x: u32) -> u32 {
-    x = x.wrapping_mul(0x9E3779B9);
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x21F0AAAD);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x735A2D97);
-    x ^= x >> 15;
-    x
-}
-
-/// Generate a color from a hash value.
-fn color_from_hash(hash: u32) -> u32 {
-    let r = 80 + (hash % 176);
-    let g = 80 + ((hash >> 8) % 176);
-    let b = 80 + ((hash >> 16) % 176);
-    0xFF000000 | (r << 16) | (g << 8) | b
-}
-
 /// Compute tile bins for a set of segments.
 ///
 /// A segment is added to a tile if:

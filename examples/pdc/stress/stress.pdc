@@ -1,0 +1,42 @@
+// Stress test: 1000 filled+stroked circles with deterministic pseudo-random placement.
+// PDC equivalent of the vector_stress Rust example.
+
+import { Circle } from geometry
+
+builtin const width: f32
+builtin const height: f32
+
+const NUM_CIRCLES = 1000
+
+// Deterministic hash for pseudo-random values.
+fn hash(x: i32) -> i32 {
+    var h = x * 2654435769
+    h = (h ^ (h >> 16)) * 569420461
+    h = (h ^ (h >> 15)) * 1935289751
+    h = h ^ (h >> 15)
+    if h < 0 { h = -h }
+    return h
+}
+
+// Generate a color from a hash value.
+fn color_from_hash(h: i32) -> i32 {
+    const r = 80 + (h % 176)
+    const g = 80 + ((h / 256) % 176)
+    const b = 80 + ((h / 65536) % 176)
+    return 0xFF000000 | (r * 65536) | (g * 256) | b
+}
+
+const w = i32(width)
+const h = i32(height)
+
+for i in 0..NUM_CIRCLES {
+    const hv = hash(i)
+
+    const cx = f64(hv % w)
+    const cy = f64((hv / 7) % h)
+    const r = 5.0 + f64(hv % 30)
+
+    const c = Circle(cx, cy, r)
+    fill(c, color_from_hash(hv))
+    stroke(c, 2.0, 0xFF000000)
+}
