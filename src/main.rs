@@ -54,6 +54,10 @@ fn resolve_dir(dir: &str) -> ConfigSource {
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
+    // Prefer .pdc, fall back to .pdp
+    if let Some(path) = find_by_ext(dir_path, dir_name, "pdc") {
+        return ConfigSource::File(path);
+    }
     if let Some(path) = find_by_ext(dir_path, dir_name, "pdp") {
         return ConfigSource::File(path);
     }
@@ -66,15 +70,15 @@ fn resolve_dir(dir: &str) -> ConfigSource {
         .filter_map(|e| e.ok())
         .filter(|e| {
             let ext = e.path().extension().and_then(|x| x.to_str()).map(String::from);
-            matches!(ext.as_deref(), Some("pdp")) && e.path().is_file()
+            matches!(ext.as_deref(), Some("pdc") | Some("pdp")) && e.path().is_file()
         })
         .collect();
 
     if candidates.is_empty() {
-        eprintln!("No .pdp file found in '{}'", dir);
+        eprintln!("No .pdc or .pdp file found in '{}'", dir);
     } else {
         eprintln!(
-            "Multiple .pdp files in '{}', specify one:",
+            "Multiple pipeline files in '{}', specify one:",
             dir
         );
         for f in &candidates {
