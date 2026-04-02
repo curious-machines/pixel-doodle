@@ -127,7 +127,8 @@ cargo run --release -- examples/sim/smoke/smoke.pdp --set threads=8 --set tile_h
 Example `.pds` file:
 ```
 threads = 8
-backend = "gpu"
+render = "gpu"
+codegen = "cranelift"
 tile_height = 4
 ```
 
@@ -175,10 +176,11 @@ If `llvm-config-20` is not on PATH:
 LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backend
 ```
 
-To use the LLVM-based CPU backend, set it in the `.pdp` settings block:
+To use the LLVM-based CPU backend:
 ```
 settings {
-  backend = "gpu-llvm"
+  render = "cpu"
+  codegen = "llvm"
 }
 ```
-Or via CLI: `--set backend=gpu-llvm`
+Or via CLI: `--set render=cpu,codegen=llvm`

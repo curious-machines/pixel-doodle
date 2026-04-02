@@ -8,7 +8,7 @@ PDP is a declarative configuration language that describes how to run pixel-dood
 cargo run --release -- examples/basic/gradient/gradient.pdp
 cargo run --release -- examples/sim/smoke/smoke.pdp --output frame.ppm
 cargo run --release -- examples/sim/gray_scott/gray_scott.pdp --bench
-cargo run --release -- examples/sim/gray_scott/gray_scott.pdp --set backend=gpu
+cargo run --release -- examples/sim/gray_scott/gray_scott.pdp --set render=gpu
 ```
 
 Additional CLI flags:
@@ -302,7 +302,8 @@ Execution settings not visible to kernels:
 ```
 settings {
   threads = 4              # worker thread count
-  backend = "gpu"          # backend: "gpu", "gpu-cranelift", or "gpu-llvm"
+  render = "gpu"            # render mode: "gpu" or "cpu"
+  codegen = "cranelift"    # JIT backend (for cpu render): "cranelift" or "llvm"
   tile_height = 8          # rows per tile for parallel dispatch
 }
 ```
@@ -543,7 +544,8 @@ A flat key-value file (one per line, `#` comments):
 ```
 # my_machine.pds
 threads = 4
-backend = "gpu"
+render = "gpu"
+codegen = "cranelift"
 width = 1920
 height = 1080
 ```

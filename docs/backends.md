@@ -1,16 +1,19 @@
 # Backends
 
-pixel-doodle compiles WGSL kernel source into executable code at startup. The backend is selected in the `.pdp` settings block or via `--set backend=<name>`.
+pixel-doodle has two orthogonal settings that control execution:
 
-## Available Backends
+- **render**: `"gpu"` (default) — native GPU compute via wgpu; `"cpu"` — JIT-compiled CPU fallback
+- **codegen**: `"cranelift"` (default) or `"llvm"` — which JIT backend for CPU render
 
-| Backend        | Description                                    | Cargo Feature        | Compile Time | Code Quality |
-|----------------|------------------------------------------------|----------------------|--------------|--------------|
-| `gpu`          | Native GPU compute via wgpu                    | *(always available)* | Fast         | N/A (GPU)    |
-| `gpu-cranelift`| WGSL compiled to CPU via naga + Cranelift      | `cranelift-backend`  | ~1ms         | Good         |
-| `gpu-llvm`     | WGSL compiled to CPU via naga + LLVM           | `llvm-backend`       | ~8ms         | Very good    |
+## Available Configurations
 
-`gpu-cranelift` is the default CPU backend. It compiles fast and produces good code. `gpu-llvm` compiles slower but can apply more optimizations (particularly beneficial for complex kernels). `gpu` runs natively on the GPU via wgpu compute shaders.
+| render | codegen    | Description                               | Cargo Feature        | Compile Time | Code Quality |
+|--------|------------|-------------------------------------------|----------------------|--------------|--------------|
+| `gpu`  | —          | Native GPU compute via wgpu               | *(always available)* | Fast         | N/A (GPU)    |
+| `cpu`  | `cranelift`| WGSL compiled to CPU via naga + Cranelift | `cranelift-backend`  | ~1ms         | Good         |
+| `cpu`  | `llvm`     | WGSL compiled to CPU via naga + LLVM      | `llvm-backend`       | ~8ms         | Very good    |
+
+GPU is the default render mode for both PDP and PDC files. Cranelift is the default codegen backend when CPU render is selected. LLVM compiles slower but can apply more optimizations (particularly beneficial for complex kernels).
 
 ## Selecting a Backend
 
@@ -18,21 +21,23 @@ pixel-doodle compiles WGSL kernel source into executable code at startup. The ba
 
 ```
 settings {
-  backend = "gpu-cranelift"
+  render = "cpu"
+  codegen = "cranelift"
 }
 ```
 
 ### Via CLI override
 
 ```bash
-cargo run --release -- example.pdp --set backend=gpu
+cargo run --release -- example.pdp --set render=cpu,codegen=llvm
 ```
 
 ### Via .pds settings file
 
 ```
 # my_machine.pds
-backend = "gpu-llvm"
+render = "cpu"
+codegen = "llvm"
 ```
 
 ```bash
@@ -83,15 +88,15 @@ LLVM_SYS_201_PREFIX=/usr/lib/llvm-20 cargo build --release --features llvm-backe
 cargo build --release --no-default-features
 ```
 
-Without a JIT backend, `.pdp` files that use CPU backends (`gpu-cranelift`, `gpu-llvm`) will fail at compile time. The `gpu` backend (native GPU) remains available.
+Without a JIT backend, files that use `render=cpu` will fail at compile time. The `render=gpu` path (native GPU) remains available.
 
 ## Compilation Pipeline
 
 ```
 .wgsl file  →  naga frontend  →  naga IR  →  backend  →  execution
-                                     ├──→  gpu-cranelift  →  CPU machine code (Cranelift)
-                                     ├──→  gpu-llvm       →  CPU machine code (LLVM)
-                                     └──→  gpu            →  wgpu compute dispatch
+                                     ├──→  cranelift  →  CPU machine code (render=cpu)
+                                     ├──→  llvm       →  CPU machine code (render=cpu)
+                                     └──→  wgpu       →  GPU compute dispatch (render=gpu)
 ```
 
 All backends consume WGSL source via the naga shader compiler. The CPU backends lower naga IR to native machine code. The GPU backend dispatches compute shaders via wgpu.
