@@ -1873,8 +1873,9 @@ mod tests {
         let z = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
         assert_eq!(z, PdcValue::F64(1.0));
 
-        // Host updates zoom between frames
-        builtins[7] = 5.0;
+        // Host updates zoom between frames (read by JIT'd code via raw pointer)
+        #[allow(unused_assignments)]
+        { builtins[7] = 5.0; }
 
         // PDC reads the updated value
         let z = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
