@@ -35,6 +35,7 @@ enum CompiledKernelEntry {
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     Scene {
         compiled: pdc::codegen::CompiledProgram,
+        #[allow(dead_code)]
         state_layout: pdc::codegen::StateLayout,
         state_block: Box<[u8]>,
     },

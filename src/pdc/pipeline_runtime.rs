@@ -9,25 +9,30 @@ use std::path::{Path, PathBuf};
 use crate::display::Display;
 use crate::jit;
 use crate::pdc;
-use crate::pdc::codegen::{self, CompiledProgram, StateLayout, PIPELINE_BUILTINS};
+use crate::pdc::codegen::{CompiledProgram, StateLayout, PIPELINE_BUILTINS};
 use crate::pdc::runtime::{PdcContext, PipelineHost, SceneBuilder};
 
 /// Builtins array indices (must match PIPELINE_BUILTINS order).
-const B_WIDTH: usize = 0;
-const B_HEIGHT: usize = 1;
-const B_TIME: usize = 2;
-const B_MOUSE_X: usize = 3;
-const B_MOUSE_Y: usize = 4;
-const B_CENTER_X: usize = 5;
-const B_CENTER_Y: usize = 6;
-const B_ZOOM: usize = 7;
-const B_PAUSED: usize = 8;
-const B_FRAME: usize = 9;
-const B_MOUSE_DOWN: usize = 10;
-const B_SAMPLE_INDEX: usize = 11;
-const BUILTINS_COUNT: usize = 12;
+#[allow(dead_code)]
+mod builtins_idx {
+    pub const WIDTH: usize = 0;
+    pub const HEIGHT: usize = 1;
+    pub const TIME: usize = 2;
+    pub const MOUSE_X: usize = 3;
+    pub const MOUSE_Y: usize = 4;
+    pub const CENTER_X: usize = 5;
+    pub const CENTER_Y: usize = 6;
+    pub const ZOOM: usize = 7;
+    pub const PAUSED: usize = 8;
+    pub const FRAME: usize = 9;
+    pub const MOUSE_DOWN: usize = 10;
+    pub const SAMPLE_INDEX: usize = 11;
+    pub const COUNT: usize = 12;
+}
+use builtins_idx as B;
 
 /// Pipeline host that manages buffers, kernels, and display for PDC scripts.
+#[allow(dead_code)]
 struct HostState {
     width: u32,
     height: u32,
@@ -52,13 +57,14 @@ struct HostState {
     codegen: String,
 }
 
+#[allow(dead_code)]
 struct NamedBuffer {
-    #[allow(dead_code)]
     name: String,
     data: Vec<u8>,
     elem_size: usize,
 }
 
+#[allow(dead_code)]
 struct BufferBinding {
     param_name: String,
     buffer_handle: i32,
@@ -271,9 +277,10 @@ impl PipelineHost for HostState {
 /// Implements the same public interface as `pdp::runtime::Runtime`.
 pub struct PdcRuntime {
     compiled: CompiledProgram,
+    #[allow(dead_code)]
     state_layout: StateLayout,
     state_block: Box<[u8]>,
-    builtins: [f64; BUILTINS_COUNT],
+    builtins: [f64; B::COUNT],
     scene_builder: SceneBuilder,
     host: Box<dyn PipelineHost>,
 
@@ -337,10 +344,10 @@ impl PdcRuntime {
             .map(|p| p.file_stem().unwrap_or_default().to_string_lossy().to_string())
             .unwrap_or_else(|| "PDC Pipeline".to_string());
 
-        let mut builtins = [0.0f64; BUILTINS_COUNT];
-        builtins[B_WIDTH] = width as f64;
-        builtins[B_HEIGHT] = height as f64;
-        builtins[B_ZOOM] = 1.0;
+        let mut builtins = [0.0f64; B::COUNT];
+        builtins[B::WIDTH] = width as f64;
+        builtins[B::HEIGHT] = height as f64;
+        builtins[B::ZOOM] = 1.0;
 
         Ok(PdcRuntime {
             compiled,
@@ -367,11 +374,11 @@ impl PdcRuntime {
     /// Build the PdcContext for calling into JIT'd code.
     fn make_ctx(&mut self) -> PdcContext {
         // Update builtins from runtime state
-        self.builtins[B_MOUSE_X] = self.mouse_x;
-        self.builtins[B_MOUSE_Y] = self.mouse_y;
-        self.builtins[B_PAUSED] = if self.paused { 1.0 } else { 0.0 };
-        self.builtins[B_FRAME] = self.frame as f64;
-        self.builtins[B_MOUSE_DOWN] = if self.mouse_down { 1.0 } else { 0.0 };
+        self.builtins[B::MOUSE_X] = self.mouse_x;
+        self.builtins[B::MOUSE_Y] = self.mouse_y;
+        self.builtins[B::PAUSED] = if self.paused { 1.0 } else { 0.0 };
+        self.builtins[B::FRAME] = self.frame as f64;
+        self.builtins[B::MOUSE_DOWN] = if self.mouse_down { 1.0 } else { 0.0 };
 
         let host_ptr: *mut Box<dyn PipelineHost> = &mut self.host;
 
@@ -385,8 +392,8 @@ impl PdcRuntime {
 
     /// Read back mutable builtins after a PDC call.
     fn read_back_builtins(&mut self) {
-        self.paused = self.builtins[B_PAUSED] != 0.0;
-        self.frame = self.builtins[B_FRAME] as u64;
+        self.paused = self.builtins[B::PAUSED] != 0.0;
+        self.frame = self.builtins[B::FRAME] as u64;
     }
 
     // ── Public interface matching PDP Runtime ──
@@ -451,7 +458,7 @@ impl PdcRuntime {
             self.frame += 1;
         }
 
-        self.builtins[B_TIME] = time;
+        self.builtins[B::TIME] = time;
         self.host.clear_display_requested();
 
         let mut ctx = self.make_ctx();
