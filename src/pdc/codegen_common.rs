@@ -4,6 +4,75 @@ use super::ast::PdcType;
 use super::error::PdcError;
 use super::runtime;
 
+/// Describes a single module-level variable's location in the state block.
+#[derive(Debug, Clone)]
+pub struct StateVar {
+    /// Byte offset within the state block.
+    pub offset: usize,
+    /// PDC type of the variable.
+    pub ty: PdcType,
+}
+
+/// Layout of the persistent state block for module-level mutable variables.
+///
+/// Top-level `var` declarations are stored in a heap-allocated byte array
+/// that persists across function calls. Each variable is assigned an aligned
+/// byte offset based on its type.
+#[derive(Debug, Clone)]
+pub struct StateLayout {
+    /// Map from variable name to its location in the state block.
+    pub vars: HashMap<String, StateVar>,
+    /// Total size of the state block in bytes.
+    pub total_size: usize,
+}
+
+impl StateLayout {
+    /// Build a state layout from a list of (name, type) pairs.
+    /// Variables are laid out in order with natural alignment.
+    pub fn build(vars: &[(&str, PdcType)]) -> Self {
+        let mut layout = StateLayout {
+            vars: HashMap::new(),
+            total_size: 0,
+        };
+        let mut offset = 0usize;
+        for (name, ty) in vars {
+            let size = state_type_size(ty);
+            let align = size.max(1);
+            // Align offset
+            offset = (offset + align - 1) & !(align - 1);
+            layout.vars.insert(name.to_string(), StateVar {
+                offset,
+                ty: ty.clone(),
+            });
+            offset += size;
+        }
+        layout.total_size = offset;
+        layout
+    }
+
+    /// Allocate a zeroed state block matching this layout.
+    pub fn alloc(&self) -> Box<[u8]> {
+        vec![0u8; self.total_size].into_boxed_slice()
+    }
+}
+
+/// Return the byte size of a PDC type for state block storage.
+/// Compound types (structs, enums, arrays, strings, tuples, slices, path handles)
+/// are stored as pointer-sized handles.
+pub fn state_type_size(ty: &PdcType) -> usize {
+    match ty {
+        PdcType::Bool | PdcType::U8 | PdcType::I8 => 1,
+        PdcType::I16 | PdcType::U16 => 2,
+        PdcType::F32 | PdcType::I32 | PdcType::U32 => 4,
+        PdcType::F64 | PdcType::I64 | PdcType::U64 => 8,
+        // Pointer-sized handles
+        PdcType::PathHandle | PdcType::Str | PdcType::Struct(_)
+        | PdcType::Enum(_) | PdcType::Array(_) | PdcType::Tuple(_)
+        | PdcType::Slice(_) | PdcType::FnRef { .. } | PdcType::Module(_) => 8,
+        PdcType::Unknown | PdcType::Void => 0,
+    }
+}
+
 /// Compiled PDC function type.
 pub type PdcSceneFn = unsafe extern "C" fn(*mut runtime::PdcContext);
 
@@ -75,6 +144,43 @@ impl CompiledProgram {
             test_fns,
             _jit_handle: jit_handle,
         }
+    }
+
+    /// Returns true if this program defines a function with the given name.
+    pub fn has_fn(&self, name: &str) -> bool {
+        self.user_fns.contains_key(name)
+    }
+
+    /// Returns true if this program defines an `init()` lifecycle function.
+    pub fn has_init(&self) -> bool {
+        self.has_fn("init")
+    }
+
+    /// Returns true if this program defines a `frame()` lifecycle function.
+    pub fn has_frame(&self) -> bool {
+        self.has_fn("frame")
+    }
+
+    /// Call the `init()` lifecycle function if it exists.
+    ///
+    /// # Safety
+    /// The `ctx` must have a valid state block pointer if the program has state variables.
+    pub unsafe fn call_init(&self, ctx: &mut runtime::PdcContext) -> Result<(), PdcError> {
+        if self.has_init() {
+            self.call_fn("init", ctx, &[])?;
+        }
+        Ok(())
+    }
+
+    /// Call the `frame()` lifecycle function if it exists.
+    ///
+    /// # Safety
+    /// The `ctx` must have a valid state block pointer if the program has state variables.
+    pub unsafe fn call_frame(&self, ctx: &mut runtime::PdcContext) -> Result<(), PdcError> {
+        if self.has_frame() {
+            self.call_fn("frame", ctx, &[])?;
+        }
+        Ok(())
     }
 
     /// Call a user-defined function by qualified name with typed arguments.
@@ -156,6 +262,36 @@ impl CompiledProgram {
             }
         }
 
+        // Handle void return first — abi_class maps Void to 'i', which would
+        // incorrectly match integer return patterns.
+        if *ret_type == PdcType::Void {
+            match sig.as_str() {
+                "" => {
+                    let f: unsafe extern "C" fn(*mut runtime::PdcContext) = std::mem::transmute(*ptr);
+                    f(ctx_ptr);
+                    return Ok(PdcValue::Void);
+                }
+                "d" => {
+                    let f: unsafe extern "C" fn(*mut runtime::PdcContext, f64) = std::mem::transmute(*ptr);
+                    f(ctx_ptr, as_f64(&args[0]));
+                    return Ok(PdcValue::Void);
+                }
+                "i" => {
+                    let f: unsafe extern "C" fn(*mut runtime::PdcContext, i64) = std::mem::transmute(*ptr);
+                    f(ctx_ptr, as_i64(&args[0]));
+                    return Ok(PdcValue::Void);
+                }
+                _ => {
+                    return Err(PdcError::Codegen {
+                        message: format!(
+                            "unsupported call signature for '{name}': ret=Void, params={:?}",
+                            param_types
+                        ),
+                    });
+                }
+            }
+        }
+
         let ret_class = abi_class(ret_type);
 
         match (ret_class, sig.as_str()) {
@@ -229,22 +365,6 @@ impl CompiledProgram {
             ('i', "dd") => {
                 let f: unsafe extern "C" fn(*mut runtime::PdcContext, f64, f64) -> i64 = std::mem::transmute(*ptr);
                 wrap_ret_i64!(f(ctx_ptr, as_f64(&args[0]), as_f64(&args[1])), ret_type)
-            }
-            // --- Void return ---
-            (_, "") if *ret_type == PdcType::Void => {
-                let f: unsafe extern "C" fn(*mut runtime::PdcContext) = std::mem::transmute(*ptr);
-                f(ctx_ptr);
-                Ok(PdcValue::Void)
-            }
-            (_, "d") if *ret_type == PdcType::Void => {
-                let f: unsafe extern "C" fn(*mut runtime::PdcContext, f64) = std::mem::transmute(*ptr);
-                f(ctx_ptr, as_f64(&args[0]));
-                Ok(PdcValue::Void)
-            }
-            (_, "i") if *ret_type == PdcType::Void => {
-                let f: unsafe extern "C" fn(*mut runtime::PdcContext, i64) = std::mem::transmute(*ptr);
-                f(ctx_ptr, as_i64(&args[0]));
-                Ok(PdcValue::Void)
             }
             _ => Err(PdcError::Codegen {
                 message: format!(

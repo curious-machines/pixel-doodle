@@ -474,15 +474,17 @@ pub fn run_pdc_tests(
     source: &str,
     source_path: Option<&FsPath>,
 ) -> Result<Vec<runtime::PdcTestResult>, PdcError> {
-    let compiled = compile_only(source, source_path)?;
+    let (compiled, state_layout) = compile_only(source, source_path)?;
     let builtins = [200.0f64, 200.0f64];
 
     let mut results = Vec::new();
     for (test_name, test_fn) in &compiled.test_fns {
         let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
         };
         // Clear any previous failures
         runtime::take_assert_failures();
@@ -511,7 +513,7 @@ pub fn run_pdc_tests(
 pub fn compile_only(
     source: &str,
     source_path: Option<&FsPath>,
-) -> Result<codegen::CompiledProgram, PdcError> {
+) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let program = load_and_parse(source, base_dir)?;
     // No DCE — we want all functions available for testing
@@ -543,12 +545,13 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
         "builtin const width: f32\nbuiltin const height: f32\n\
          fn __eval__() -> {expected_type} {{ return {expr} }}\n"
     );
-    let compiled = compile_only(&source, None)?;
+    let (compiled, _state_layout) = compile_only(&source, None)?;
     let builtins = [200.0f64, 200.0f64];
     let mut scene_builder = SceneBuilder::new();
     let mut ctx = PdcContext {
         builtins: builtins.as_ptr(),
         scene: &mut scene_builder as *mut _,
+        state: std::ptr::null_mut(),
     };
     unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
 }
@@ -561,7 +564,7 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
 pub fn compile_for_pipeline(
     source: &str,
     source_path: Option<&FsPath>,
-) -> Result<codegen::CompiledProgram, PdcError> {
+) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let mut program = load_and_parse(source, base_dir)?;
 
@@ -593,7 +596,7 @@ pub fn compile_for_pipeline_with_codegen(
     source: &str,
     source_path: Option<&FsPath>,
     codegen_backend: &str,
-) -> Result<codegen::CompiledProgram, error::PdcError> {
+) -> Result<(codegen::CompiledProgram, codegen::StateLayout), error::PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let mut program = load_and_parse(source, base_dir)?;
 
@@ -725,14 +728,16 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
+    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
 
     // 4. Execute
     let builtins = [width as f64, height as f64];
     let mut scene_builder = SceneBuilder::new();
+    let mut state_block = state_layout.alloc();
     let mut ctx = PdcContext {
         builtins: builtins.as_ptr(),
         scene: &mut scene_builder as *mut _,
+        state: state_block.as_mut_ptr(),
     };
     unsafe {
         (compiled.fn_ptr)(&mut ctx);
@@ -909,12 +914,14 @@ mod tests {
 
     fn compile_and_call(source: &str, fn_name: &str, args: &[PdcValue]) -> PdcValue {
         let full = format!("{}{}", pdc_header(), source);
-        let compiled = compile_only(&full, None).expect("compile_only failed");
+        let (compiled, state_layout) = compile_only(&full, None).expect("compile_only failed");
         let builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
         };
         unsafe { compiled.call_fn(fn_name, &mut ctx, args) }.expect("call_fn failed")
     }
@@ -1080,12 +1087,14 @@ mod tests {
     #[test]
     fn call_fn_unknown_name() {
         let full = format!("{}fn dummy() -> i32 {{ return 0 }}", pdc_header());
-        let compiled = compile_only(&full, None).unwrap();
+        let (compiled, state_layout) = compile_only(&full, None).unwrap();
         let builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
         };
         let err = unsafe { compiled.call_fn("nonexistent", &mut ctx, &[]) };
         assert!(err.is_err());
@@ -1095,12 +1104,14 @@ mod tests {
     #[test]
     fn call_fn_wrong_arg_count() {
         let full = format!("{}fn add(a: f64, b: f64) -> f64 {{ return a + b }}", pdc_header());
-        let compiled = compile_only(&full, None).unwrap();
+        let (compiled, state_layout) = compile_only(&full, None).unwrap();
         let builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
         };
         let err = unsafe { compiled.call_fn("add", &mut ctx, &[PdcValue::F64(1.0)]) };
         assert!(err.is_err());
@@ -1347,12 +1358,14 @@ mod tests {
     }
 
     fn run_scene_pipeline(src: &str, width: u32, height: u32) -> super::VectorScene {
-        let compiled = super::compile_for_pipeline(src, None).unwrap();
+        let (compiled, state_layout) = super::compile_for_pipeline(src, None).unwrap();
         let builtins = [width as f64, height as f64];
         let mut scene_builder = super::SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
         let mut ctx = super::PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene_builder as *mut _,
+            state: state_block.as_mut_ptr(),
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         super::extract_scene(&scene_builder, 0.5, 16, width, height)
@@ -1468,5 +1481,259 @@ mod tests {
         let tiles_y = (70 + 15) / 16;  // 5
         assert_eq!(scene.tile_offsets.len(), (tiles_x * tiles_y) as usize);
         assert_eq!(scene.tile_counts.len(), (tiles_x * tiles_y) as usize);
+    }
+
+    // ---- Module-level mutable state tests ----
+
+    /// Helper: compile with state, run pdc_main to init state, return (compiled, ctx_pieces).
+    fn compile_with_state(source: &str) -> (
+        codegen::CompiledProgram,
+        codegen::StateLayout,
+        Box<[u8]>,
+    ) {
+        let full = format!("{}{}", pdc_header(), source);
+        let (compiled, state_layout) = compile_only(&full, None).expect("compile_only failed");
+        let state_block = state_layout.alloc();
+        (compiled, state_layout, state_block)
+    }
+
+    #[test]
+    fn state_var_persists_across_calls() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var x: f64 = 0.0
+            fn increment() { x = x + 1.0 }
+            fn get_x() -> f64 { return x }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        // Run pdc_main to initialize state (var x = 0.0)
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Call increment 3 times
+        for _ in 0..3 {
+            unsafe { compiled.call_fn("increment", &mut ctx, &[]).unwrap(); }
+        }
+
+        // Verify state persisted
+        let result = unsafe { compiled.call_fn("get_x", &mut ctx, &[]).unwrap() };
+        assert_eq!(result, PdcValue::F64(3.0));
+    }
+
+    #[test]
+    fn state_var_initialized_by_main() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var counter: f64 = 42.0
+            fn get_counter() -> f64 { return counter }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        // Run pdc_main to initialize state
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        let result = unsafe { compiled.call_fn("get_counter", &mut ctx, &[]).unwrap() };
+        assert_eq!(result, PdcValue::F64(42.0));
+    }
+
+    #[test]
+    fn state_var_multiple_types() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var a: f64 = 1.0
+            var b: i32 = 10
+            var c: bool = false
+            fn get_a() -> f64 { return a }
+            fn get_b() -> i32 { return b }
+            fn get_c() -> bool { return c }
+            fn set_c(val: bool) { c = val }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        assert_eq!(unsafe { compiled.call_fn("get_a", &mut ctx, &[]).unwrap() }, PdcValue::F64(1.0));
+        assert_eq!(unsafe { compiled.call_fn("get_b", &mut ctx, &[]).unwrap() }, PdcValue::I32(10));
+        assert_eq!(unsafe { compiled.call_fn("get_c", &mut ctx, &[]).unwrap() }, PdcValue::Bool(false));
+
+        unsafe { compiled.call_fn("set_c", &mut ctx, &[PdcValue::Bool(true)]).unwrap(); }
+        assert_eq!(unsafe { compiled.call_fn("get_c", &mut ctx, &[]).unwrap() }, PdcValue::Bool(true));
+    }
+
+    #[test]
+    fn state_var_init_frame_lifecycle() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var counter: f64 = 0.0
+            fn init() { counter = 10.0 }
+            fn frame() { counter = counter + 1.0 }
+            fn get_counter() -> f64 { return counter }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        // 1. pdc_main initializes state (counter = 0.0)
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // 2. init() sets counter = 10.0
+        unsafe { compiled.call_fn("init", &mut ctx, &[]).unwrap(); }
+
+        // 3. frame() x5 increments counter to 15.0
+        for _ in 0..5 {
+            unsafe { compiled.call_fn("frame", &mut ctx, &[]).unwrap(); }
+        }
+
+        let result = unsafe { compiled.call_fn("get_counter", &mut ctx, &[]).unwrap() };
+        assert_eq!(result, PdcValue::F64(15.0));
+    }
+
+    #[test]
+    fn state_layout_empty_for_no_vars() {
+        let (_compiled, layout, _state_block) = compile_with_state(r#"
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+        "#);
+        assert_eq!(layout.total_size, 0);
+        assert!(layout.vars.is_empty());
+    }
+
+    #[test]
+    fn state_layout_alignment() {
+        let (_compiled, layout, _state_block) = compile_with_state(r#"
+            var a: bool = false
+            var b: f64 = 0.0
+            var c: i32 = 0
+        "#);
+        // bool is 1 byte, f64 needs 8-byte alignment, i32 needs 4-byte alignment
+        let a = layout.vars.get("a").unwrap();
+        let b = layout.vars.get("b").unwrap();
+        let c = layout.vars.get("c").unwrap();
+        assert_eq!(a.offset, 0);
+        assert_eq!(b.offset % 8, 0); // f64 must be 8-byte aligned
+        assert_eq!(c.offset % 4, 0); // i32 must be 4-byte aligned
+    }
+
+    #[test]
+    fn state_var_coexists_with_local_vars() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var global_x: f64 = 0.0
+            fn accumulate(n: f64) -> f64 {
+                var local_sum: f64 = 0.0
+                var i: f64 = 0.0
+                while i < n {
+                    local_sum = local_sum + 1.0
+                    i = i + 1.0
+                }
+                global_x = global_x + local_sum
+                return global_x
+            }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        let r1 = unsafe { compiled.call_fn("accumulate", &mut ctx, &[PdcValue::F64(3.0)]).unwrap() };
+        assert_eq!(r1, PdcValue::F64(3.0));
+
+        let r2 = unsafe { compiled.call_fn("accumulate", &mut ctx, &[PdcValue::F64(5.0)]).unwrap() };
+        assert_eq!(r2, PdcValue::F64(8.0));
+    }
+
+    // ---- Lifecycle entry point tests (Phase 2) ----
+
+    #[test]
+    fn has_init_and_frame() {
+        let (compiled, _, _) = compile_with_state(r#"
+            fn init() {}
+            fn frame() {}
+        "#);
+        assert!(compiled.has_init());
+        assert!(compiled.has_frame());
+    }
+
+    #[test]
+    fn has_init_and_frame_absent() {
+        let (compiled, _, _) = compile_with_state(r#"
+            fn foo() {}
+        "#);
+        assert!(!compiled.has_init());
+        assert!(!compiled.has_frame());
+    }
+
+    #[test]
+    fn call_init_and_frame_lifecycle() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var counter: f64 = 0.0
+            fn init() { counter = 10.0 }
+            fn frame() { counter = counter + 1.0 }
+            fn get_counter() -> f64 { return counter }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        // 1. pdc_main initializes state
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // 2. call_init
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        // 3. call_frame x3
+        for _ in 0..3 {
+            unsafe { compiled.call_frame(&mut ctx).unwrap(); }
+        }
+
+        let result = unsafe { compiled.call_fn("get_counter", &mut ctx, &[]).unwrap() };
+        assert_eq!(result, PdcValue::F64(13.0));
+    }
+
+    #[test]
+    fn call_init_noop_when_absent() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var x: f64 = 5.0
+            fn get_x() -> f64 { return x }
+        "#);
+        let builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        // call_init is a no-op since init() doesn't exist
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        let result = unsafe { compiled.call_fn("get_x", &mut ctx, &[]).unwrap() };
+        assert_eq!(result, PdcValue::F64(5.0));
     }
 }

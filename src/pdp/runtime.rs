@@ -35,6 +35,8 @@ enum CompiledKernelEntry {
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     Scene {
         compiled: pdc::codegen::CompiledProgram,
+        state_layout: pdc::codegen::StateLayout,
+        state_block: Box<[u8]>,
     },
 }
 
@@ -361,11 +363,14 @@ impl Runtime {
             if path.extension().is_some_and(|e| e == "pdc") {
                 let src = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read PDC kernel '{}': {}", path.display(), e))?;
-                let compiled = pdc::compile_for_pipeline_with_codegen(&src, Some(&path), &codegen)
+                let (compiled, state_layout) = pdc::compile_for_pipeline_with_codegen(&src, Some(&path), &codegen)
                     .map_err(|e| format!("PDC compile '{}': {}", decl.name, e.format(&src)))?;
                 eprintln!("compiled PDC scene kernel '{}' via {}", decl.name, codegen);
+                let state_block = state_layout.alloc();
                 self.kernels.insert(decl.name.clone(), CompiledKernelEntry::Scene {
                     compiled,
+                    state_layout,
+                    state_block,
                 });
                 continue;
             }
@@ -774,10 +779,18 @@ impl Runtime {
         // scene execution needs mutable access to self.gpu_sim_runner and
         // self.variables while self.kernels is borrowed.
         #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
-        if let Some(CompiledKernelEntry::Scene { compiled, .. }) = self.kernels.get(kernel_name) {
-            let fn_ptr = compiled.fn_ptr;
-            self.execute_scene_kernel(kernel_name, fn_ptr);
-            return;
+        {
+            let scene_info = if let Some(CompiledKernelEntry::Scene { compiled, state_block, .. }) = self.kernels.get_mut(kernel_name) {
+                // Safety: state_ptr points into the boxed slice in self.kernels which
+                // won't be moved/dropped during execute_scene_kernel.
+                Some((compiled.fn_ptr, state_block.as_mut_ptr()))
+            } else {
+                None
+            };
+            if let Some((fn_ptr, state_ptr)) = scene_info {
+                self.execute_scene_kernel(kernel_name, fn_ptr, state_ptr);
+                return;
+            }
         }
 
         let entry = self.kernels.get(kernel_name);
@@ -979,6 +992,7 @@ impl Runtime {
         &mut self,
         kernel_name: &str,
         fn_ptr: pdc::codegen::PdcSceneFn,
+        state_ptr: *mut u8,
     ) {
         let w = self.width;
         let h = self.height;
@@ -989,6 +1003,7 @@ impl Runtime {
         let mut ctx = pdc::runtime::PdcContext {
             builtins: builtins.as_ptr(),
             scene: &mut scene_builder as *mut _,
+            state: state_ptr,
         };
         unsafe {
             (fn_ptr)(&mut ctx);

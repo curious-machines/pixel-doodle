@@ -40,7 +40,7 @@ pub fn compile(
     enums: &HashMap<String, EnumInfo>,
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
-) -> Result<CompiledProgram, PdcError> {
+) -> Result<(CompiledProgram, StateLayout), PdcError> {
     // Create LLVM context, module, target machine.
     let context: &'static Context = Box::leak(Box::new(Context::create()));
     let llvm_module = context.create_module("pdc_module");
@@ -81,8 +81,9 @@ pub fn compile(
 
     let ptr_type = context.ptr_type(AddressSpace::default());
 
-    // Collect top-level constants and function definitions
+    // Collect top-level constants, vars, and function definitions
     let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
+    let mut top_level_vars: Vec<(&str, PdcType)> = Vec::new();
     let mut fn_defs: Vec<(String, &FnDef)> = Vec::new();
 
     fn is_pure_literal(expr: &Expr) -> bool {
@@ -106,6 +107,11 @@ pub fn compile(
                 Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
                     top_level_consts.push(stmt);
                 }
+                Stmt::VarDecl { name, ty, value, .. } => {
+                    let expr_ty = &types[value.id as usize];
+                    let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
+                    top_level_vars.push((name.as_str(), final_ty));
+                }
                 _ => {}
             }
         }
@@ -116,9 +122,17 @@ pub fn compile(
             Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
                 top_level_consts.push(stmt);
             }
+            Stmt::VarDecl { name, ty, value, .. } => {
+                let expr_ty = &types[value.id as usize];
+                let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
+                top_level_vars.push((name.as_str(), final_ty));
+            }
             _ => {}
         }
     }
+
+    // Build state layout for all top-level vars
+    let state_layout = StateLayout::build(&top_level_vars);
 
     // Declare all user functions in the LLVM module
     let mut user_fn_llvm: HashMap<String, FunctionValue<'static>> = HashMap::new();
@@ -261,6 +275,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             sret_ptr,
             fn_return_type: fndef.return_type.clone(),
+            state_layout: &state_layout,
         };
 
         // Define parameters as allocas
@@ -318,6 +333,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             sret_ptr: None,
             fn_return_type: PdcType::Void,
+            state_layout: &state_layout,
         };
 
         // Module-level statements
@@ -389,6 +405,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             sret_ptr: None,
             fn_return_type: PdcType::Void,
+            state_layout: &state_layout,
         };
 
         for const_stmt in &top_level_consts {
@@ -466,11 +483,14 @@ pub fn compile(
         user_fn_ptrs.insert(key, (fn_code_ptr as *const u8, param_types, fndef.return_type.clone()));
     }
 
-    Ok(CompiledProgram::new(
-        fn_ptr,
-        user_fn_ptrs,
-        test_fn_ptrs,
-        Box::new(SendSyncEngine(engine)),
+    Ok((
+        CompiledProgram::new(
+            fn_ptr,
+            user_fn_ptrs,
+            test_fn_ptrs,
+            Box::new(SendSyncEngine(engine)),
+        ),
+        state_layout,
     ))
 }
 
@@ -539,6 +559,8 @@ struct LlvmCodegenCtx<'a> {
     /// Output pointer for functions that return structs/tuples (sret convention).
     sret_ptr: Option<PointerValue<'static>>,
     fn_return_type: PdcType,
+    /// State layout for module-level mutable variables.
+    state_layout: &'a StateLayout,
 }
 
 struct LlvmLoopContext {
@@ -547,6 +569,61 @@ struct LlvmLoopContext {
 }
 
 impl<'a> LlvmCodegenCtx<'a> {
+    /// Check if a variable name is a module-level state variable.
+    fn is_state_var(&self, name: &str) -> bool {
+        self.state_layout.vars.contains_key(name)
+    }
+
+    /// Load the state block pointer from PdcContext (offset 16).
+    fn load_state_ptr(&self) -> PointerValue<'static> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let state_ptr_ptr = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(),
+                self.ctx_ptr,
+                &[self.context.i32_type().const_int(16, false).into()],
+                "state_ptr_ptr",
+            ).unwrap()
+        };
+        self.builder.build_load(ptr_type, state_ptr_ptr, "state_ptr").unwrap().into_pointer_value()
+    }
+
+    /// Load a module-level state variable from the state block.
+    fn load_state_var(&self, name: &str) -> Result<BasicValueEnum<'static>, PdcError> {
+        let sv = self.state_layout.vars.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("state var '{name}' not found in layout"),
+        })?;
+        let llvm_ty = self.llvm_var_type(&sv.ty);
+        let state_ptr = self.load_state_ptr();
+        let var_ptr = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(),
+                state_ptr,
+                &[self.context.i32_type().const_int(sv.offset as u64, false).into()],
+                &format!("state_{name}_ptr"),
+            ).unwrap()
+        };
+        Ok(self.builder.build_load(llvm_ty, var_ptr, name).unwrap())
+    }
+
+    /// Store a value to a module-level state variable in the state block.
+    fn store_state_var(&self, name: &str, val: BasicValueEnum<'static>) -> Result<(), PdcError> {
+        let sv = self.state_layout.vars.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("state var '{name}' not found in layout"),
+        })?;
+        let state_ptr = self.load_state_ptr();
+        let var_ptr = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(),
+                state_ptr,
+                &[self.context.i32_type().const_int(sv.offset as u64, false).into()],
+                &format!("state_{name}_ptr"),
+            ).unwrap()
+        };
+        self.builder.build_store(var_ptr, val).unwrap();
+        Ok(())
+    }
+
     /// Returns true if `ty` is an enum with at least one data-carrying variant.
     fn is_data_enum(&self, ty: &PdcType) -> bool {
         if let PdcType::Enum(ename) = ty {
@@ -665,9 +742,18 @@ impl<'a> LlvmCodegenCtx<'a> {
                 self.define_variable(name, &declared_ty, val);
             }
             Stmt::ConstDecl { vis: _, name, ty, value } | Stmt::VarDecl { vis: _, name, ty, value } => {
+                let is_var = matches!(&stmt.node, Stmt::VarDecl { .. });
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
+
+                // State block variables: store to state block and skip local registration.
+                if is_var && self.is_state_var(name) {
+                    let converted = self.convert_value(val, &expr_ty, &final_ty);
+                    self.store_state_var(name, converted)?;
+                    return Ok(());
+                }
+
                 let is_pointer_type = match &final_ty {
                     PdcType::Struct(_) | PdcType::Tuple(_) => true,
                     PdcType::Enum(ename) => {
@@ -721,10 +807,18 @@ impl<'a> LlvmCodegenCtx<'a> {
             }
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
+                let expr_ty = self.node_type(value.id).clone();
+
+                // State block variable: store to state block
+                if let Some(sv) = self.state_layout.vars.get(name) {
+                    let converted = self.convert_value(val, &expr_ty, &sv.ty.clone());
+                    self.store_state_var(name, converted)?;
+                    return Ok(());
+                }
+
                 let (_, var_ty) = self.variables.get(name).cloned().ok_or_else(|| PdcError::Codegen {
                     message: format!("undefined variable '{name}'"),
                 })?;
-                let expr_ty = self.node_type(value.id).clone();
                 let converted = self.convert_value(val, &expr_ty, &var_ty);
                 self.store_variable(name, converted)?;
             }
@@ -1130,7 +1224,12 @@ impl<'a> LlvmCodegenCtx<'a> {
     fn emit_expr(&mut self, expr: &Spanned<Expr>) -> Result<BasicValueEnum<'static>, PdcError> {
         match &expr.node {
             Expr::Literal(lit) => self.emit_literal(lit, expr.id),
-            Expr::Variable(name) => self.load_variable(name),
+            Expr::Variable(name) => {
+                if self.is_state_var(name) {
+                    return self.load_state_var(name);
+                }
+                self.load_variable(name)
+            }
             Expr::BinaryOp { op, left, right } => {
                 let lt = self.node_type(left.id).clone();
                 let rt = self.node_type(right.id).clone();

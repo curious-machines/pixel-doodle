@@ -33,7 +33,7 @@ pub fn compile(
     enums: &HashMap<String, EnumInfo>,
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
-) -> Result<CompiledProgram, PdcError> {
+) -> Result<(CompiledProgram, StateLayout), PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_codegen::isa::lookup_by_name(
@@ -60,6 +60,8 @@ pub fn compile(
 
     // Collect top-level constants (will be emitted at the start of each function)
     let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
+    // Collect top-level var declarations for state block layout
+    let mut top_level_vars: Vec<(&str, PdcType)> = Vec::new();
     // (qualified_name, fn_def) — qualified name is "module::fn" for modules, plain "fn" for main
     let mut fn_defs: Vec<(String, &FnDef)> = Vec::new();
     let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
@@ -89,6 +91,11 @@ pub fn compile(
                 Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
                     top_level_consts.push(stmt);
                 }
+                Stmt::VarDecl { name, ty, value, .. } => {
+                    let expr_ty = &types[value.id as usize];
+                    let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
+                    top_level_vars.push((name.as_str(), final_ty));
+                }
                 _ => {}
             }
         }
@@ -101,9 +108,17 @@ pub fn compile(
             Stmt::ConstDecl { value, .. } if is_pure_literal(&value.node) => {
                 top_level_consts.push(stmt);
             }
+            Stmt::VarDecl { name, ty, value, .. } => {
+                let expr_ty = &types[value.id as usize];
+                let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
+                top_level_vars.push((name.as_str(), final_ty));
+            }
             _ => {}
         }
     }
+
+    // Build state layout for all top-level vars
+    let state_layout = StateLayout::build(&top_level_vars);
 
     // Track overload counts for mangled names
     let mut overload_counts: HashMap<String, usize> = HashMap::new();
@@ -256,6 +271,7 @@ pub fn compile(
             struct_vars: HashMap::new(),
             block_terminated: false,
             loop_stack: Vec::new(),
+            state_layout: &state_layout,
         };
 
         // Define parameters as variables
@@ -341,6 +357,7 @@ pub fn compile(
             struct_vars: HashMap::new(),
             block_terminated: false,
             loop_stack: Vec::new(),
+            state_layout: &state_layout,
         };
 
         // Emit module-level statements (const/var init) before main code
@@ -443,6 +460,7 @@ pub fn compile(
             struct_vars: HashMap::new(),
             block_terminated: false,
             loop_stack: Vec::new(),
+            state_layout: &state_layout,
         };
 
         // Emit top-level constants so they're accessible in test functions
@@ -509,11 +527,14 @@ pub fn compile(
         user_fn_ptrs.insert(key, (fn_code_ptr, param_types, fndef.return_type.clone()));
     }
 
-    Ok(CompiledProgram::new(
-        fn_ptr,
-        user_fn_ptrs,
-        test_fn_ptrs,
-        Box::new(SendSyncJitModule(jit_module)),
+    Ok((
+        CompiledProgram::new(
+            fn_ptr,
+            user_fn_ptrs,
+            test_fn_ptrs,
+            Box::new(SendSyncJitModule(jit_module)),
+        ),
+        state_layout,
     ))
 }
 
@@ -564,6 +585,9 @@ struct CodegenCtx<'a, 'b> {
     block_terminated: bool,
     /// Stack of loop contexts for break/continue targets.
     loop_stack: Vec<LoopContext>,
+    /// State layout for module-level mutable variables.
+    /// If a variable name is found here, it lives in the state block, not in SSA.
+    state_layout: &'a StateLayout,
 }
 
 /// Tracks the jump targets for break and continue within a loop.
@@ -580,6 +604,43 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let var = self.builder.declare_var(cl_type);
         self.variables.insert(name.to_string(), (var, ty.clone()));
         var
+    }
+
+    /// Check if a variable name is a module-level state variable.
+    fn is_state_var(&self, name: &str) -> bool {
+        self.state_layout.vars.contains_key(name)
+    }
+
+    /// Load the state block pointer from PdcContext (offset 16).
+    fn load_state_ptr(&mut self) -> cranelift_codegen::ir::Value {
+        self.builder.ins().load(
+            self.pointer_type,
+            MemFlags::trusted(),
+            self.ctx_ptr,
+            16i32, // PdcContext.state is at offset 16 (after builtins:8 + scene:8)
+        )
+    }
+
+    /// Load a module-level state variable from the state block.
+    fn load_state_var(&mut self, name: &str) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let sv = self.state_layout.vars.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("state var '{name}' not found in layout"),
+        })?;
+        let cl_type = pdc_type_to_cl(&sv.ty, self.pointer_type);
+        let offset = sv.offset as i32;
+        let state_ptr = self.load_state_ptr();
+        Ok(self.builder.ins().load(cl_type, MemFlags::trusted(), state_ptr, offset))
+    }
+
+    /// Store a value to a module-level state variable in the state block.
+    fn store_state_var(&mut self, name: &str, val: cranelift_codegen::ir::Value) -> Result<(), PdcError> {
+        let sv = self.state_layout.vars.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("state var '{name}' not found in layout"),
+        })?;
+        let offset = sv.offset as i32;
+        let state_ptr = self.load_state_ptr();
+        self.builder.ins().store(MemFlags::trusted(), val, state_ptr, offset);
+        Ok(())
     }
 
     fn node_type(&self, id: u32) -> &PdcType {
@@ -635,9 +696,19 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 self.builder.def_var(var, val);
             }
             Stmt::ConstDecl { vis: _, name, ty, value } | Stmt::VarDecl { vis: _, name, ty, value } => {
+                let is_var = matches!(&stmt.node, Stmt::VarDecl { .. });
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
                 let final_ty = ty.clone().unwrap_or(expr_ty.clone());
+
+                // State block variables: store to state block and skip SSA registration.
+                // Only VarDecl can be state vars (ConstDecl are always pure-literal SSA).
+                if is_var && self.is_state_var(name) {
+                    let converted = self.convert_value(val, &expr_ty, &final_ty);
+                    self.store_state_var(name, converted)?;
+                    return Ok(());
+                }
+
                 // Struct and data-variant enum values are pointers to stack slots
                 let is_pointer_type = match &final_ty {
                     PdcType::Struct(_) | PdcType::Tuple(_) => true,
@@ -689,12 +760,20 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             }
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
+                let expr_ty = self.node_type(value.id).clone();
+
+                // State block variable: store to state block
+                if let Some(sv) = self.state_layout.vars.get(name) {
+                    let converted = self.convert_value(val, &expr_ty, &sv.ty.clone());
+                    self.store_state_var(name, converted)?;
+                    return Ok(());
+                }
+
                 let (var, var_ty) = self.variables.get(name).cloned().ok_or_else(|| {
                     PdcError::Codegen {
                         message: format!("undefined variable '{name}'"),
                     }
                 })?;
-                let expr_ty = self.node_type(value.id).clone();
                 let converted = self.convert_value(val, &expr_ty, &var_ty);
                 self.builder.def_var(var, converted);
             }
@@ -1604,6 +1683,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match &expr.node {
             Expr::Literal(lit) => self.emit_literal(lit, expr.id),
             Expr::Variable(name) => {
+                // State block variable: load from state block
+                if self.is_state_var(name) {
+                    return self.load_state_var(name);
+                }
+
                 let (var, _) = self.variables.get(name).cloned().ok_or_else(|| {
                     PdcError::Codegen {
                         message: format!("undefined variable '{name}'"),

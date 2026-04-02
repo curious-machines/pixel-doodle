@@ -7,6 +7,9 @@ pub struct PdcContext {
     pub builtins: *const f64,
     /// Pointer to SceneBuilder.
     pub scene: *mut SceneBuilder,
+    /// Pointer to persistent state block for module-level mutable variables.
+    /// Null when no state block is needed (e.g., stateless scene scripts).
+    pub state: *mut u8,
 }
 
 /// Fill rule for path filling.
