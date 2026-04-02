@@ -1,0 +1,67 @@
+// Game of Life — PDC pipeline equivalent of game_of_life.pdp
+
+builtin var paused: bool
+builtin var frame: u64
+builtin const mouse_x: f64
+builtin const mouse_y: f64
+
+var iterations: f64 = 1.0
+var _buf_grid: i32 = 0
+var _buf_grid_next: i32 = 0
+var _buf_pixels: i32 = 0
+var _kern_step: i32 = 0
+var _kern_vis: i32 = 0
+var _kern_init_grid: i32 = 0
+var _kern_inject: i32 = 0
+
+fn init() {
+    _buf_grid = create_buffer("gpu_i32", 0.0)
+    _buf_grid_next = create_buffer("gpu_i32", 0.0)
+    _buf_pixels = create_buffer("gpu_u32", 0.0)
+    _kern_step = load_kernel("step", "game_of_life_step.wgsl", 1)
+    _kern_vis = load_kernel("vis", "game_of_life_vis.wgsl", 1)
+    _kern_init_grid = load_kernel("init_grid", "game_of_life_init.wgsl", 1)
+    _kern_inject = load_kernel("inject", "../../shared/inject_i32.wgsl", 1)
+    bind_buffer("grid", _buf_grid, 1)
+    run_kernel(_kern_init_grid)
+}
+
+fn frame() {
+    for _i in 0..i32(iterations) {
+        bind_buffer("grid_in", _buf_grid, 0)
+        bind_buffer("grid_out", _buf_grid_next, 1)
+        run_kernel(_kern_step)
+        swap_buffers(_buf_grid, _buf_grid_next)
+    }
+    bind_buffer("grid_in", _buf_grid, 0)
+    bind_buffer("pixels", _buf_pixels, 1)
+    run_kernel(_kern_vis)
+    display_buffer(_buf_pixels)
+}
+
+fn on_keypress_space() {
+    paused = !paused
+}
+
+fn on_keypress_period() {
+    frame = frame + 1.0
+}
+
+fn on_keypress_bracket_right() {
+    iterations = iterations + 1.0
+}
+
+fn on_keypress_bracket_left() {
+    iterations = iterations - 1.0
+}
+
+fn on_mousedown() {
+    set_kernel_arg_f64("inject_x", mouse_x)
+    set_kernel_arg_f64("inject_y", mouse_y)
+    set_kernel_arg_f64("radius", 3.0)
+    set_kernel_arg_f64("value", 1.0)
+    bind_buffer("buf_in", _buf_grid, 0)
+    bind_buffer("buf_out", _buf_grid_next, 1)
+    run_kernel(_kern_inject)
+    swap_buffers(_buf_grid, _buf_grid_next)
+}

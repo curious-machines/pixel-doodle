@@ -493,7 +493,7 @@ impl PdcRuntime {
         }
 
         // Skip if this frame was already executed (static scene, no animation/accumulation)
-        if self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
+        if self.frames_executed > 0 && self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
             return false;
         }
 
