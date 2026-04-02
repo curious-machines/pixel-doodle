@@ -46,6 +46,19 @@ pub trait PipelineHost {
     /// Load a texture from a file path. Returns a handle ID.
     fn load_texture(&mut self, name: &str, path: &str) -> i32;
 
+    // ── Scene kernels ──
+
+    /// Load and compile a scene kernel (.pdc file). Returns a handle ID.
+    fn load_scene(&mut self, name: &str, path: &str) -> i32 { let _ = (name, path); -1 }
+    /// Execute a scene kernel, extracting geometry into scene buffers.
+    fn run_scene(&mut self, handle: i32) { let _ = handle; }
+    /// Get the horizontal tile count from the last run_scene call.
+    fn scene_tiles_x(&self, handle: i32) -> f64 { let _ = handle; 0.0 }
+    /// Get the path count from the last run_scene call.
+    fn scene_num_paths(&self, handle: i32) -> f64 { let _ = handle; 0.0 }
+    /// Get a buffer handle for a named scene buffer (e.g., "segments", "path_colors").
+    fn scene_buffer(&mut self, scene_handle: i32, name: &str) -> i32 { let _ = (scene_handle, name); -1 }
+
     // ── Progressive rendering ──
 
     /// Set the maximum number of accumulation samples.
@@ -721,6 +734,33 @@ pub extern "C" fn pdc_display_buffer(ctx: *mut PdcContext, buffer_handle: i32) {
     unsafe { get_host(ctx).display_buffer(buffer_handle) }
 }
 
+pub extern "C" fn pdc_load_scene(ctx: *mut PdcContext, name_handle: i32, path_handle: i32) -> i32 {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        let path = get_string(ctx, path_handle).to_string();
+        get_host(ctx).load_scene(&name, &path)
+    }
+}
+
+pub extern "C" fn pdc_run_scene(ctx: *mut PdcContext, handle: i32) {
+    unsafe { get_host(ctx).run_scene(handle) }
+}
+
+pub extern "C" fn pdc_scene_tiles_x(ctx: *mut PdcContext, handle: i32) -> f64 {
+    unsafe { get_host(ctx).scene_tiles_x(handle) }
+}
+
+pub extern "C" fn pdc_scene_num_paths(ctx: *mut PdcContext, handle: i32) -> f64 {
+    unsafe { get_host(ctx).scene_num_paths(handle) }
+}
+
+pub extern "C" fn pdc_scene_buffer(ctx: *mut PdcContext, scene_handle: i32, name_handle: i32) -> i32 {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        get_host(ctx).scene_buffer(scene_handle, &name)
+    }
+}
+
 pub extern "C" fn pdc_request_redraw(ctx: *mut PdcContext) {
     unsafe { get_host(ctx).request_redraw() }
 }
@@ -837,6 +877,13 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_display_buffer", pdc_display_buffer as *const u8),
         ("pdc_load_texture", pdc_load_texture as *const u8),
         // Progressive rendering
+        // Scene kernels
+        ("pdc_load_scene", pdc_load_scene as *const u8),
+        ("pdc_run_scene", pdc_run_scene as *const u8),
+        ("pdc_scene_tiles_x", pdc_scene_tiles_x as *const u8),
+        ("pdc_scene_num_paths", pdc_scene_num_paths as *const u8),
+        ("pdc_scene_buffer", pdc_scene_buffer as *const u8),
+        // Frame control
         ("pdc_request_redraw", pdc_request_redraw as *const u8),
         ("pdc_set_max_samples", pdc_set_max_samples as *const u8),
         ("pdc_is_converged", pdc_is_converged as *const u8),

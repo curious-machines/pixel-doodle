@@ -1845,6 +1845,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
                 | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
                 | "display" | "display_buffer" | "load_texture"
+                | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
                 | "request_redraw"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
                 | "display_accumulated" | "reset_accumulation"
@@ -1869,12 +1870,14 @@ impl<'a> LlvmCodegenCtx<'a> {
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
             "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture"
+            | "load_scene" | "scene_buffer"
             | "is_converged" => Some(self.context.i32_type().into()),
-            "get" => Some(self.context.f64_type().into()),
+            "get" | "scene_tiles_x" | "scene_num_paths" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled" | "push" | "set"
             | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
             | "run_kernel" | "display" | "display_buffer"
+            | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
             _ => Some(self.context.f64_type().into()),

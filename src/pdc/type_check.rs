@@ -283,6 +283,33 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
+        // Scene kernels
+        self.builtins.insert("load_scene".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::Str],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+        self.builtins.insert("run_scene".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("scene_tiles_x".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::F64,
+            takes_ctx: true,
+        });
+        self.builtins.insert("scene_num_paths".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::F64,
+            takes_ctx: true,
+        });
+        self.builtins.insert("scene_buffer".into(), BuiltinFn {
+            params: vec![PdcType::I32, PdcType::Str],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+
         // Frame control
         self.builtins.insert("request_redraw".into(), BuiltinFn {
             params: vec![],

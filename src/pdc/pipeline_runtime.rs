@@ -10,6 +10,7 @@ use crate::display::Display;
 use crate::jit;
 use crate::pdc;
 use crate::texture::TextureData;
+use crate::vector::VectorScene;
 use crate::pdc::codegen::{CompiledProgram, StateLayout, PIPELINE_BUILTINS};
 use crate::pdc::runtime::{PdcContext, PipelineHost, SceneBuilder};
 
@@ -54,6 +55,8 @@ struct HostState {
     redraw_requested: bool,
     /// Loaded textures, indexed by handle.
     textures: Vec<TextureData>,
+    /// Compiled scene programs, indexed by handle.
+    scenes: Vec<SceneEntry>,
     /// Accumulation buffer for progressive rendering.
     accum: Option<crate::progressive::AccumulationBuffer>,
     /// Snapshot of builtins for kernel param population.
@@ -84,6 +87,19 @@ struct BufferBinding {
 struct KernelArg {
     name: String,
     value: f64,
+}
+
+/// A compiled scene kernel and its last extracted scene data.
+struct SceneEntry {
+    source: String,
+    source_path: PathBuf,
+    /// Last extracted scene, with buffer handles for each named buffer.
+    scene: Option<VectorScene>,
+    /// Buffer handles for scene data: (name, buffer_handle).
+    buffer_handles: Vec<(String, i32)>,
+    tiles_x: u32,
+    tiles_y: u32,
+    num_paths: u32,
 }
 
 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
@@ -333,6 +349,104 @@ impl PipelineHost for HostState {
         self.display_requested = true;
     }
 
+    fn load_scene(&mut self, _name: &str, path: &str) -> i32 {
+        let full_path = self.base_dir.join(path);
+        let source = match std::fs::read_to_string(&full_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[pdc-runtime] failed to read scene '{}': {}", full_path.display(), e);
+                return -1;
+            }
+        };
+        let handle = self.scenes.len() as i32;
+        self.scenes.push(SceneEntry {
+            source,
+            source_path: full_path,
+            scene: None,
+            buffer_handles: Vec::new(),
+            tiles_x: 0,
+            tiles_y: 0,
+            num_paths: 0,
+        });
+        handle
+    }
+
+    fn run_scene(&mut self, handle: i32) {
+        let idx = handle as usize;
+        if idx >= self.scenes.len() {
+            eprintln!("[pdc-runtime] invalid scene handle {}", handle);
+            return;
+        }
+
+        let w = self.width;
+        let h = self.height;
+        let tile_size = 16u32;
+        let tolerance = 0.5f32;
+
+        let scene_entry = &self.scenes[idx];
+        let scene = match pdc::compile_and_run(
+            &scene_entry.source, w, h, tolerance, tile_size,
+            Some(&scene_entry.source_path),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[pdc-runtime] scene execution failed: {}", e.format(&self.scenes[idx].source));
+                return;
+            }
+        };
+
+        let tiles_x = (w + tile_size - 1) / tile_size;
+        let tiles_y = (h + tile_size - 1) / tile_size;
+        let num_paths = scene.path_colors.len() as u32;
+
+        // Convert scene data to buffers
+        let buffer_data: Vec<(&str, Vec<u8>)> = vec![
+            ("segments", bytemuck_cast_slice(&scene.segments)),
+            ("seg_path_ids", bytemuck_cast_u32(&scene.seg_path_ids)),
+            ("tile_offsets", bytemuck_cast_u32(&scene.tile_offsets)),
+            ("tile_counts", bytemuck_cast_u32(&scene.tile_counts)),
+            ("tile_indices", bytemuck_cast_u32(&scene.tile_indices)),
+            ("path_colors", bytemuck_cast_u32(&scene.path_colors)),
+            ("path_fill_rules", bytemuck_cast_u32(&scene.path_fill_rules)),
+        ];
+
+        let mut buffer_handles = Vec::new();
+        for (name, data) in buffer_data {
+            let buf_handle = self.buffers.len() as i32;
+            let elem_size = if name == "segments" { 16 } else { 4 };
+            self.buffers.push(NamedBuffer {
+                name: format!("__scene_{}_{}", idx, name),
+                data,
+                elem_size,
+            });
+            buffer_handles.push((name.to_string(), buf_handle));
+        }
+
+        let entry = &mut self.scenes[idx];
+        entry.scene = Some(scene);
+        entry.buffer_handles = buffer_handles;
+        entry.tiles_x = tiles_x;
+        entry.tiles_y = tiles_y;
+        entry.num_paths = num_paths;
+    }
+
+    fn scene_tiles_x(&self, handle: i32) -> f64 {
+        self.scenes.get(handle as usize).map_or(0.0, |s| s.tiles_x as f64)
+    }
+
+    fn scene_num_paths(&self, handle: i32) -> f64 {
+        self.scenes.get(handle as usize).map_or(0.0, |s| s.num_paths as f64)
+    }
+
+    fn scene_buffer(&mut self, scene_handle: i32, name: &str) -> i32 {
+        let idx = scene_handle as usize;
+        if idx >= self.scenes.len() { return -1; }
+        self.scenes[idx].buffer_handles.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, h)| *h)
+            .unwrap_or(-1)
+    }
+
     fn load_texture(&mut self, name: &str, path: &str) -> i32 {
         let full_path = self.base_dir.join(path);
         match TextureData::load(&full_path) {
@@ -402,6 +516,16 @@ impl PipelineHost for HostState {
     fn clear_redraw_requested(&mut self) { self.redraw_requested = false; }
 }
 
+fn bytemuck_cast_u32(data: &[u32]) -> Vec<u8> {
+    data.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn bytemuck_cast_slice(data: &[[f32; 4]]) -> Vec<u8> {
+    data.iter().flat_map(|seg| {
+        seg.iter().flat_map(|f| f.to_le_bytes())
+    }).collect()
+}
+
 /// PDC-driven pipeline runtime.
 ///
 /// Executes a compiled PDC program as the pipeline orchestrator.
@@ -426,7 +550,7 @@ pub struct PdcRuntime {
     pub tile_height: usize,
 
     title: String,
-    paused: bool,
+    pub paused: bool,
     frame: u64,
     frames_executed: u64,
     /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
@@ -468,6 +592,7 @@ impl PdcRuntime {
             display_requested: false,
             redraw_requested: false,
             textures: Vec::new(),
+            scenes: Vec::new(),
             accum: None,
             builtins_snapshot: [0.0; B::COUNT],
             base_dir: base_dir.to_path_buf(),

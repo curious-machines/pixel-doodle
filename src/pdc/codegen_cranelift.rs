@@ -2332,6 +2332,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
             | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
             | "display" | "display_buffer" | "load_texture"
+            | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "request_redraw"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation"
@@ -2380,13 +2381,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
             "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture"
+            | "load_scene" | "scene_buffer"
             | "is_converged" => Some(I32),
-            "get" => Some(F64),
+            "get" | "scene_tiles_x" | "scene_num_paths" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
             | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
             | "run_kernel" | "display" | "display_buffer"
+            | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
             _ => Some(F64),
