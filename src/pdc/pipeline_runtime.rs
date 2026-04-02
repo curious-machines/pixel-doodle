@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::display::Display;
 use crate::jit;
 use crate::pdc;
+use crate::texture::TextureData;
 use crate::pdc::codegen::{CompiledProgram, StateLayout, PIPELINE_BUILTINS};
 use crate::pdc::runtime::{PdcContext, PipelineHost, SceneBuilder};
 
@@ -51,6 +52,8 @@ struct HostState {
     display_requested: bool,
     /// Whether the script requested another frame via request_redraw().
     redraw_requested: bool,
+    /// Loaded textures, indexed by handle.
+    textures: Vec<TextureData>,
     /// Accumulation buffer for progressive rendering.
     accum: Option<crate::progressive::AccumulationBuffer>,
     /// Snapshot of builtins for kernel param population.
@@ -282,12 +285,25 @@ impl PipelineHost for HostState {
             }
             let _ = user_arg_index;
 
+            // Build texture slots from loaded textures
+            let tex_slots: Vec<jit::TextureSlot> = self.textures.iter().map(|t| {
+                jit::TextureSlot {
+                    data: t.data.as_ptr(),
+                    width: t.width,
+                    height: t.height,
+                }
+            }).collect();
+
             // Dispatch across all rows (single-threaded for simplicity)
             let fn_ptr = kernel.compiled.fn_ptr;
             unsafe {
                 let params_ptr = params.as_ptr();
                 let buffers_ptr = buffer_ptrs.as_ptr() as *const *mut u8;
-                let tex_ptr = std::ptr::null();
+                let tex_ptr = if tex_slots.is_empty() {
+                    std::ptr::null()
+                } else {
+                    tex_slots.as_ptr() as *const u8
+                };
                 (fn_ptr)(params_ptr, buffers_ptr, tex_ptr, w, h, w, 0, h);
             }
         }
@@ -318,8 +334,20 @@ impl PipelineHost for HostState {
     }
 
     fn load_texture(&mut self, name: &str, path: &str) -> i32 {
-        eprintln!("[pdc-runtime] load_texture({}, {}) — not yet implemented", name, path);
-        -1
+        let full_path = self.base_dir.join(path);
+        match TextureData::load(&full_path) {
+            Ok(tex) => {
+                let handle = self.textures.len() as i32;
+                eprintln!("[pdc-runtime] loaded texture '{}' ({}x{}) as handle {}",
+                    name, tex.width, tex.height, handle);
+                self.textures.push(tex);
+                handle
+            }
+            Err(e) => {
+                eprintln!("[pdc-runtime] failed to load texture '{}': {}", full_path.display(), e);
+                -1
+            }
+        }
     }
 
     fn set_max_samples(&mut self, n: i32) {
@@ -439,6 +467,7 @@ impl PdcRuntime {
             pending_args: Vec::new(),
             display_requested: false,
             redraw_requested: false,
+            textures: Vec::new(),
             accum: None,
             builtins_snapshot: [0.0; B::COUNT],
             base_dir: base_dir.to_path_buf(),
