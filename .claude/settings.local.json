@@ -65,7 +65,12 @@
       "WebFetch(domain:fontforge.org)",
       "Bash(find /home/kevin/Documents/Projects/CuriousMachines/pixel-doodle -type f -name *PDC* -o -name *pdc*)",
       "Bash(find:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(WGPU_BACKEND=vulkan RUST_LOG=wgpu_core=warn,wgpu_hal=warn cargo run -- examples/pdc/basic/basic.pdp --output /tmp/pdc_test.ppm)",
+      "Bash(WGPU_BACKEND=vulkan RUST_LOG=wgpu=error cargo run -- examples/pdc/basic/basic.pdp --output /tmp/pdc_test.ppm)",
+      "Bash(python3:*)",
+      "Bash(cargo clean:*)",
+      "Bash(./test_regression:*)"
     ]
   }
 }
