@@ -105,6 +105,7 @@ configs_for_pipeline() {
     case "$pipeline" in
         gpu)
             echo "gpu:cranelift"
+            echo "gpu:llvm"
             echo "cpu:cranelift"
             echo "cpu:llvm"
             ;;
@@ -144,8 +145,9 @@ discover_cases() {
 # Golden image path for a test case
 golden_path() {
     local example="$1" pipeline="$2" config="$3"
-    # config is "render:codegen", use as-is for filename
-    echo "$GOLDEN_DIR/$example/$pipeline-$config.ppm"
+    # config is "render:codegen" — replace colon with hyphen for cross-platform filenames
+    local safe_config="${config//:/-}"
+    echo "$GOLDEN_DIR/$example/$pipeline-$safe_config.ppm"
 }
 
 # Compare two PPM files, returns 0 if within threshold
@@ -268,7 +270,8 @@ run_case() {
     local codegen="${config##*:}"
     local set_args="pipeline=$pipeline,render=$render,codegen=$codegen,width=$WIDTH,height=$HEIGHT"
     local out_dir="$TMP_DIR/$example"
-    local out_file="$out_dir/$pipeline-$config.ppm"
+    local safe_config="${config//:/-}"
+    local out_file="$out_dir/$pipeline-$safe_config.ppm"
     local gold
     gold=$(golden_path "$example" "$pipeline" "$config")
 
