@@ -405,7 +405,7 @@ pub fn compile(
     // Run optimization passes
     let pass_options = PassBuilderOptions::create();
     llvm_module
-        .run_passes("default<O2>", &machine, pass_options)
+        .run_passes("default<O3>", &machine, pass_options)
         .map_err(|e| PdcError::Codegen {
             message: format!("LLVM optimization: {e}"),
         })?;
