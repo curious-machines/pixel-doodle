@@ -1001,12 +1001,20 @@ impl Runtime {
             scene.segments.len(),
         );
 
-        // Upload scene data buffers to GpuSimRunner
+        // Upload scene data buffers to GPU or CPU backend
         let tiles_x = (w + tile_size - 1) / tile_size;
         let tiles_y = (h + tile_size - 1) / tile_size;
         let num_paths = scene.path_colors.len() as u32;
 
-        if let Some(runner) = &mut self.gpu_sim_runner {
+        if self.is_cpu_render() {
+            self.gpu_cpu_buffers.insert("segments".into(), bytemuck::cast_slice(&scene.segments).to_vec());
+            self.gpu_cpu_buffers.insert("seg_path_ids".into(), bytemuck::cast_slice(&scene.seg_path_ids).to_vec());
+            self.gpu_cpu_buffers.insert("tile_offsets".into(), bytemuck::cast_slice(&scene.tile_offsets).to_vec());
+            self.gpu_cpu_buffers.insert("tile_counts".into(), bytemuck::cast_slice(&scene.tile_counts).to_vec());
+            self.gpu_cpu_buffers.insert("tile_indices".into(), bytemuck::cast_slice(&scene.tile_indices).to_vec());
+            self.gpu_cpu_buffers.insert("path_colors".into(), bytemuck::cast_slice(&scene.path_colors).to_vec());
+            self.gpu_cpu_buffers.insert("path_fill_rules".into(), bytemuck::cast_slice(&scene.path_fill_rules).to_vec());
+        } else if let Some(runner) = &mut self.gpu_sim_runner {
             runner.add_buffer_with_data("segments", bytemuck::cast_slice(&scene.segments));
             runner.add_buffer_with_data("seg_path_ids", bytemuck::cast_slice(&scene.seg_path_ids));
             runner.add_buffer_with_data("tile_offsets", bytemuck::cast_slice(&scene.tile_offsets));
