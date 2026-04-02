@@ -71,6 +71,8 @@ pub trait PipelineHost {
     fn is_accumulating(&self) -> bool { false }
     /// Whether any buffers have been created.
     fn has_buffers(&self) -> bool { false }
+    /// Update the viewport dimensions (called on resize or override).
+    fn update_dimensions(&mut self, _width: u32, _height: u32) {}
     /// Update the builtins snapshot for kernel param population.
     fn update_builtins(&mut self, _builtins: &[f64]) {}
     /// Request another frame after this one completes.

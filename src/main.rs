@@ -544,6 +544,14 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
     let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
     eprintln!("[pdc-pipeline] compile: {compile_ms:.1}ms");
 
+    // Apply --set CLI overrides
+    runtime.apply_overrides(&args.set_overrides);
+
+    // Apply --threads CLI override
+    if let Some(n) = args.threads {
+        runtime.apply_overrides(&[("threads".to_string(), n.to_string())]);
+    }
+
     // Build thread pool
     let thread_pool = args.threads.map(|n| {
         rayon::ThreadPoolBuilder::new()

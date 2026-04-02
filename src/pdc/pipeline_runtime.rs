@@ -360,6 +360,11 @@ impl PipelineHost for HostState {
     fn has_buffers(&self) -> bool {
         !self.buffers.is_empty()
     }
+    fn update_dimensions(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        self.pixel_buffer = vec![0xFF000000u32; (width * height) as usize];
+    }
     fn update_builtins(&mut self, builtins: &[f64]) {
         let n = builtins.len().min(B::COUNT);
         self.builtins_snapshot[..n].copy_from_slice(&builtins[..n]);
@@ -513,8 +518,39 @@ impl PdcRuntime {
         // Settings are embedded in the PDC source
     }
 
-    pub fn apply_overrides(&mut self, _overrides: &[(String, String)]) {
-        // TODO: apply --set overrides to builtins
+    pub fn apply_overrides(&mut self, overrides: &[(String, String)]) {
+        for (key, value) in overrides {
+            match key.as_str() {
+                "width" => {
+                    if let Ok(v) = value.parse::<u32>() {
+                        self.width = v;
+                        self.builtins[B::WIDTH] = v as f64;
+                        self.pixel_buffer = vec![0xFF000000u32; (self.width * self.height) as usize];
+                        self.host.update_dimensions(self.width, self.height);
+                    }
+                }
+                "height" => {
+                    if let Ok(v) = value.parse::<u32>() {
+                        self.height = v;
+                        self.builtins[B::HEIGHT] = v as f64;
+                        self.pixel_buffer = vec![0xFF000000u32; (self.width * self.height) as usize];
+                        self.host.update_dimensions(self.width, self.height);
+                    }
+                }
+                "render" => {
+                    // Accepted but currently only CPU is supported
+                }
+                "codegen" => {
+                    // Accepted for compatibility
+                }
+                "pipeline" => {
+                    // Accepted for compatibility
+                }
+                _ => {
+                    eprintln!("[pdc-runtime] unknown override: {key}={value}");
+                }
+            }
+        }
     }
 
     pub fn compile_kernels(&mut self) -> Result<(), String> {
