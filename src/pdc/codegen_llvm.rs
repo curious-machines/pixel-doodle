@@ -135,11 +135,15 @@ pub fn compile(
         *idx += 1;
 
         let mut param_types: Vec<BasicMetadataTypeEnum<'static>> = vec![ptr_type.into()]; // ctx
+        let sret = is_compound_return(&fndef.return_type);
+        if sret {
+            param_types.push(ptr_type.into()); // output pointer for struct/tuple return
+        }
         for param in &fndef.params {
             param_types.push(pdc_type_to_llvm(&param.ty, context).into());
         }
 
-        let fn_type = if fndef.return_type == PdcType::Void {
+        let fn_type = if fndef.return_type == PdcType::Void || sret {
             context.void_type().fn_type(&param_types, false)
         } else {
             pdc_type_to_llvm(&fndef.return_type, context).fn_type(&param_types, false)
@@ -211,7 +215,14 @@ pub fn compile(
         let entry = context.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
+        let is_sret = is_compound_return(&fndef.return_type);
         let ctx_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
+        let sret_ptr = if is_sret {
+            Some(function.get_nth_param(1).unwrap().into_pointer_value())
+        } else {
+            None
+        };
+        let param_offset: u32 = if is_sret { 2 } else { 1 };
         let builtin_map = build_builtin_map(builtins_layout);
 
         let combined_aliases;
@@ -248,11 +259,13 @@ pub fn compile(
             op_fn_map: &op_fn_map,
             block_terminated: false,
             loop_stack: Vec::new(),
+            sret_ptr,
+            fn_return_type: fndef.return_type.clone(),
         };
 
         // Define parameters as allocas
         for (i, param) in fndef.params.iter().enumerate() {
-            let val = function.get_nth_param((i + 1) as u32).unwrap(); // +1 for ctx_ptr
+            let val = function.get_nth_param(i as u32 + param_offset).unwrap();
             cg.define_variable(&param.name, &param.ty, val);
         }
 
@@ -266,7 +279,7 @@ pub fn compile(
         // Implicit return
         let body_returns = fndef.body.stmts.last().is_some_and(|s| matches!(s.node, Stmt::Return(_)));
         if !body_returns && !cg.block_terminated {
-            if fndef.return_type == PdcType::Void {
+            if fndef.return_type == PdcType::Void || is_sret {
                 cg.builder.build_return(None).unwrap();
             } else {
                 let zero = cg.default_value(&fndef.return_type);
@@ -303,6 +316,8 @@ pub fn compile(
             op_fn_map: &op_fn_map,
             block_terminated: false,
             loop_stack: Vec::new(),
+            sret_ptr: None,
+            fn_return_type: PdcType::Void,
         };
 
         // Module-level statements
@@ -372,6 +387,8 @@ pub fn compile(
             op_fn_map: &op_fn_map,
             block_terminated: false,
             loop_stack: Vec::new(),
+            sret_ptr: None,
+            fn_return_type: PdcType::Void,
         };
 
         for const_stmt in &top_level_consts {
@@ -386,12 +403,9 @@ pub fn compile(
     }
 
     // Run optimization passes
-    // Use O1 instead of O2 — higher optimization levels can reuse callee
-    // stack slots before struct pointer return values are copied to the caller.
-    // TODO: switch to sret calling convention for struct returns.
     let pass_options = PassBuilderOptions::create();
     llvm_module
-        .run_passes("default<O1>", &machine, pass_options)
+        .run_passes("default<O2>", &machine, pass_options)
         .map_err(|e| PdcError::Codegen {
             message: format!("LLVM optimization: {e}"),
         })?;
@@ -464,6 +478,10 @@ pub fn compile(
 // Type mapping
 // ---------------------------------------------------------------------------
 
+fn is_compound_return(ty: &PdcType) -> bool {
+    matches!(ty, PdcType::Struct(_) | PdcType::Tuple(_))
+}
+
 fn pdc_type_to_llvm<'ctx>(ty: &PdcType, ctx: &'ctx Context) -> BasicTypeEnum<'ctx> {
     match ty {
         PdcType::F32 => ctx.f32_type().into(),
@@ -518,6 +536,9 @@ struct LlvmCodegenCtx<'a> {
     op_fn_map: &'a HashMap<(String, usize), FunctionValue<'static>>,
     block_terminated: bool,
     loop_stack: Vec<LlvmLoopContext>,
+    /// Output pointer for functions that return structs/tuples (sret convention).
+    sret_ptr: Option<PointerValue<'static>>,
+    fn_return_type: PdcType,
 }
 
 struct LlvmLoopContext {
@@ -724,7 +745,15 @@ impl<'a> LlvmCodegenCtx<'a> {
             Stmt::Return(value) => {
                 if let Some(expr) = value {
                     let val = self.emit_expr(expr)?;
-                    self.builder.build_return(Some(&val)).unwrap();
+                    if let Some(out_ptr) = self.sret_ptr {
+                        // sret: copy result into caller-provided output pointer
+                        if let Some(size) = self.compound_type_size(&self.fn_return_type.clone()) {
+                            self.copy_compound_to_ptr(val.into_pointer_value(), out_ptr, size);
+                        }
+                        self.builder.build_return(None).unwrap();
+                    } else {
+                        self.builder.build_return(Some(&val)).unwrap();
+                    }
                 } else {
                     self.builder.build_return(None).unwrap();
                 }
@@ -1537,7 +1566,19 @@ impl<'a> LlvmCodegenCtx<'a> {
             };
             let func = self.user_fn_llvm[&mangled];
 
+            let ret_ty = self.node_type(call_id).clone();
+            let sret_alloca = if let Some(size) = self.compound_type_size(&ret_ty) {
+                let f64_ty = self.context.f64_type();
+                let arr_ty = f64_ty.array_type(size / 8);
+                Some(self.builder.build_alloca(arr_ty, "sret_out").unwrap())
+            } else {
+                None
+            };
+
             let mut arg_vals: Vec<BasicMetadataValueEnum> = vec![self.ctx_ptr.into()];
+            if let Some(out_ptr) = sret_alloca {
+                arg_vals.push(out_ptr.into());
+            }
             for (i, arg) in args.iter().enumerate() {
                 let val = self.emit_expr(arg)?;
                 let from_ty = self.node_type(arg.id).clone();
@@ -1555,18 +1596,15 @@ impl<'a> LlvmCodegenCtx<'a> {
                 arg_vals.push(converted.into());
             }
 
-            let call = self.builder.build_call(func, &arg_vals, "userfn").unwrap();
-            let result = call.try_as_basic_value();
-            match result.basic() {
-                Some(val) => {
-                    let ret_ty = self.node_type(call_id).clone();
-                    if let Some(size) = self.compound_type_size(&ret_ty) {
-                        Ok(self.copy_struct_to_caller(val.into_pointer_value(), size).into())
-                    } else {
-                        Ok(val)
-                    }
+            if let Some(out_ptr) = sret_alloca {
+                self.builder.build_call(func, &arg_vals, "userfn").unwrap();
+                Ok(out_ptr.into())
+            } else {
+                let call = self.builder.build_call(func, &arg_vals, "userfn").unwrap();
+                match call.try_as_basic_value().basic() {
+                    Some(val) => Ok(val),
+                    None => Ok(self.i32_const(0).into()),
                 }
-                None => Ok(self.i32_const(0).into()),
             }
         } else if name.starts_with("Array<") {
             // Array constructor
@@ -1929,6 +1967,13 @@ impl<'a> LlvmCodegenCtx<'a> {
                 format!("pdc_userfn_{base}_{overload_idx}")
             };
             let func = self.user_fn_llvm[&mangled];
+            if let Some(size) = self.compound_type_size(ret_ty) {
+                let f64_ty = self.context.f64_type();
+                let arr_ty = f64_ty.array_type(size / 8);
+                let out_ptr = self.builder.build_alloca(arr_ty, "sret_out").unwrap();
+                self.builder.build_call(func, &[self.ctx_ptr.into(), out_ptr.into(), arg.into()], "fnref").unwrap();
+                return Ok(out_ptr.into());
+            }
             let call = self.builder.build_call(func, &[self.ctx_ptr.into(), arg.into()], "fnref").unwrap();
             return match call.try_as_basic_value().basic() {
                 Some(val) => Ok(val),
@@ -2035,21 +2080,31 @@ impl<'a> LlvmCodegenCtx<'a> {
                 message: format!("operator function '{}' overload {} not found", op_name, overload_idx),
             })?;
 
+        let sret_alloca = if let Some(size) = self.compound_type_size(result_type) {
+            let f64_ty = self.context.f64_type();
+            let arr_ty = f64_ty.array_type(size / 8);
+            Some(self.builder.build_alloca(arr_ty, "sret_out").unwrap())
+        } else {
+            None
+        };
+
         let mut call_args: Vec<BasicMetadataValueEnum> = vec![self.ctx_ptr.into()];
+        if let Some(out_ptr) = sret_alloca {
+            call_args.push(out_ptr.into());
+        }
         for arg in args {
             call_args.push((*arg).into());
         }
 
-        let call = self.builder.build_call(func, &call_args, "op").unwrap();
-        match call.try_as_basic_value().basic() {
-            Some(val) => {
-                if let Some(size) = self.compound_type_size(result_type) {
-                    Ok(self.copy_struct_to_caller(val.into_pointer_value(), size).into())
-                } else {
-                    Ok(val)
-                }
+        if let Some(out_ptr) = sret_alloca {
+            self.builder.build_call(func, &call_args, "op").unwrap();
+            Ok(out_ptr.into())
+        } else {
+            let call = self.builder.build_call(func, &call_args, "op").unwrap();
+            match call.try_as_basic_value().basic() {
+                Some(val) => Ok(val),
+                None => Ok(self.i32_const(0).into()),
             }
-            None => Ok(self.i32_const(0).into()),
         }
     }
 
@@ -2302,11 +2357,10 @@ impl<'a> LlvmCodegenCtx<'a> {
         self.builder.build_int_compare(IntPredicate::NE, val, zero, "to_i1").unwrap()
     }
 
-    fn copy_struct_to_caller(&mut self, src_ptr: PointerValue<'static>, size_bytes: u32) -> PointerValue<'static> {
+    /// Copy compound data (struct/tuple) from src to dst pointer, word by word.
+    fn copy_compound_to_ptr(&self, src_ptr: PointerValue<'static>, dst_ptr: PointerValue<'static>, size_bytes: u32) {
         let f64_ty = self.context.f64_type();
         let num_words = size_bytes / 8;
-        let arr_ty = f64_ty.array_type(num_words);
-        let alloca = self.builder.build_alloca(arr_ty, "struct_copy").unwrap();
         for i in 0..num_words {
             let src_gep = unsafe {
                 self.builder.build_gep(f64_ty, src_ptr,
@@ -2314,12 +2368,11 @@ impl<'a> LlvmCodegenCtx<'a> {
             };
             let val = self.builder.build_load(f64_ty, src_gep, "copy_val").unwrap();
             let dst_gep = unsafe {
-                self.builder.build_gep(f64_ty, alloca,
+                self.builder.build_gep(f64_ty, dst_ptr,
                     &[self.i32_const(i as i64).into()], "copy_dst_gep").unwrap()
             };
             self.builder.build_store(dst_gep, val).unwrap();
         }
-        alloca
     }
 
     fn compound_type_size(&self, ty: &PdcType) -> Option<u32> {
