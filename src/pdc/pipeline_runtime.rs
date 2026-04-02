@@ -213,6 +213,26 @@ impl PipelineHost for HostState {
                 }
             }
 
+            // Auto-allocate any unbound buffer slots (e.g., accum buffers for
+            // pixel kernels that expect them). Uses buffer_elem_bytes from the
+            // compiled kernel to determine per-element size.
+            let pixel_count = (self.width as usize) * (self.height as usize);
+            for slot in 0..num_buffers {
+                if buffer_ptrs[slot].is_null() {
+                    let elem_bytes = kernel.compiled.buffer_elem_bytes
+                        .get(slot)
+                        .copied()
+                        .unwrap_or(4) as usize;
+                    let auto_buf = self.buffers.len();
+                    self.buffers.push(NamedBuffer {
+                        name: format!("__auto_{handle}_{slot}"),
+                        data: vec![0u8; pixel_count * elem_bytes],
+                        elem_size: elem_bytes,
+                    });
+                    buffer_ptrs[slot] = self.buffers[auto_buf].data.as_mut_ptr();
+                }
+            }
+
             // Build params buffer (256 bytes), populating built-in members
             // from the builtins snapshot and user args from pending_args.
             let mut params = [0u8; 256];
