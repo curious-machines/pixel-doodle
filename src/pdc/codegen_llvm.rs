@@ -547,8 +547,26 @@ struct LlvmLoopContext {
 }
 
 impl<'a> LlvmCodegenCtx<'a> {
+    /// Returns true if `ty` is an enum with at least one data-carrying variant.
+    fn is_data_enum(&self, ty: &PdcType) -> bool {
+        if let PdcType::Enum(ename) = ty {
+            self.enums.get(ename).map_or(false, |info| info.variants.iter().any(|v| !v.field_types.is_empty()))
+        } else {
+            false
+        }
+    }
+
+    /// Returns the LLVM type to use for a PDC type, accounting for data-carrying enums.
+    fn llvm_var_type(&self, ty: &PdcType) -> BasicTypeEnum<'static> {
+        if self.is_data_enum(ty) {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else {
+            pdc_type_to_llvm(ty, self.context)
+        }
+    }
+
     fn define_variable(&mut self, name: &str, ty: &PdcType, val: BasicValueEnum<'static>) {
-        let llvm_ty = pdc_type_to_llvm(ty, self.context);
+        let llvm_ty = self.llvm_var_type(ty);
         let alloca = self.builder.build_alloca(llvm_ty, name).unwrap();
         self.builder.build_store(alloca, val).unwrap();
         self.variables.insert(name.to_string(), (alloca, ty.clone()));
@@ -558,7 +576,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         let (alloca, ty) = self.variables.get(name).ok_or_else(|| PdcError::Codegen {
             message: format!("undefined variable '{name}'"),
         })?;
-        let llvm_ty = pdc_type_to_llvm(ty, self.context);
+        let llvm_ty = self.llvm_var_type(ty);
         Ok(self.builder.build_load(llvm_ty, *alloca, name).unwrap())
     }
 

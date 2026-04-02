@@ -874,15 +874,20 @@ impl Runtime {
                         name if name.starts_with('_') => {} // padding
                         _ => {
                             // User-defined parameter — match by position in `args`.
+                            // Encode according to the WGSL type: f32 for floats, u32 for integers.
                             if let Some(a) = args.get(user_arg_index) {
-                                let val = match &a.value {
-                                    Literal::Float(f) => *f as f32,
-                                    Literal::Int(i) => *i as f32,
-                                    Literal::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
-                                    Literal::Str(_) => 0.0f32,
-                                    Literal::VarRef(name) => self.get_variable(name) as f32,
+                                let raw = match &a.value {
+                                    Literal::Float(f) => *f,
+                                    Literal::Int(i) => *i as f64,
+                                    Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
+                                    Literal::Str(_) => 0.0,
+                                    Literal::VarRef(name) => self.get_variable(name),
                                 };
-                                params[off..off+4].copy_from_slice(&val.to_le_bytes());
+                                if member.is_float {
+                                    params[off..off+4].copy_from_slice(&(raw as f32).to_le_bytes());
+                                } else {
+                                    params[off..off+4].copy_from_slice(&(raw as u32).to_le_bytes());
+                                }
                             }
                             user_arg_index += 1;
                         }

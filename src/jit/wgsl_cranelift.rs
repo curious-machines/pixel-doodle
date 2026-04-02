@@ -329,9 +329,13 @@ fn analyse_module(module: &naga::Module) -> Result<BindingInfo, String> {
     let (offsets, params_members) = match &params_ty.inner {
         TypeInner::Struct { members, .. } => {
             let offsets = members.iter().map(|m| m.offset).collect();
-            let named = members.iter().map(|m| ParamMember {
-                name: m.name.clone().unwrap_or_default(),
-                offset: m.offset,
+            let named = members.iter().map(|m| {
+                let is_float = matches!(module.types[m.ty].inner, TypeInner::Scalar(naga::Scalar { kind: naga::ScalarKind::Float, .. }));
+                ParamMember {
+                    name: m.name.clone().unwrap_or_default(),
+                    offset: m.offset,
+                    is_float,
+                }
             }).collect();
             (offsets, named)
         }

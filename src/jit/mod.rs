@@ -185,6 +185,8 @@ pub type WgslKernelFn = unsafe extern "C" fn(
 pub struct ParamMember {
     pub name: String,
     pub offset: u32,
+    /// True if this member is a floating-point type (f32/f64), false for integer types (u32/i32).
+    pub is_float: bool,
 }
 
 /// Compiled WGSL kernel — holds the JIT handle (to keep code alive) and the
