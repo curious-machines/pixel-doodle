@@ -998,10 +998,10 @@ impl Runtime {
         let h = self.height;
 
         // Execute the compiled PDC main
-        let builtins = [w as f64, h as f64];
+        let mut builtins = [w as f64, h as f64];
         let mut scene_builder = pdc::runtime::SceneBuilder::new();
         let mut ctx = pdc::runtime::PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene_builder as *mut _,
             state: state_ptr,
         };

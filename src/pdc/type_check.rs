@@ -515,10 +515,12 @@ impl TypeChecker {
 
     fn check_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
         match &stmt.node {
-            Stmt::BuiltinDecl { name, ty } => {
+            Stmt::BuiltinDecl { name, ty, mutable } => {
                 let resolved = self.resolve_type(ty);
                 self.define_var(name, resolved);
-                self.const_vars.insert(name.clone());
+                if !mutable {
+                    self.const_vars.insert(name.clone());
+                }
             }
             Stmt::ConstDecl { vis: _, name, ty, value } => {
                 let val_ty = self.check_expr(value)?;

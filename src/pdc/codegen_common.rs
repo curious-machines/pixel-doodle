@@ -165,6 +165,7 @@ impl CompiledProgram {
     ///
     /// # Safety
     /// The `ctx` must have a valid state block pointer if the program has state variables.
+    #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn call_init(&self, ctx: &mut runtime::PdcContext) -> Result<(), PdcError> {
         if self.has_init() {
             self.call_fn("init", ctx, &[])?;
@@ -176,6 +177,7 @@ impl CompiledProgram {
     ///
     /// # Safety
     /// The `ctx` must have a valid state block pointer if the program has state variables.
+    #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn call_frame(&self, ctx: &mut runtime::PdcContext) -> Result<(), PdcError> {
         if self.has_frame() {
             self.call_fn("frame", ctx, &[])?;
@@ -380,6 +382,26 @@ pub struct BuiltinInfo {
     pub offset: usize,
     pub ty: PdcType,
 }
+
+/// Standard builtins layout for pipeline programs.
+/// All values are stored as f64 in a flat array.
+/// Index 0: width, 1: height, 2: time, 3: mouse_x, 4: mouse_y,
+/// 5: center_x, 6: center_y, 7: zoom, 8: paused, 9: frame,
+/// 10: mouse_down, 11: sample_index
+pub const PIPELINE_BUILTINS: &[(&str, PdcType)] = &[
+    ("width", PdcType::F32),
+    ("height", PdcType::F32),
+    ("time", PdcType::F64),
+    ("mouse_x", PdcType::F64),
+    ("mouse_y", PdcType::F64),
+    ("center_x", PdcType::F64),
+    ("center_y", PdcType::F64),
+    ("zoom", PdcType::F64),
+    ("paused", PdcType::Bool),
+    ("frame", PdcType::U64),
+    ("mouse_down", PdcType::Bool),
+    ("sample_index", PdcType::U32),
+];
 
 /// Mangle a qualified name for JIT symbols: "math::lerp" -> "math__lerp"
 pub fn mangle_name(qualified: &str) -> String {

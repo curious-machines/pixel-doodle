@@ -83,7 +83,9 @@ pub fn compile(
 
     // Collect top-level constants, vars, and function definitions
     let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
+    let mut top_level_builtins: Vec<&Spanned<Stmt>> = Vec::new();
     let mut top_level_vars: Vec<(&str, PdcType)> = Vec::new();
+    let mut mutable_builtin_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut fn_defs: Vec<(String, &FnDef)> = Vec::new();
 
     fn is_pure_literal(expr: &Expr) -> bool {
@@ -112,6 +114,13 @@ pub fn compile(
                     let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
                     top_level_vars.push((name.as_str(), final_ty));
                 }
+                Stmt::BuiltinDecl { name, mutable, .. } => {
+                    if *mutable {
+                        mutable_builtin_names.insert(name.clone());
+                    } else {
+                        top_level_builtins.push(stmt);
+                    }
+                }
                 _ => {}
             }
         }
@@ -126,6 +135,13 @@ pub fn compile(
                 let expr_ty = &types[value.id as usize];
                 let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
                 top_level_vars.push((name.as_str(), final_ty));
+            }
+            Stmt::BuiltinDecl { name, mutable, .. } => {
+                if *mutable {
+                    mutable_builtin_names.insert(name.clone());
+                } else {
+                    top_level_builtins.push(stmt);
+                }
             }
             _ => {}
         }
@@ -276,6 +292,7 @@ pub fn compile(
             sret_ptr,
             fn_return_type: fndef.return_type.clone(),
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         // Define parameters as allocas
@@ -284,9 +301,12 @@ pub fn compile(
             cg.define_variable(&param.name, &param.ty, val);
         }
 
-        // Emit top-level constants
+        // Emit top-level constants and immutable builtins
         for const_stmt in &top_level_consts {
             cg.emit_stmt(const_stmt)?;
+        }
+        for builtin_stmt in &top_level_builtins {
+            cg.emit_stmt(builtin_stmt)?;
         }
 
         cg.emit_block(&fndef.body)?;
@@ -334,6 +354,7 @@ pub fn compile(
             sret_ptr: None,
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         // Module-level statements
@@ -406,6 +427,7 @@ pub fn compile(
             sret_ptr: None,
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         for const_stmt in &top_level_consts {
@@ -561,6 +583,8 @@ struct LlvmCodegenCtx<'a> {
     fn_return_type: PdcType,
     /// State layout for module-level mutable variables.
     state_layout: &'a StateLayout,
+    /// Names of mutable builtins — reads/writes go directly to the builtins array.
+    mutable_builtins: std::collections::HashSet<String>,
 }
 
 struct LlvmLoopContext {
@@ -621,6 +645,60 @@ impl<'a> LlvmCodegenCtx<'a> {
             ).unwrap()
         };
         self.builder.build_store(var_ptr, val).unwrap();
+        Ok(())
+    }
+
+    /// Check if a variable name is a mutable builtin.
+    fn is_mutable_builtin(&self, name: &str) -> bool {
+        self.mutable_builtins.contains(name)
+    }
+
+    /// Load a mutable builtin from the builtins array.
+    fn load_mutable_builtin(&self, name: &str) -> Result<BasicValueEnum<'static>, PdcError> {
+        let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("mutable builtin '{name}' not found in layout"),
+        })?;
+        let offset = info.offset;
+        let declared_ty = info.ty.clone();
+        let builtins_ptr = self.builder.build_load(
+            self.context.ptr_type(AddressSpace::default()),
+            self.ctx_ptr,
+            "builtins_ptr",
+        ).unwrap().into_pointer_value();
+        let f64_ty = self.context.f64_type();
+        let elem_ptr = unsafe {
+            self.builder.build_gep(
+                f64_ty, builtins_ptr,
+                &[self.context.i32_type().const_int(offset as u64, false).into()],
+                &format!("builtin_{name}_gep"),
+            ).unwrap()
+        };
+        let f64_val = self.builder.build_load(f64_ty, elem_ptr, name).unwrap();
+        Ok(self.convert_value(f64_val, &PdcType::F64, &declared_ty))
+    }
+
+    /// Store a value to a mutable builtin in the builtins array.
+    fn store_mutable_builtin(&self, name: &str, val: BasicValueEnum<'static>) -> Result<(), PdcError> {
+        let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("mutable builtin '{name}' not found in layout"),
+        })?;
+        let offset = info.offset;
+        let declared_ty = info.ty.clone();
+        let f64_val = self.convert_value(val, &declared_ty, &PdcType::F64);
+        let builtins_ptr = self.builder.build_load(
+            self.context.ptr_type(AddressSpace::default()),
+            self.ctx_ptr,
+            "builtins_ptr",
+        ).unwrap().into_pointer_value();
+        let f64_ty = self.context.f64_type();
+        let elem_ptr = unsafe {
+            self.builder.build_gep(
+                f64_ty, builtins_ptr,
+                &[self.context.i32_type().const_int(offset as u64, false).into()],
+                &format!("builtin_{name}_gep"),
+            ).unwrap()
+        };
+        self.builder.build_store(elem_ptr, f64_val).unwrap();
         Ok(())
     }
 
@@ -713,33 +791,37 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn emit_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
         match &stmt.node {
-            Stmt::BuiltinDecl { name, ty } => {
-                let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
-                    message: format!("builtin '{name}' not found in layout"),
-                })?;
-                let offset = info.offset;
-                let declared_ty = ty.clone();
+            Stmt::BuiltinDecl { name, ty, mutable } => {
+                if *mutable {
+                    // Mutable builtins: reads/writes go directly to the builtins array.
+                    self.mutable_builtins.insert(name.clone());
+                } else {
+                    // Immutable builtins: snapshot the value into a local variable.
+                    let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
+                        message: format!("builtin '{name}' not found in layout"),
+                    })?;
+                    let offset = info.offset;
+                    let declared_ty = ty.clone();
 
-                // Load builtins pointer from PdcContext (offset 0)
-                let builtins_ptr = self.builder.build_load(
-                    self.context.ptr_type(AddressSpace::default()),
-                    self.ctx_ptr,
-                    "builtins_ptr",
-                ).unwrap().into_pointer_value();
+                    let builtins_ptr = self.builder.build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        self.ctx_ptr,
+                        "builtins_ptr",
+                    ).unwrap().into_pointer_value();
 
-                // GEP to the right f64 offset
-                let f64_ty = self.context.f64_type();
-                let elem_ptr = unsafe {
-                    self.builder.build_gep(
-                        f64_ty,
-                        builtins_ptr,
-                        &[self.i32_const(offset as i64).into()],
-                        "builtin_gep",
-                    ).unwrap()
-                };
-                let f64_val = self.builder.build_load(f64_ty, elem_ptr, "builtin_f64").unwrap();
-                let val = self.convert_value(f64_val, &PdcType::F64, &declared_ty);
-                self.define_variable(name, &declared_ty, val);
+                    let f64_ty = self.context.f64_type();
+                    let elem_ptr = unsafe {
+                        self.builder.build_gep(
+                            f64_ty,
+                            builtins_ptr,
+                            &[self.i32_const(offset as i64).into()],
+                            "builtin_gep",
+                        ).unwrap()
+                    };
+                    let f64_val = self.builder.build_load(f64_ty, elem_ptr, "builtin_f64").unwrap();
+                    let val = self.convert_value(f64_val, &PdcType::F64, &declared_ty);
+                    self.define_variable(name, &declared_ty, val);
+                }
             }
             Stmt::ConstDecl { vis: _, name, ty, value } | Stmt::VarDecl { vis: _, name, ty, value } => {
                 let is_var = matches!(&stmt.node, Stmt::VarDecl { .. });
@@ -808,6 +890,14 @@ impl<'a> LlvmCodegenCtx<'a> {
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
+
+                // Mutable builtin: store to builtins array
+                if self.is_mutable_builtin(name) {
+                    let info_ty = self.builtin_map.get(name).unwrap().ty.clone();
+                    let converted = self.convert_value(val, &expr_ty, &info_ty);
+                    self.store_mutable_builtin(name, converted)?;
+                    return Ok(());
+                }
 
                 // State block variable: store to state block
                 if let Some(sv) = self.state_layout.vars.get(name) {
@@ -1225,6 +1315,9 @@ impl<'a> LlvmCodegenCtx<'a> {
         match &expr.node {
             Expr::Literal(lit) => self.emit_literal(lit, expr.id),
             Expr::Variable(name) => {
+                if self.is_mutable_builtin(name) {
+                    return self.load_mutable_builtin(name);
+                }
                 if self.is_state_var(name) {
                     return self.load_state_var(name);
                 }

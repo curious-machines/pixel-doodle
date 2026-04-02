@@ -3,8 +3,8 @@ use crate::vector::flatten::{CubicBezier, Curve, Point, QuadBezier};
 /// Context passed to JIT'd PDC functions.
 #[repr(C)]
 pub struct PdcContext {
-    /// Pointer to builtin values array (f64).
-    pub builtins: *const f64,
+    /// Pointer to builtin values array (f64). Mutable builtins write back to this array.
+    pub builtins: *mut f64,
     /// Pointer to SceneBuilder.
     pub scene: *mut SceneBuilder,
     /// Pointer to persistent state block for module-level mutable variables.

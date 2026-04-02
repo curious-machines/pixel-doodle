@@ -60,8 +60,12 @@ pub fn compile(
 
     // Collect top-level constants (will be emitted at the start of each function)
     let mut top_level_consts: Vec<&Spanned<Stmt>> = Vec::new();
+    // Collect immutable builtin declarations (emitted at the start of each function)
+    let mut top_level_builtins: Vec<&Spanned<Stmt>> = Vec::new();
     // Collect top-level var declarations for state block layout
     let mut top_level_vars: Vec<(&str, PdcType)> = Vec::new();
+    // Collect mutable builtin names (need to be known in all functions)
+    let mut mutable_builtin_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     // (qualified_name, fn_def) — qualified name is "module::fn" for modules, plain "fn" for main
     let mut fn_defs: Vec<(String, &FnDef)> = Vec::new();
     let mut user_fn_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
@@ -96,6 +100,13 @@ pub fn compile(
                     let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
                     top_level_vars.push((name.as_str(), final_ty));
                 }
+                Stmt::BuiltinDecl { name, mutable, .. } => {
+                    if *mutable {
+                        mutable_builtin_names.insert(name.clone());
+                    } else {
+                        top_level_builtins.push(stmt);
+                    }
+                }
                 _ => {}
             }
         }
@@ -112,6 +123,13 @@ pub fn compile(
                 let expr_ty = &types[value.id as usize];
                 let final_ty = ty.clone().unwrap_or_else(|| expr_ty.clone());
                 top_level_vars.push((name.as_str(), final_ty));
+            }
+            Stmt::BuiltinDecl { name, mutable, .. } => {
+                if *mutable {
+                    mutable_builtin_names.insert(name.clone());
+                } else {
+                    top_level_builtins.push(stmt);
+                }
             }
             _ => {}
         }
@@ -272,6 +290,7 @@ pub fn compile(
             block_terminated: false,
             loop_stack: Vec::new(),
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         // Define parameters as variables
@@ -281,9 +300,12 @@ pub fn compile(
             cg.builder.def_var(var, val);
         }
 
-        // Emit top-level constants so they're accessible in this function
+        // Emit top-level constants and immutable builtins so they're accessible
         for const_stmt in &top_level_consts {
             cg.emit_stmt(const_stmt)?;
+        }
+        for builtin_stmt in &top_level_builtins {
+            cg.emit_stmt(builtin_stmt)?;
         }
 
         cg.emit_block(&fndef.body)?;
@@ -358,6 +380,7 @@ pub fn compile(
             block_terminated: false,
             loop_stack: Vec::new(),
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         // Emit module-level statements (const/var init) before main code
@@ -461,6 +484,7 @@ pub fn compile(
             block_terminated: false,
             loop_stack: Vec::new(),
             state_layout: &state_layout,
+            mutable_builtins: mutable_builtin_names.clone(),
         };
 
         // Emit top-level constants so they're accessible in test functions
@@ -588,6 +612,8 @@ struct CodegenCtx<'a, 'b> {
     /// State layout for module-level mutable variables.
     /// If a variable name is found here, it lives in the state block, not in SSA.
     state_layout: &'a StateLayout,
+    /// Names of mutable builtins — reads/writes go directly to the builtins array.
+    mutable_builtins: std::collections::HashSet<String>,
 }
 
 /// Tracks the jump targets for break and continue within a loop.
@@ -643,6 +669,55 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         Ok(())
     }
 
+    /// Check if a variable name is a mutable builtin.
+    fn is_mutable_builtin(&self, name: &str) -> bool {
+        self.mutable_builtins.contains(name)
+    }
+
+    /// Load a mutable builtin from the builtins array.
+    /// All builtins are stored as f64; this converts to the declared type.
+    fn load_mutable_builtin(&mut self, name: &str) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("mutable builtin '{name}' not found in layout"),
+        })?;
+        let offset = info.offset;
+        let declared_ty = info.ty.clone();
+        let builtins_ptr = self.builder.ins().load(
+            self.pointer_type, MemFlags::trusted(), self.ctx_ptr, 0,
+        );
+        let f64_val = self.builder.ins().load(
+            F64, MemFlags::trusted(), builtins_ptr, (offset * 8) as i32,
+        );
+        // Bool builtins: f64 != 0.0 → I8
+        if declared_ty == PdcType::Bool {
+            let zero = self.builder.ins().f64const(0.0);
+            return Ok(self.builder.ins().fcmp(FloatCC::NotEqual, f64_val, zero));
+        }
+        Ok(self.convert_value(f64_val, &PdcType::F64, &declared_ty))
+    }
+
+    /// Store a value to a mutable builtin in the builtins array.
+    /// Converts the declared type back to f64 for storage.
+    fn store_mutable_builtin(&mut self, name: &str, val: cranelift_codegen::ir::Value) -> Result<(), PdcError> {
+        let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
+            message: format!("mutable builtin '{name}' not found in layout"),
+        })?;
+        let offset = info.offset;
+        let declared_ty = info.ty.clone();
+        // Bool builtins: I8 → f64 (0.0 or 1.0)
+        let f64_val = if declared_ty == PdcType::Bool {
+            let i64_val = self.builder.ins().uextend(I64, val);
+            self.builder.ins().fcvt_from_uint(F64, i64_val)
+        } else {
+            self.convert_value(val, &declared_ty, &PdcType::F64)
+        };
+        let builtins_ptr = self.builder.ins().load(
+            self.pointer_type, MemFlags::trusted(), self.ctx_ptr, 0,
+        );
+        self.builder.ins().store(MemFlags::trusted(), f64_val, builtins_ptr, (offset * 8) as i32);
+        Ok(())
+    }
+
     fn node_type(&self, id: u32) -> &PdcType {
         if (id as usize) >= self.type_table.len() {
             eprintln!("WARNING: node id {} out of type table (len {})", id, self.type_table.len());
@@ -672,28 +747,40 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn emit_stmt(&mut self, stmt: &Spanned<Stmt>) -> Result<(), PdcError> {
         match &stmt.node {
-            Stmt::BuiltinDecl { name, ty } => {
+            Stmt::BuiltinDecl { name, ty, mutable } => {
                 let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
                     message: format!("builtin '{name}' not found in layout"),
                 })?;
                 let offset = info.offset;
                 let declared_ty = ty.clone();
 
-                let builtins_ptr = self.builder.ins().load(
-                    self.pointer_type,
-                    MemFlags::trusted(),
-                    self.ctx_ptr,
-                    0,
-                );
-                let f64_val = self.builder.ins().load(
-                    F64,
-                    MemFlags::trusted(),
-                    builtins_ptr,
-                    (offset * 8) as i32,
-                );
-                let val = self.convert_value(f64_val, &PdcType::F64, &declared_ty);
-                let var = self.new_variable(name, &declared_ty);
-                self.builder.def_var(var, val);
+                if *mutable {
+                    // Mutable builtins: reads/writes go directly to the builtins
+                    // array. Don't snapshot into an SSA variable.
+                    self.mutable_builtins.insert(name.clone());
+                } else {
+                    // Immutable builtins: snapshot the value into an SSA variable.
+                    let builtins_ptr = self.builder.ins().load(
+                        self.pointer_type,
+                        MemFlags::trusted(),
+                        self.ctx_ptr,
+                        0,
+                    );
+                    let f64_val = self.builder.ins().load(
+                        F64,
+                        MemFlags::trusted(),
+                        builtins_ptr,
+                        (offset * 8) as i32,
+                    );
+                    let val = if declared_ty == PdcType::Bool {
+                        let zero = self.builder.ins().f64const(0.0);
+                        self.builder.ins().fcmp(FloatCC::NotEqual, f64_val, zero)
+                    } else {
+                        self.convert_value(f64_val, &PdcType::F64, &declared_ty)
+                    };
+                    let var = self.new_variable(name, &declared_ty);
+                    self.builder.def_var(var, val);
+                }
             }
             Stmt::ConstDecl { vis: _, name, ty, value } | Stmt::VarDecl { vis: _, name, ty, value } => {
                 let is_var = matches!(&stmt.node, Stmt::VarDecl { .. });
@@ -761,6 +848,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             Stmt::Assign { name, value } => {
                 let val = self.emit_expr(value)?;
                 let expr_ty = self.node_type(value.id).clone();
+
+                // Mutable builtin: store to builtins array
+                if self.is_mutable_builtin(name) {
+                    let info_ty = self.builtin_map.get(name).unwrap().ty.clone();
+                    let converted = self.convert_value(val, &expr_ty, &info_ty);
+                    self.store_mutable_builtin(name, converted)?;
+                    return Ok(());
+                }
 
                 // State block variable: store to state block
                 if let Some(sv) = self.state_layout.vars.get(name) {
@@ -1683,6 +1778,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match &expr.node {
             Expr::Literal(lit) => self.emit_literal(lit, expr.id),
             Expr::Variable(name) => {
+                // Mutable builtin: load from builtins array
+                if self.is_mutable_builtin(name) {
+                    return self.load_mutable_builtin(name);
+                }
                 // State block variable: load from state block
                 if self.is_state_var(name) {
                     return self.load_state_var(name);

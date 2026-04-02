@@ -475,14 +475,14 @@ pub fn run_pdc_tests(
     source_path: Option<&FsPath>,
 ) -> Result<Vec<runtime::PdcTestResult>, PdcError> {
     let (compiled, state_layout) = compile_only(source, source_path)?;
-    let builtins = [200.0f64, 200.0f64];
+    let mut builtins = [200.0f64, 200.0f64];
 
     let mut results = Vec::new();
     for (test_name, test_fn) in &compiled.test_fns {
         let mut scene = SceneBuilder::new();
         let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -514,20 +514,30 @@ pub fn compile_only(
     source: &str,
     source_path: Option<&FsPath>,
 ) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
+    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
+        ("width", ast::PdcType::F32),
+        ("height", ast::PdcType::F32),
+    ];
+    compile_only_with_builtins(source, source_path, &builtins_layout)
+}
+
+/// Like `compile_only`, but with a custom builtins layout.
+/// Use `codegen::PIPELINE_BUILTINS` for the full pipeline builtins set.
+pub fn compile_only_with_builtins(
+    source: &str,
+    source_path: Option<&FsPath>,
+    builtins_layout: &[(&str, ast::PdcType)],
+) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let program = load_and_parse(source, base_dir)?;
     // No DCE — we want all functions available for testing
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
-        ("width", ast::PdcType::F32),
-        ("height", ast::PdcType::F32),
-    ];
     codegen::compile(
         &program,
         &checker.types,
-        &builtins_layout,
+        builtins_layout,
         &checker.user_fns,
         &checker.structs,
         &checker.enums,
@@ -546,10 +556,10 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
          fn __eval__() -> {expected_type} {{ return {expr} }}\n"
     );
     let (compiled, _state_layout) = compile_only(&source, None)?;
-    let builtins = [200.0f64, 200.0f64];
+    let mut builtins = [200.0f64, 200.0f64];
     let mut scene_builder = SceneBuilder::new();
     let mut ctx = PdcContext {
-        builtins: builtins.as_ptr(),
+        builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: std::ptr::null_mut(),
     };
@@ -731,11 +741,11 @@ pub fn compile_and_run(
     let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
 
     // 4. Execute
-    let builtins = [width as f64, height as f64];
+    let mut builtins = [width as f64, height as f64];
     let mut scene_builder = SceneBuilder::new();
     let mut state_block = state_layout.alloc();
     let mut ctx = PdcContext {
-        builtins: builtins.as_ptr(),
+        builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: state_block.as_mut_ptr(),
     };
@@ -915,11 +925,11 @@ mod tests {
     fn compile_and_call(source: &str, fn_name: &str, args: &[PdcValue]) -> PdcValue {
         let full = format!("{}{}", pdc_header(), source);
         let (compiled, state_layout) = compile_only(&full, None).expect("compile_only failed");
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1088,11 +1098,11 @@ mod tests {
     fn call_fn_unknown_name() {
         let full = format!("{}fn dummy() -> i32 {{ return 0 }}", pdc_header());
         let (compiled, state_layout) = compile_only(&full, None).unwrap();
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1105,11 +1115,11 @@ mod tests {
     fn call_fn_wrong_arg_count() {
         let full = format!("{}fn add(a: f64, b: f64) -> f64 {{ return a + b }}", pdc_header());
         let (compiled, state_layout) = compile_only(&full, None).unwrap();
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut state_block = state_layout.alloc();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1359,11 +1369,11 @@ mod tests {
 
     fn run_scene_pipeline(src: &str, width: u32, height: u32) -> super::VectorScene {
         let (compiled, state_layout) = super::compile_for_pipeline(src, None).unwrap();
-        let builtins = [width as f64, height as f64];
+        let mut builtins = [width as f64, height as f64];
         let mut scene_builder = super::SceneBuilder::new();
         let mut state_block = state_layout.alloc();
         let mut ctx = super::PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene_builder as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1504,10 +1514,10 @@ mod tests {
             fn increment() { x = x + 1.0 }
             fn get_x() -> f64 { return x }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1531,10 +1541,10 @@ mod tests {
             var counter: f64 = 42.0
             fn get_counter() -> f64 { return counter }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1557,10 +1567,10 @@ mod tests {
             fn get_c() -> bool { return c }
             fn set_c(val: bool) { c = val }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1583,10 +1593,10 @@ mod tests {
             fn frame() { counter = counter + 1.0 }
             fn get_counter() -> f64 { return counter }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1646,10 +1656,10 @@ mod tests {
                 return global_x
             }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1692,10 +1702,10 @@ mod tests {
             fn frame() { counter = counter + 1.0 }
             fn get_counter() -> f64 { return counter }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1721,10 +1731,10 @@ mod tests {
             var x: f64 = 5.0
             fn get_x() -> f64 { return x }
         "#);
-        let builtins = [200.0f64, 200.0f64];
+        let mut builtins = [200.0f64, 200.0f64];
         let mut scene = SceneBuilder::new();
         let mut ctx = PdcContext {
-            builtins: builtins.as_ptr(),
+            builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
         };
@@ -1735,5 +1745,122 @@ mod tests {
 
         let result = unsafe { compiled.call_fn("get_x", &mut ctx, &[]).unwrap() };
         assert_eq!(result, PdcValue::F64(5.0));
+    }
+
+    // ---- Mutable builtins tests (Phase 3) ----
+
+    #[test]
+    fn mutable_builtin_read_and_write() {
+        // Use the expanded pipeline builtins layout
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin const time: f64
+            builtin const mouse_x: f64
+            builtin const mouse_y: f64
+            builtin var center_x: f64
+            builtin var center_y: f64
+            builtin var zoom: f64
+            builtin var paused: bool
+
+            fn get_time() -> f64 { return time }
+            fn get_zoom() -> f64 { return zoom }
+            fn set_zoom(z: f64) { zoom = z }
+            fn toggle_pause() { paused = !paused }
+            fn get_paused() -> bool { return paused }
+            fn pan_left() { center_x = center_x - 0.02 / zoom }
+            fn get_center_x() -> f64 { return center_x }
+        "#;
+        let (compiled, state_layout) = compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS).expect("compile failed");
+
+        // Pipeline builtins: width=200, height=200, time=1.5, mouse_x=100, mouse_y=50,
+        //                     center_x=0.0, center_y=0.0, zoom=2.0, paused=0.0, frame=0, ...
+        let mut builtins = [
+            200.0f64, 200.0, 1.5, 100.0, 50.0,
+            0.0, 0.0, 2.0, 0.0, 0.0,
+            0.0, 0.0,
+        ];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        // Run pdc_main (processes builtin declarations)
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Read immutable builtin
+        let time = unsafe { compiled.call_fn("get_time", &mut ctx, &[]).unwrap() };
+        assert_eq!(time, PdcValue::F64(1.5));
+
+        // Read mutable builtin
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(2.0));
+
+        // Write mutable builtin from PDC
+        unsafe { compiled.call_fn("set_zoom", &mut ctx, &[PdcValue::F64(4.0)]).unwrap(); }
+
+        // Read back from PDC — should see 4.0
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(4.0));
+
+        // Read back from Rust — builtins array should be updated
+        assert_eq!(builtins[7], 4.0); // zoom is index 7
+
+        // Toggle paused (false → true)
+        unsafe { compiled.call_fn("toggle_pause", &mut ctx, &[]).unwrap(); }
+        let paused = unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() };
+        assert_eq!(paused, PdcValue::Bool(true));
+        assert_eq!(builtins[8], 1.0); // paused is index 8, true = 1.0
+
+        // Pan left: center_x = 0.0 - 0.02/4.0 = -0.005
+        unsafe { compiled.call_fn("pan_left", &mut ctx, &[]).unwrap(); }
+        let cx = unsafe { compiled.call_fn("get_center_x", &mut ctx, &[]).unwrap() };
+        assert_eq!(cx, PdcValue::F64(-0.005));
+        assert_eq!(builtins[5], -0.005); // center_x is index 5
+    }
+
+    #[test]
+    fn host_can_update_mutable_builtins_between_frames() {
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin const time: f64
+            builtin const mouse_x: f64
+            builtin const mouse_y: f64
+            builtin var center_x: f64
+            builtin var center_y: f64
+            builtin var zoom: f64
+            builtin var paused: bool
+            builtin var frame: u64
+            builtin const mouse_down: bool
+            builtin const sample_index: u32
+
+            fn get_zoom() -> f64 { return zoom }
+        "#;
+        let (compiled, state_layout) = compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS).expect("compile failed");
+        let mut builtins = [200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Host reads zoom = 1.0
+        let z = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(z, PdcValue::F64(1.0));
+
+        // Host updates zoom between frames
+        builtins[7] = 5.0;
+
+        // PDC reads the updated value
+        let z = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(z, PdcValue::F64(5.0));
     }
 }

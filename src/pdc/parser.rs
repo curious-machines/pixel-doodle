@@ -197,12 +197,18 @@ impl<'a> Parser<'a> {
 
     fn parse_builtin_decl(&mut self, start: Span) -> Result<Spanned<Stmt>, PdcError> {
         self.advance();
-        self.expect(&TokenKind::Const)?;
+        let mutable = if *self.peek() == TokenKind::Var {
+            self.advance();
+            true
+        } else {
+            self.expect(&TokenKind::Const)?;
+            false
+        };
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.parse_type()?;
         let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-        Ok(self.ids.spanned(Stmt::BuiltinDecl { name, ty }, span))
+        Ok(self.ids.spanned(Stmt::BuiltinDecl { name, ty, mutable }, span))
     }
 
     fn parse_const_decl(&mut self, start: Span, vis: Visibility) -> Result<Spanned<Stmt>, PdcError> {
@@ -1413,9 +1419,22 @@ mod tests {
     #[test]
     fn builtin_decl() {
         match parse_one("builtin const width: f32") {
-            Stmt::BuiltinDecl { name, ty } => {
+            Stmt::BuiltinDecl { name, ty, mutable } => {
                 assert_eq!(name, "width");
                 assert_eq!(ty, PdcType::F32);
+                assert!(!mutable);
+            }
+            other => panic!("expected BuiltinDecl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_var_decl() {
+        match parse_one("builtin var paused: bool") {
+            Stmt::BuiltinDecl { name, ty, mutable } => {
+                assert_eq!(name, "paused");
+                assert_eq!(ty, PdcType::Bool);
+                assert!(mutable);
             }
             other => panic!("expected BuiltinDecl, got {:?}", other),
         }

@@ -266,7 +266,7 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// `builtin const name: type`
-    BuiltinDecl { name: String, ty: PdcType },
+    BuiltinDecl { name: String, ty: PdcType, mutable: bool },
     /// `[pub] const name [: type] = expr`
     ConstDecl {
         vis: Visibility,
