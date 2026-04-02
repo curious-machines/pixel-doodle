@@ -563,8 +563,12 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
 
     // Output-only mode
     if let Some(ref output_path) = args.output {
-        runtime.execute_init_block(&thread_pool);
-        runtime.execute_frame(0.0, &thread_pool);
+        if runtime.has_gpu_kernels {
+            runtime.execute_gpu_headless();
+        } else {
+            runtime.execute_init_block(&thread_pool);
+            runtime.execute_frame(0.0, &thread_pool);
+        }
         bench::write_ppm(output_path, runtime.display_pixels(), runtime.width, runtime.height);
         eprintln!("Wrote {output_path}");
         return;

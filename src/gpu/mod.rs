@@ -52,7 +52,7 @@ pub struct GpuBackend {
 
 impl GpuBackend {
     /// Build pipeline and buffers on the given device.
-    fn build(
+    pub fn build(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         width: u32,

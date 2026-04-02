@@ -1,3 +1,4 @@
+use crate::display::Display;
 use crate::vector::flatten::{CubicBezier, Curve, Point, QuadBezier};
 
 /// Context passed to JIT'd PDC functions.
@@ -94,6 +95,35 @@ pub trait PipelineHost {
     fn was_redraw_requested(&self) -> bool { false }
     /// Clear the redraw-requested flag for the next frame.
     fn clear_redraw_requested(&mut self) {}
+
+    // ── GPU lifecycle ──
+
+    /// Set the render mode ("gpu" or "cpu").
+    fn set_render(&mut self, _mode: &str) {}
+    /// Set the codegen backend ("cranelift" or "llvm").
+    fn set_codegen(&mut self, _backend: &str) {}
+    /// Initialize GPU resources. Called after display is available.
+    fn init_gpu(&mut self, _display: &Display) {}
+    /// Whether GPU rendered this frame (for render_gpu_frame dispatch).
+    fn gpu_rendered_this_frame(&self) -> bool { false }
+    /// Clear the GPU rendered flag and track last-frame state.
+    fn end_frame_gpu(&mut self) {}
+    /// Whether the last frame used GPU rendering (for re-present).
+    fn last_frame_was_gpu(&self) -> bool { false }
+    /// Render the GPU frame to the display. Returns true if rendered.
+    fn render_gpu_frame(&self, _display: &Display) -> bool { false }
+    /// Re-present the last GPU frame. Returns true if re-presented.
+    fn re_present_gpu_frame(&self, _display: &Display) -> bool { false }
+    /// Whether the host is in GPU render mode.
+    fn is_gpu_render(&self) -> bool { false }
+    /// Finalize GPU pixel kernel setup after init block has loaded kernels.
+    fn finalize_gpu_pixel_kernel(&mut self) {}
+    /// Initialize GPU resources headlessly (no display/window).
+    fn init_gpu_headless(&mut self) {}
+    /// Read back GPU pixel data to the host's pixel buffer.
+    /// For pixel kernels: dispatches the compute shader headlessly and reads back.
+    /// For sim kernels: reads back the display buffer from GpuSimRunner.
+    fn readback_gpu_pixels(&mut self) {}
 }
 
 /// Fill rule for path filling.

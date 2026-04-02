@@ -7,8 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::display::Display;
+use crate::gpu::{self, GpuBackend, sim_runner::GpuSimRunner};
 use crate::jit;
 use crate::pdc;
+use crate::pdp::ast::GpuElementType;
 use crate::texture::TextureData;
 use crate::vector::VectorScene;
 use crate::pdc::codegen::{CompiledProgram, StateLayout, PIPELINE_BUILTINS};
@@ -68,6 +70,28 @@ struct HostState {
     render: String,
     /// Codegen backend: "cranelift" or "llvm".
     codegen: String,
+    /// GPU sim runner for simulation kernels + buffer management.
+    gpu_sim_runner: Option<GpuSimRunner>,
+    /// GPU backend for pixel kernels.
+    gpu_backend: Option<GpuBackend>,
+    /// Whether a GPU render was requested this frame.
+    gpu_rendered_this_frame: bool,
+    /// WGSL source for deferred GpuBackend creation (pixel kernels).
+    gpu_pixel_kernel_source: Option<String>,
+    /// Resolved pixel kernel user args for GPU uniform buffer.
+    gpu_user_args: Vec<f32>,
+    /// Which buffer to present for GPU sim display.
+    gpu_pixel_buffer_name: Option<String>,
+    /// Whether the last frame used GPU rendering (for re-present).
+    last_frame_was_gpu: bool,
+    /// Loaded textures for GPU pixel kernel (references by index).
+    gpu_textures: Vec<TextureData>,
+    /// wgpu device (cloned from display during init_gpu).
+    gpu_device: Option<wgpu::Device>,
+    /// wgpu queue (cloned from display during init_gpu).
+    gpu_queue: Option<wgpu::Queue>,
+    /// Kernel handle → name mapping for GPU sim kernels.
+    gpu_kernel_names: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -111,6 +135,24 @@ struct CpuKernel {
 
 impl PipelineHost for HostState {
     fn create_buffer(&mut self, type_name: &str, init_value: f64) -> i32 {
+        let handle = self.buffers.len() as i32;
+        let name = format!("buffer_{handle}");
+
+        // GPU path: create buffer in GpuSimRunner
+        if let Some(ref mut runner) = self.gpu_sim_runner {
+            let gpu_type = parse_gpu_element_type(type_name);
+            runner.add_buffer(&name, gpu_type);
+            runner.init_buffer_constant(&name, init_value);
+            let elem_size = gpu_type.byte_size() as usize;
+            self.buffers.push(NamedBuffer {
+                name,
+                data: Vec::new(), // GPU-managed, no CPU data
+                elem_size,
+            });
+            return handle;
+        }
+
+        // CPU path
         let elem_size = match type_name {
             "gpu_f32" => 4,
             "gpu_i32" | "gpu_u32" => 4,
@@ -133,9 +175,8 @@ impl PipelineHost for HostState {
             }
             data
         };
-        let handle = self.buffers.len() as i32;
         self.buffers.push(NamedBuffer {
-            name: format!("buffer_{handle}"),
+            name,
             data,
             elem_size,
         });
@@ -143,16 +184,23 @@ impl PipelineHost for HostState {
     }
 
     fn swap_buffers(&mut self, a: i32, b: i32) {
-        let (a, b) = (a as usize, b as usize);
-        if a < self.buffers.len() && b < self.buffers.len() && a != b {
-            // Swap the data vecs
-            let ptr_a = &mut self.buffers[a].data as *mut Vec<u8>;
-            let ptr_b = &mut self.buffers[b].data as *mut Vec<u8>;
-            unsafe { std::ptr::swap(ptr_a, ptr_b); }
+        let (ai, bi) = (a as usize, b as usize);
+        if ai < self.buffers.len() && bi < self.buffers.len() && ai != bi {
+            // GPU path: swap in GpuSimRunner
+            if let Some(ref mut runner) = self.gpu_sim_runner {
+                let name_a = self.buffers[ai].name.clone();
+                let name_b = self.buffers[bi].name.clone();
+                runner.swap_buffers(&name_a, &name_b);
+            } else {
+                // CPU path: swap the data vecs
+                let ptr_a = &mut self.buffers[ai].data as *mut Vec<u8>;
+                let ptr_b = &mut self.buffers[bi].data as *mut Vec<u8>;
+                unsafe { std::ptr::swap(ptr_a, ptr_b); }
+            }
         }
     }
 
-    fn load_kernel(&mut self, name: &str, path: &str, _kind: i32) -> i32 {
+    fn load_kernel(&mut self, name: &str, path: &str, kind: i32) -> i32 {
         let full_path = self.base_dir.join(path);
         let wgsl_src = match std::fs::read_to_string(&full_path) {
             Ok(s) => s,
@@ -162,6 +210,29 @@ impl PipelineHost for HostState {
             }
         };
 
+        // GPU path — when GPU resources are available (init_gpu or init_gpu_headless was called)
+        let gpu_available = self.gpu_device.is_some() || self.gpu_sim_runner.is_some();
+        if self.render == "gpu" && gpu_available {
+            if kind == 0 {
+                // Pixel kernel — store WGSL source for deferred GpuBackend creation
+                self.gpu_pixel_kernel_source = Some(wgsl_src);
+                // Return a pseudo-handle; pixel kernel dispatch is handled specially
+                return 0;
+            } else {
+                // Sim kernel (kind=1) — compile into GpuSimRunner pipeline
+                if let Some(ref mut runner) = self.gpu_sim_runner {
+                    if let Err(e) = runner.add_pipeline(name, &wgsl_src) {
+                        eprintln!("[pdc-runtime] failed to compile GPU pipeline '{}': {}", name, e);
+                        return -1;
+                    }
+                    let handle = self.gpu_kernel_names.len() as i32;
+                    self.gpu_kernel_names.push(name.to_string());
+                    return handle;
+                }
+            }
+        }
+
+        // CPU path
         #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
         {
             let compiled = match self.codegen.as_str() {
@@ -209,6 +280,75 @@ impl PipelineHost for HostState {
     }
 
     fn run_kernel(&mut self, kernel_handle: i32) {
+        // GPU path — when GPU resources are available
+        let gpu_available = self.gpu_device.is_some() || self.gpu_sim_runner.is_some();
+        if self.render == "gpu" && gpu_available {
+            // Check if this is a pixel kernel (handle 0 and gpu_pixel_kernel_source is set)
+            if self.gpu_pixel_kernel_source.is_some() && kernel_handle == 0 {
+                // Pixel kernel: resolve user args, mark as GPU rendered
+                self.gpu_user_args = self.pending_args.iter()
+                    .map(|a| a.value as f32)
+                    .collect();
+                self.gpu_rendered_this_frame = true;
+                self.pending_bindings.clear();
+                self.pending_args.clear();
+                return;
+            }
+
+            // Sim kernel: dispatch via GpuSimRunner
+            if let Some(ref runner) = self.gpu_sim_runner {
+                let handle = kernel_handle as usize;
+                let kernel_name = if handle < self.gpu_kernel_names.len() {
+                    self.gpu_kernel_names[handle].clone()
+                } else {
+                    eprintln!("[pdc-runtime] invalid GPU kernel handle {}", kernel_handle);
+                    self.pending_bindings.clear();
+                    self.pending_args.clear();
+                    return;
+                };
+
+                // Build bindings: map PDC buffer handles to GpuSimRunner buffer names
+                let bindings: Vec<(String, String)> = self.pending_bindings.iter()
+                    .filter_map(|b| {
+                        let buf_idx = b.buffer_handle as usize;
+                        if buf_idx < self.buffers.len() {
+                            Some((b.param_name.clone(), self.buffers[buf_idx].name.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let binding_refs: Vec<(&str, &str)> = bindings.iter()
+                    .map(|(a, b)| (a.as_str(), b.as_str()))
+                    .collect();
+
+                // Resolve user args with correct types from WGSL Params struct
+                let arg_types = runner.user_arg_types(&kernel_name);
+                let mut arg_bytes: Vec<u8> = Vec::new();
+                for (i, a) in self.pending_args.iter().enumerate() {
+                    let arg_type = arg_types.get(i).copied()
+                        .unwrap_or(gpu::sim_runner::WgslArgType::F32);
+                    match arg_type {
+                        gpu::sim_runner::WgslArgType::U32 => {
+                            arg_bytes.extend_from_slice(&(a.value as u32).to_le_bytes());
+                        }
+                        gpu::sim_runner::WgslArgType::I32 => {
+                            arg_bytes.extend_from_slice(&(a.value as i32).to_le_bytes());
+                        }
+                        gpu::sim_runner::WgslArgType::F32 => {
+                            arg_bytes.extend_from_slice(&(a.value as f32).to_le_bytes());
+                        }
+                    }
+                }
+                runner.dispatch(&kernel_name, &binding_refs, &arg_bytes);
+            }
+
+            self.pending_bindings.clear();
+            self.pending_args.clear();
+            return;
+        }
+
+        // CPU path
         #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
         {
             let handle = kernel_handle as usize;
@@ -329,21 +469,32 @@ impl PipelineHost for HostState {
     }
 
     fn display(&mut self) {
+        let gpu_available = self.gpu_device.is_some() || self.gpu_sim_runner.is_some();
+        if self.render == "gpu" && gpu_available && self.gpu_pixel_kernel_source.is_some() {
+            // GPU pixel kernel — mark as rendered, actual render in render_gpu_frame
+            self.gpu_rendered_this_frame = true;
+        }
         self.display_requested = true;
     }
 
     fn display_buffer(&mut self, buffer_handle: i32) {
         let handle = buffer_handle as usize;
         if handle < self.buffers.len() {
-            let buf = &self.buffers[handle];
-            // Copy buffer data to pixel_buffer (assuming u32 ARGB)
-            let pixel_count = self.pixel_buffer.len();
-            let src = &buf.data;
-            for i in 0..pixel_count.min(src.len() / 4) {
-                let offset = i * 4;
-                self.pixel_buffer[i] = u32::from_le_bytes([
-                    src[offset], src[offset + 1], src[offset + 2], src[offset + 3],
-                ]);
+            if self.gpu_sim_runner.is_some() {
+                // GPU sim path — mark buffer for GPU present
+                self.gpu_rendered_this_frame = true;
+                self.gpu_pixel_buffer_name = Some(self.buffers[handle].name.clone());
+            } else {
+                // CPU path — copy buffer data to pixel_buffer (assuming u32 ARGB)
+                let buf = &self.buffers[handle];
+                let pixel_count = self.pixel_buffer.len();
+                let src = &buf.data;
+                for i in 0..pixel_count.min(src.len() / 4) {
+                    let offset = i * 4;
+                    self.pixel_buffer[i] = u32::from_le_bytes([
+                        src[offset], src[offset + 1], src[offset + 2], src[offset + 3],
+                    ]);
+                }
             }
         }
         self.display_requested = true;
@@ -413,9 +564,16 @@ impl PipelineHost for HostState {
         let mut buffer_handles = Vec::new();
         for (name, data) in buffer_data {
             let buf_handle = self.buffers.len() as i32;
+            let buf_name = format!("__scene_{}_{}", idx, name);
             let elem_size = if name == "segments" { 16 } else { 4 };
+
+            // GPU path: upload scene data to GpuSimRunner
+            if let Some(ref mut runner) = self.gpu_sim_runner {
+                runner.add_buffer_with_data(&buf_name, &data);
+            }
+
             self.buffers.push(NamedBuffer {
-                name: format!("__scene_{}_{}", idx, name),
+                name: buf_name,
                 data,
                 elem_size,
             });
@@ -454,6 +612,10 @@ impl PipelineHost for HostState {
                 let handle = self.textures.len() as i32;
                 eprintln!("[pdc-runtime] loaded texture '{}' ({}x{}) as handle {}",
                     name, tex.width, tex.height, handle);
+                // Store a copy for GPU backend creation if needed
+                if self.render == "gpu" {
+                    self.gpu_textures.push(tex.clone());
+                }
                 self.textures.push(tex);
                 handle
             }
@@ -514,6 +676,183 @@ impl PipelineHost for HostState {
     fn request_redraw(&mut self) { self.redraw_requested = true; }
     fn was_redraw_requested(&self) -> bool { self.redraw_requested }
     fn clear_redraw_requested(&mut self) { self.redraw_requested = false; }
+
+    fn set_render(&mut self, mode: &str) { self.render = mode.to_string(); }
+    fn set_codegen(&mut self, backend: &str) { self.codegen = backend.to_string(); }
+
+    fn init_gpu(&mut self, display: &Display) {
+        if self.render != "gpu" {
+            return;
+        }
+
+        // Store device/queue for deferred GpuBackend creation
+        self.gpu_device = Some(display.device.clone());
+        self.gpu_queue = Some(display.queue.clone());
+
+        // Create GpuSimRunner for sim kernels + buffer management
+        if self.gpu_sim_runner.is_none() {
+            self.gpu_sim_runner = Some(GpuSimRunner::new(display, self.width, self.height));
+        }
+    }
+
+    fn gpu_rendered_this_frame(&self) -> bool { self.gpu_rendered_this_frame }
+
+    fn end_frame_gpu(&mut self) {
+        self.last_frame_was_gpu = self.gpu_rendered_this_frame;
+        self.gpu_rendered_this_frame = false;
+    }
+
+    fn last_frame_was_gpu(&self) -> bool { self.last_frame_was_gpu }
+
+    fn render_gpu_frame(&self, display: &Display) -> bool {
+        if !self.gpu_rendered_this_frame {
+            return false;
+        }
+
+        // GPU pixel kernel path
+        if let Some(ref gpu) = self.gpu_backend {
+            let center_x = self.builtins_snapshot[B::CENTER_X];
+            let center_y = self.builtins_snapshot[B::CENTER_Y];
+            let zoom = self.builtins_snapshot[B::ZOOM].max(1e-10);
+            let time = self.builtins_snapshot[B::TIME];
+            let sample_index = self.builtins_snapshot[B::SAMPLE_INDEX] as u32;
+            gpu.render(
+                display,
+                center_x, center_y, zoom,
+                sample_index, sample_index + 1,
+                time,
+                &self.gpu_user_args,
+            );
+            return true;
+        }
+
+        // GPU sim kernel path — present the pixel buffer from the runner
+        if let Some(ref runner) = self.gpu_sim_runner {
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name {
+                runner.present_pixels(display, buf_name);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn re_present_gpu_frame(&self, display: &Display) -> bool {
+        if !self.last_frame_was_gpu {
+            return false;
+        }
+
+        // GPU pixel kernel path
+        if let Some(ref gpu) = self.gpu_backend {
+            let center_x = self.builtins_snapshot[B::CENTER_X];
+            let center_y = self.builtins_snapshot[B::CENTER_Y];
+            let zoom = self.builtins_snapshot[B::ZOOM].max(1e-10);
+            let time = self.builtins_snapshot[B::TIME];
+            let sample_index = self.builtins_snapshot[B::SAMPLE_INDEX] as u32;
+            gpu.render(
+                display,
+                center_x, center_y, zoom,
+                sample_index, sample_index + 1,
+                time,
+                &self.gpu_user_args,
+            );
+            return true;
+        }
+
+        // GPU sim kernel path
+        if let Some(ref runner) = self.gpu_sim_runner {
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name {
+                runner.present_pixels(display, buf_name);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn is_gpu_render(&self) -> bool { self.render == "gpu" }
+
+    fn init_gpu_headless(&mut self) {
+        if self.render != "gpu" {
+            return;
+        }
+        // Create headless GpuSimRunner (owns its own device/queue)
+        if self.gpu_sim_runner.is_none() {
+            let runner = GpuSimRunner::new_headless(self.width, self.height);
+            self.gpu_sim_runner = Some(runner);
+        }
+        // Mark as having a GPU device so load_kernel/run_kernel use GPU paths.
+        // For headless we don't have a wgpu::Device to clone from Display,
+        // so we use a sentinel — the actual device lives inside GpuSimRunner.
+        // For pixel kernels we'll create a headless GpuBackend in finalize_gpu_pixel_kernel.
+        // Set gpu_device to signal "GPU is available" — we use new_headless for the backend.
+    }
+
+    fn finalize_gpu_pixel_kernel(&mut self) {
+        if self.gpu_backend.is_some() || self.gpu_pixel_kernel_source.is_none() {
+            return;
+        }
+        if let (Some(device), Some(queue)) = (&self.gpu_device, &self.gpu_queue) {
+            // Interactive mode: create from stored device/queue
+            let source = self.gpu_pixel_kernel_source.as_ref().unwrap();
+            let tex_refs: Vec<&TextureData> = self.gpu_textures.iter().collect();
+            self.gpu_backend = Some(GpuBackend::build(
+                device, queue, self.width, self.height, 256, source, &tex_refs,
+            ));
+        } else if self.gpu_sim_runner.is_some() {
+            // Headless mode: create headless GpuBackend with its own device
+            let source = self.gpu_pixel_kernel_source.as_ref().unwrap();
+            let tex_refs: Vec<&TextureData> = self.gpu_textures.iter().collect();
+            let (backend, device, queue) = GpuBackend::new_headless(
+                self.width, self.height, 256, source, &tex_refs,
+            );
+            self.gpu_backend = Some(backend);
+            self.gpu_device = Some(device);
+            self.gpu_queue = Some(queue);
+        }
+    }
+
+    fn readback_gpu_pixels(&mut self) {
+        // Pixel kernel path: dispatch headless and read back
+        if let Some(ref gpu) = self.gpu_backend {
+            if let (Some(device), Some(queue)) = (&self.gpu_device, &self.gpu_queue) {
+                let center_x = self.builtins_snapshot[B::CENTER_X];
+                let center_y = self.builtins_snapshot[B::CENTER_Y];
+                let zoom = self.builtins_snapshot[B::ZOOM].max(1e-10);
+                let time = self.builtins_snapshot[B::TIME];
+                let sample_index = self.builtins_snapshot[B::SAMPLE_INDEX] as u32;
+                gpu.dispatch_compute(
+                    device, queue,
+                    center_x, center_y, zoom,
+                    sample_index, sample_index + 1,
+                    time,
+                    &self.gpu_user_args,
+                );
+                self.pixel_buffer = gpu.readback_pixels(device, queue);
+                return;
+            }
+        }
+
+        // Sim kernel path: read back the display buffer from GpuSimRunner
+        if let Some(ref runner) = self.gpu_sim_runner {
+            if let Some(ref buf_name) = self.gpu_pixel_buffer_name {
+                self.pixel_buffer = runner.readback_buffer(buf_name);
+            }
+        }
+    }
+}
+
+/// Map PDC type name strings to GpuElementType.
+fn parse_gpu_element_type(type_name: &str) -> GpuElementType {
+    match type_name {
+        "gpu_f32" => GpuElementType::F32,
+        "gpu_i32" => GpuElementType::I32,
+        "gpu_u32" => GpuElementType::U32,
+        "gpu_vec2_f32" => GpuElementType::Vec2F32,
+        "gpu_vec3_f32" => GpuElementType::Vec3F32,
+        "gpu_vec4_f32" => GpuElementType::Vec4F32,
+        _ => GpuElementType::F32,
+    }
 }
 
 fn bytemuck_cast_u32(data: &[u32]) -> Vec<u8> {
@@ -596,12 +935,23 @@ impl PdcRuntime {
             accum: None,
             builtins_snapshot: [0.0; B::COUNT],
             base_dir: base_dir.to_path_buf(),
-            render: "cpu".to_string(),
+            render: "gpu".to_string(),
             codegen: if cfg!(feature = "cranelift-backend") {
                 "cranelift".to_string()
             } else {
                 "llvm".to_string()
             },
+            gpu_sim_runner: None,
+            gpu_backend: None,
+            gpu_rendered_this_frame: false,
+            gpu_pixel_kernel_source: None,
+            gpu_user_args: Vec::new(),
+            gpu_pixel_buffer_name: None,
+            last_frame_was_gpu: false,
+            gpu_textures: Vec::new(),
+            gpu_device: None,
+            gpu_queue: None,
+            gpu_kernel_names: Vec::new(),
         });
 
         let title = source_path
@@ -625,7 +975,7 @@ impl PdcRuntime {
             mouse_x: 0.0,
             mouse_y: 0.0,
             mouse_down: false,
-            has_gpu_kernels: false, // PDC runtime is CPU-only for now
+            has_gpu_kernels: true, // default render mode is GPU
             pixel_buffer,
             tile_height: 16,
             title,
@@ -692,10 +1042,13 @@ impl PdcRuntime {
                     }
                 }
                 "render" => {
-                    // Accepted but currently only CPU is supported
+                    if value == "gpu" || value == "cpu" {
+                        self.host.set_render(value);
+                        self.has_gpu_kernels = value == "gpu";
+                    }
                 }
                 "codegen" => {
-                    // Accepted for compatibility
+                    self.host.set_codegen(value);
                 }
                 "pipeline" => {
                     // Accepted for compatibility
@@ -742,8 +1095,13 @@ impl PdcRuntime {
 
         self.read_back_builtins();
 
-        // Copy host pixel buffer to our pixel buffer
-        self.sync_pixels();
+        // Finalize GPU pixel kernel now that init has loaded WGSL source
+        self.host.finalize_gpu_pixel_kernel();
+
+        // Copy host pixel buffer to our pixel buffer (CPU path only)
+        if !self.host.gpu_rendered_this_frame() {
+            self.sync_pixels();
+        }
     }
 
     /// Execute one frame. Returns true if pixels were updated.
@@ -763,6 +1121,7 @@ impl PdcRuntime {
         }
 
         self.builtins[B::TIME] = time;
+        self.host.end_frame_gpu(); // save last_frame_was_gpu, clear gpu_rendered_this_frame
         self.host.update_builtins(&self.builtins);
         self.host.clear_display_requested();
         self.host.clear_redraw_requested();
@@ -791,7 +1150,7 @@ impl PdcRuntime {
         unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
         self.read_back_builtins();
 
-        if self.host.was_display_requested() {
+        if self.host.was_display_requested() && !self.host.gpu_rendered_this_frame() {
             self.sync_pixels();
         }
 
@@ -799,8 +1158,11 @@ impl PdcRuntime {
         true
     }
 
-    pub fn init_gpu(&mut self, _display: &Display) {
-        // GPU not yet supported in PdcRuntime
+    pub fn init_gpu(&mut self, display: &Display) {
+        self.host.init_gpu(display);
+        if self.host.is_gpu_render() {
+            self.has_gpu_kernels = true;
+        }
     }
 
     pub fn handle_keypress(&mut self, key_name: &str) -> bool {
@@ -827,12 +1189,12 @@ impl PdcRuntime {
         false
     }
 
-    pub fn render_gpu_frame(&self, _display: &Display) -> bool {
-        false // CPU-only for now
+    pub fn render_gpu_frame(&self, display: &Display) -> bool {
+        self.host.render_gpu_frame(display)
     }
 
-    pub fn re_present_gpu_frame(&self, _display: &Display) -> bool {
-        false
+    pub fn re_present_gpu_frame(&self, display: &Display) -> bool {
+        self.host.re_present_gpu_frame(display)
     }
 
     pub fn display_pixels(&self) -> &[u32] {
@@ -858,9 +1220,19 @@ impl PdcRuntime {
     }
 
     pub fn execute_gpu_headless(&mut self) {
-        // No GPU support yet — fall back to CPU
+        // Initialize headless GPU resources (GpuSimRunner with its own device)
+        self.host.init_gpu_headless();
+
+        // Run init block — this calls load_kernel/create_buffer which now
+        // use the GPU path since gpu_sim_runner is available.
         self.execute_init_block(&None);
+
+        // Run one frame
         self.execute_frame(0.0, &None);
+
+        // Read back GPU pixels to host's pixel_buffer, then sync to ours
+        self.host.readback_gpu_pixels();
+        self.sync_pixels();
     }
 
     // ── Internal ──
