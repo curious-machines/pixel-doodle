@@ -342,6 +342,8 @@ pub struct PdcRuntime {
     frames_executed: u64,
     /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
     animated: bool,
+    /// Previous mouse_down state for edge detection.
+    mouse_was_down: bool,
 }
 
 impl PdcRuntime {
@@ -415,6 +417,7 @@ impl PdcRuntime {
             frame: 0,
             frames_executed: 0,
             animated: false,
+            mouse_was_down: false,
         })
     }
 
@@ -519,7 +522,23 @@ impl PdcRuntime {
         // leaking handles created by per-frame host function calls.
         self.scene_builder = SceneBuilder::new();
 
+        // Mouse edge detection: fire event handlers on transitions
+        let mouse_down_edge = self.mouse_down && !self.mouse_was_down;
+        let mouse_up_edge = !self.mouse_down && self.mouse_was_down;
+        self.mouse_was_down = self.mouse_down;
+
         let mut ctx = self.make_ctx();
+
+        if mouse_down_edge {
+            unsafe { let _ = self.compiled.call_event("on_click", &mut ctx); }
+        }
+        if self.mouse_down {
+            unsafe { let _ = self.compiled.call_event("on_mousedown", &mut ctx); }
+        }
+        if mouse_up_edge {
+            unsafe { let _ = self.compiled.call_event("on_mouseup", &mut ctx); }
+        }
+
         unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
         self.read_back_builtins();
 

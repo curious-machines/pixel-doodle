@@ -2,8 +2,8 @@
 
 builtin var paused: bool
 builtin var frame: u64
-builtin const mouse_x: f64
-builtin const mouse_y: f64
+builtin var mouse_x: f64
+builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
 var _buf_grid: i32 = 0
