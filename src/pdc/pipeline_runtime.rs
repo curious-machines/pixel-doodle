@@ -298,6 +298,8 @@ pub struct PdcRuntime {
     paused: bool,
     frame: u64,
     frames_executed: u64,
+    /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
+    animated: bool,
 }
 
 impl PdcRuntime {
@@ -368,6 +370,7 @@ impl PdcRuntime {
             paused: false,
             frame: 0,
             frames_executed: 0,
+            animated: false,
         })
     }
 
@@ -454,12 +457,21 @@ impl PdcRuntime {
             return false;
         }
 
+        // Skip if this frame was already executed (static scene, no animation)
+        if self.frame <= self.frames_executed && !self.animated {
+            return false;
+        }
+
         if !self.paused {
             self.frame += 1;
         }
 
         self.builtins[B::TIME] = time;
         self.host.clear_display_requested();
+
+        // Clear accumulated scene data from the previous frame to avoid
+        // leaking handles created by per-frame host function calls.
+        self.scene_builder = SceneBuilder::new();
 
         let mut ctx = self.make_ctx();
         unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
@@ -514,7 +526,7 @@ impl PdcRuntime {
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
-        !self.paused
+        self.animated && !self.paused
     }
 
     pub fn title(&self) -> String {
