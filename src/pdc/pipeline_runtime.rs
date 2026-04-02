@@ -53,6 +53,9 @@ struct HostState {
     redraw_requested: bool,
     /// Accumulation buffer for progressive rendering.
     accum: Option<crate::progressive::AccumulationBuffer>,
+    /// Snapshot of builtins for kernel param population.
+    /// Updated before each frame by PdcRuntime.
+    builtins_snapshot: [f64; B::COUNT],
     /// Base directory for resolving relative paths.
     base_dir: PathBuf,
     /// Render mode: "gpu" or "cpu".
@@ -210,25 +213,54 @@ impl PipelineHost for HostState {
                 }
             }
 
-            // Build params buffer (256 bytes)
+            // Build params buffer (256 bytes), populating built-in members
+            // from the builtins snapshot and user args from pending_args.
             let mut params = [0u8; 256];
             let w = self.width;
             let h = self.height;
+
+            // Compute view transform for pixel kernels
+            let center_x = self.builtins_snapshot[B::CENTER_X];
+            let center_y = self.builtins_snapshot[B::CENTER_Y];
+            let zoom = self.builtins_snapshot[B::ZOOM].max(1e-10);
+            let time = self.builtins_snapshot[B::TIME];
+            let sample_index = self.builtins_snapshot[B::SAMPLE_INDEX] as u32;
+            let aspect = w as f64 / h as f64;
+            let view_w = 3.5 / zoom;
+            let view_h = view_w / aspect;
+
+            let mut user_arg_index = 0;
             for member in &kernel.compiled.params_members {
-                let offset = member.offset as usize;
+                let off = member.offset as usize;
+                if off + 4 > params.len() { continue; }
                 match member.name.as_str() {
-                    "width" => params[offset..offset + 4].copy_from_slice(&w.to_le_bytes()),
-                    "height" => params[offset..offset + 4].copy_from_slice(&h.to_le_bytes()),
-                    "stride" => params[offset..offset + 4].copy_from_slice(&w.to_le_bytes()),
+                    "width" => params[off..off + 4].copy_from_slice(&w.to_le_bytes()),
+                    "height" => params[off..off + 4].copy_from_slice(&h.to_le_bytes()),
+                    "stride" => params[off..off + 4].copy_from_slice(&w.to_le_bytes()),
+                    "max_iter" => params[off..off + 4].copy_from_slice(&256u32.to_le_bytes()),
+                    "x_min" => params[off..off + 4].copy_from_slice(&((center_x - view_w / 2.0) as f32).to_le_bytes()),
+                    "y_min" => params[off..off + 4].copy_from_slice(&((center_y - view_h / 2.0) as f32).to_le_bytes()),
+                    "x_step" => params[off..off + 4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
+                    "y_step" => params[off..off + 4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
+                    "sample_index" => params[off..off + 4].copy_from_slice(&sample_index.to_le_bytes()),
+                    "sample_count" => params[off..off + 4].copy_from_slice(&(sample_index + 1).to_le_bytes()),
+                    "time" => params[off..off + 4].copy_from_slice(&(time as f32).to_le_bytes()),
+                    name if name.starts_with('_') => {} // padding
                     _ => {
-                        // Check pending args
+                        // Check pending args first (by name)
                         if let Some(arg) = self.pending_args.iter().find(|a| a.name == member.name) {
-                            let val = arg.value as f32;
-                            params[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                            if member.is_float {
+                                params[off..off + 4].copy_from_slice(&(arg.value as f32).to_le_bytes());
+                            } else {
+                                params[off..off + 4].copy_from_slice(&(arg.value as u32).to_le_bytes());
+                            }
+                        } else {
+                            user_arg_index += 1;
                         }
                     }
                 }
             }
+            let _ = user_arg_index;
 
             // Dispatch across all rows (single-threaded for simplicity)
             let fn_ptr = kernel.compiled.fn_ptr;
@@ -308,6 +340,10 @@ impl PipelineHost for HostState {
     fn has_buffers(&self) -> bool {
         !self.buffers.is_empty()
     }
+    fn update_builtins(&mut self, builtins: &[f64]) {
+        let n = builtins.len().min(B::COUNT);
+        self.builtins_snapshot[..n].copy_from_slice(&builtins[..n]);
+    }
     fn request_redraw(&mut self) { self.redraw_requested = true; }
     fn was_redraw_requested(&self) -> bool { self.redraw_requested }
     fn clear_redraw_requested(&mut self) { self.redraw_requested = false; }
@@ -379,6 +415,7 @@ impl PdcRuntime {
             display_requested: false,
             redraw_requested: false,
             accum: None,
+            builtins_snapshot: [0.0; B::COUNT],
             base_dir: base_dir.to_path_buf(),
             render: "cpu".to_string(),
             codegen: if cfg!(feature = "cranelift-backend") {
@@ -484,6 +521,7 @@ impl PdcRuntime {
 
     /// Initialize: run pdc_main (state init) + call init().
     pub fn execute_init_block(&mut self, _pool: &Option<rayon::ThreadPool>) {
+        self.host.update_builtins(&self.builtins);
         let mut ctx = self.make_ctx();
 
         // Run pdc_main to initialize state block
@@ -515,6 +553,7 @@ impl PdcRuntime {
         }
 
         self.builtins[B::TIME] = time;
+        self.host.update_builtins(&self.builtins);
         self.host.clear_display_requested();
         self.host.clear_redraw_requested();
 

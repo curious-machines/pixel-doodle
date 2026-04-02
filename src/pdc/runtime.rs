@@ -71,6 +71,8 @@ pub trait PipelineHost {
     fn is_accumulating(&self) -> bool { false }
     /// Whether any buffers have been created.
     fn has_buffers(&self) -> bool { false }
+    /// Update the builtins snapshot for kernel param population.
+    fn update_builtins(&mut self, _builtins: &[f64]) {}
     /// Request another frame after this one completes.
     fn request_redraw(&mut self) {}
     /// Whether a redraw was requested during this frame.
