@@ -2,14 +2,12 @@
 
 builtin const width: f32
 builtin const height: f32
-builtin var paused: bool
 
 var scene: i32 = 0
 var rasterizer: i32 = 0
 var _buf_pixels: i32 = 0
 
 fn init() {
-    paused = true
     scene = load_scene("basic", "basic_scene.pdc")
     rasterizer = load_kernel("rasterize", "../shared/tile_raster.wgsl", 1)
     _buf_pixels = create_buffer("gpu_u32", 0.0)

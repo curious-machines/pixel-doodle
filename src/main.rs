@@ -561,10 +561,9 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
             .expect("failed to create thread pool")
     });
 
-    // Output-only mode — force one frame even if paused
+    // Output-only mode
     if let Some(ref output_path) = args.output {
         runtime.execute_init_block(&thread_pool);
-        runtime.paused = false;
         runtime.execute_frame(0.0, &thread_pool);
         bench::write_ppm(output_path, runtime.display_pixels(), runtime.width, runtime.height);
         eprintln!("Wrote {output_path}");

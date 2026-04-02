@@ -550,7 +550,7 @@ pub struct PdcRuntime {
     pub tile_height: usize,
 
     title: String,
-    pub paused: bool,
+    paused: bool,
     frame: u64,
     frames_executed: u64,
     /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
