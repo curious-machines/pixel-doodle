@@ -47,7 +47,7 @@ impl ApplicationHandler for PdcApp {
         let display = Display::new(Arc::clone(&window), WIDTH, HEIGHT);
 
         // Load and compile PDC source
-        let source = include_str!("pdc/basic.pdc");
+        let source = include_str!("pdc/basic/basic.pdc");
         let scene = match pdc::compile_and_run(source, WIDTH, HEIGHT, TOLERANCE, TILE_SIZE, None) {
             Ok(scene) => scene,
             Err(e) => {

@@ -81,12 +81,13 @@ Pipeline selection:
 
 ## Kernel Declarations
 
-Kernel declarations must be inside a `pipeline` block. Two types:
+Kernel declarations must be inside a `pipeline` block. Three types:
 
 ```
 pipeline {
   pixel kernel "gradient.wgsl"                  # pixel shader -- per-pixel computation
   kernel "gray_scott.wgsl"                      # general kernel -- reads/writes buffers
+  scene kernel "basic.pdc"                      # PDC scene -- JIT-compiled vector geometry
 }
 ```
 
@@ -114,8 +115,46 @@ kernel divergence = "smoke/divergence.wgsl"
 |------|-------------|-----|
 | `pixel` | Per-pixel shader. Receives view coordinates (x, y), produces ARGB pixel. | `TileKernelFn` |
 | *(bare)* `kernel` | General kernel. Reads/writes f64 buffers, produces ARGB pixels. Used for simulation steps. | `SimTileKernelFn` |
+| `scene` | PDC scene kernel (`.pdc` file). JIT-compiled via Cranelift, produces vector geometry that is flattened, tiled, and uploaded as GPU buffers for a WGSL rasterizer. | `PdcSceneFn` |
 
 Initialization kernels are no longer a separate declaration type. Instead, use a bare `kernel` and run it inside an `init { }` block (see [Pipeline Steps](#pipeline-steps)).
+
+### Scene kernels
+
+Scene kernels reference `.pdc` files that describe vector geometry using the PDC language. When a scene kernel executes, the runtime:
+
+1. Runs the compiled PDC program to produce draw commands (paths, fills, strokes)
+2. Flattens curves into line segments and bins them into tiles
+3. Uploads scene data buffers to the GPU: `segments`, `seg_path_ids`, `tile_offsets`, `tile_counts`, `tile_indices`, `path_colors`, `path_fill_rules`
+4. Sets runtime variables: `__scene_tiles_x`, `__scene_tiles_y`, `__scene_num_paths`
+
+These buffers and variables are available to subsequent WGSL rasterizer kernels without explicit buffer declarations. A typical scene pipeline pairs a `scene kernel` with a tile rasterizer `kernel`:
+
+```
+pipeline gpu {
+  scene kernel basic = "basic.pdc"
+  kernel rasterize = "tile_raster.wgsl"
+
+  buffer pixels: gpu(u32) = constant(0)
+
+  run basic
+  run rasterize(
+    tile_size: 16,
+    tiles_x: __scene_tiles_x,
+    num_paths: __scene_num_paths
+  ) with(
+    segments: segments,
+    seg_path_ids: seg_path_ids,
+    tile_offsets: tile_offsets,
+    tile_counts: tile_counts,
+    tile_indices: tile_indices,
+    path_colors: path_colors,
+    path_fill_rules: path_fill_rules,
+    pixels: out pixels
+  )
+  display pixels
+}
+```
 
 ### Path resolution
 
@@ -226,6 +265,27 @@ These variables exist without declaration. They are maintained by the runtime an
 | `frame` | u64 | Current frame number |
 
 When `paused` is true, `frame` stops auto-incrementing. Manually setting `frame += 1` enables single-stepping.
+
+## Builtin Declarations
+
+Builtin declarations expose intrinsic globals to the PDP file, optionally with a default value. Use `builtin const` for read-only access and `builtin var` for read-write:
+
+```
+builtin const width: u32
+builtin const mouse_x: f64
+builtin var paused: bool
+builtin var frame: u64
+```
+
+### Default values
+
+Builtin vars can specify a default value that overrides the runtime default:
+
+```
+builtin var paused: bool = true     # start paused -- render one frame then stop
+```
+
+This is useful for static scenes (e.g. PDC vector rendering) that should render once without continuous animation. When `paused` starts true, the pipeline executes one frame then stops the event loop from polling.
 
 ## Title
 
@@ -652,5 +712,37 @@ pipeline {
     swap state, state_next
     swap age, age_next
   }
+}
+```
+
+### PDC Vector Scene (scene kernel + tile rasterizer)
+
+```
+title = "PDC Basic"
+
+builtin var paused: bool = true
+
+pipeline gpu {
+  scene kernel basic = "basic.pdc"
+  kernel rasterize = "tile_raster.wgsl"
+
+  buffer pixels: gpu(u32) = constant(0)
+
+  run basic
+  run rasterize(
+    tile_size: 16,
+    tiles_x: __scene_tiles_x,
+    num_paths: __scene_num_paths
+  ) with(
+    segments: segments,
+    seg_path_ids: seg_path_ids,
+    tile_offsets: tile_offsets,
+    tile_counts: tile_counts,
+    tile_indices: tile_indices,
+    path_colors: path_colors,
+    path_fill_rules: path_fill_rules,
+    pixels: out pixels
+  )
+  display pixels
 }
 ```
