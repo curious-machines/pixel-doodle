@@ -1,7 +1,7 @@
 pub mod display;
 pub mod gpu;
 pub mod jit;
-#[cfg(feature = "cranelift-backend")]
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
 pub mod pdc;
 pub mod pdp;
 pub mod progressive;

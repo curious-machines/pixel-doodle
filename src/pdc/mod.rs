@@ -1,5 +1,9 @@
 pub mod ast;
-pub mod codegen;
+pub mod codegen_common;
+#[cfg(feature = "cranelift-backend")]
+mod codegen_cranelift;
+#[cfg(feature = "llvm-backend")]
+mod codegen_llvm;
 pub mod error;
 pub mod lexer;
 pub mod parser;
@@ -7,6 +11,18 @@ pub mod runtime;
 pub mod span;
 pub mod token;
 pub mod type_check;
+
+/// Re-export the active codegen backend as `codegen`.
+/// When both features are enabled, Cranelift takes priority.
+pub mod codegen {
+    pub use super::codegen_common::*;
+
+    #[cfg(feature = "cranelift-backend")]
+    pub use super::codegen_cranelift::compile;
+
+    #[cfg(all(feature = "llvm-backend", not(feature = "cranelift-backend")))]
+    pub use super::codegen_llvm::compile;
+}
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;

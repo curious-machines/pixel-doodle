@@ -7,6 +7,7 @@ use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
 use crate::jit::{self, TextureSlot};
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
 use crate::pdc;
 use crate::progressive::AccumulationBuffer;
 use crate::texture::TextureData;
@@ -31,6 +32,7 @@ enum CompiledKernelEntry {
         tex_slot_names: Vec<String>,
     },
     /// PDC scene kernel — JIT-compiled vector scene description.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     Scene {
         compiled: pdc::codegen::CompiledProgram,
     },
@@ -347,7 +349,8 @@ impl Runtime {
                 continue;
             }
 
-            // PDC scene kernels (.pdc) — compile via Cranelift JIT
+            // PDC scene kernels (.pdc) — compile via JIT
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             if path.extension().is_some_and(|e| e == "pdc") {
                 let src = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read PDC kernel '{}': {}", path.display(), e))?;
@@ -778,6 +781,7 @@ impl Runtime {
         // Handle scene kernels separately to avoid borrow conflicts —
         // scene execution needs mutable access to self.gpu_sim_runner and
         // self.variables while self.kernels is borrowed.
+        #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
         if let Some(CompiledKernelEntry::Scene { compiled, .. }) = self.kernels.get(kernel_name) {
             let fn_ptr = compiled.fn_ptr;
             self.execute_scene_kernel(kernel_name, fn_ptr);
@@ -959,6 +963,7 @@ impl Runtime {
                 });
 
             }
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             Some(CompiledKernelEntry::Scene { .. }) => {
                 // Handled above via early return
                 unreachable!()
@@ -972,6 +977,7 @@ impl Runtime {
     /// Execute a PDC scene kernel: run the compiled program, extract the
     /// VectorScene, upload scene data buffers to GpuSimRunner, and set
     /// runtime variables for the rasterizer.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     fn execute_scene_kernel(
         &mut self,
         kernel_name: &str,
