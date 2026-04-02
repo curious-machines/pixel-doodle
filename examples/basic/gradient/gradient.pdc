@@ -1,0 +1,16 @@
+builtin const width: f32
+builtin const height: f32
+
+var _buf_pixels: i32 = 0
+var _kern: i32 = 0
+
+fn init() {
+    _buf_pixels = create_buffer("gpu_u32", 0.0)
+    _kern = load_kernel("gradient", "gradient.wgsl", 0)
+}
+
+fn frame() {
+    bind_buffer("output", _buf_pixels, 1)
+    run_kernel(_kern)
+    display_buffer(_buf_pixels)
+}

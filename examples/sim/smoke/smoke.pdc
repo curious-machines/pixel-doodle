@@ -1,0 +1,92 @@
+builtin var paused: bool
+builtin var frame: u64
+builtin var mouse_x: f64
+builtin var mouse_y: f64
+builtin const width: f32
+builtin const height: f32
+
+var _buf_field: i32 = 0
+var _buf_field_next: i32 = 0
+var _buf_div: i32 = 0
+var _buf_press_a: i32 = 0
+var _buf_press_b: i32 = 0
+var _buf_pixels: i32 = 0
+var _kern_advect: i32 = 0
+var _kern_divergence: i32 = 0
+var _kern_jacobi: i32 = 0
+var _kern_project: i32 = 0
+var _kern_vis: i32 = 0
+var _kern_inject: i32 = 0
+
+fn init() {
+    _buf_field = create_buffer("gpu_vec4_f32", 0.0)
+    _buf_field_next = create_buffer("gpu_vec4_f32", 0.0)
+    _buf_div = create_buffer("gpu_f32", 0.0)
+    _buf_press_a = create_buffer("gpu_f32", 0.0)
+    _buf_press_b = create_buffer("gpu_f32", 0.0)
+    _buf_pixels = create_buffer("gpu_u32", 0.0)
+    _kern_advect = load_kernel("advect", "smoke_advect.wgsl", 1)
+    _kern_divergence = load_kernel("divergence", "smoke_divergence.wgsl", 1)
+    _kern_jacobi = load_kernel("jacobi", "smoke_jacobi.wgsl", 1)
+    _kern_project = load_kernel("project", "smoke_project.wgsl", 1)
+    _kern_vis = load_kernel("vis", "smoke_vis.wgsl", 1)
+    _kern_inject = load_kernel("inject", "../../shared/inject_vec.wgsl", 1)
+}
+
+fn frame() {
+    bind_buffer("field_in", _buf_field, 0)
+    bind_buffer("field_out", _buf_field_next, 1)
+    run_kernel(_kern_advect)
+    swap_buffers(_buf_field, _buf_field_next)
+
+    bind_buffer("field_in", _buf_field, 0)
+    bind_buffer("div_out", _buf_div, 1)
+    run_kernel(_kern_divergence)
+
+    for _i in 0..40 {
+        bind_buffer("div_in", _buf_div, 0)
+        bind_buffer("press_in", _buf_press_a, 0)
+        bind_buffer("press_out", _buf_press_b, 1)
+        run_kernel(_kern_jacobi)
+        swap_buffers(_buf_press_a, _buf_press_b)
+    }
+
+    bind_buffer("pressure", _buf_press_a, 0)
+    bind_buffer("field_in", _buf_field, 0)
+    bind_buffer("field_out", _buf_field_next, 1)
+    run_kernel(_kern_project)
+    swap_buffers(_buf_field, _buf_field_next)
+
+    bind_buffer("field_in", _buf_field, 0)
+    bind_buffer("pixels", _buf_pixels, 1)
+    run_kernel(_kern_vis)
+    display_buffer(_buf_pixels)
+    request_redraw()
+}
+
+fn on_keypress_space() { paused = !paused }
+fn on_keypress_period() { frame = frame + 1.0 }
+
+fn on_mousedown() {
+    set_kernel_arg_f64("inject_x", mouse_x)
+    set_kernel_arg_f64("inject_y", mouse_y)
+    set_kernel_arg_f64("radius", 15.0)
+    set_kernel_arg_f64("value", -3.0)
+    set_kernel_arg_f64("falloff_quadratic", 1.0)
+    set_kernel_arg_f64("component", 1.0)
+    bind_buffer("buf_in", _buf_field, 0)
+    bind_buffer("buf_out", _buf_field_next, 1)
+    run_kernel(_kern_inject)
+    swap_buffers(_buf_field, _buf_field_next)
+
+    set_kernel_arg_f64("inject_x", mouse_x)
+    set_kernel_arg_f64("inject_y", mouse_y)
+    set_kernel_arg_f64("radius", 15.0)
+    set_kernel_arg_f64("value", 0.5)
+    set_kernel_arg_f64("falloff_quadratic", 1.0)
+    set_kernel_arg_f64("component", 2.0)
+    bind_buffer("buf_in", _buf_field, 0)
+    bind_buffer("buf_out", _buf_field_next, 1)
+    run_kernel(_kern_inject)
+    swap_buffers(_buf_field, _buf_field_next)
+}

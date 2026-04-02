@@ -1,0 +1,33 @@
+builtin const width: f32
+builtin const height: f32
+builtin var center_x: f64
+builtin var center_y: f64
+builtin var zoom: f64
+builtin var time: f64
+
+var _buf_pixels: i32 = 0
+var _kern: i32 = 0
+
+fn init() {
+    _buf_pixels = create_buffer("gpu_u32", 0.0)
+    _kern = load_kernel("starfield", "starfield.wgsl", 0)
+}
+
+fn frame() {
+    bind_buffer("output", _buf_pixels, 1)
+    run_kernel(_kern)
+    display_buffer(_buf_pixels)
+    request_redraw()
+}
+
+fn on_keydown_left() { center_x = center_x - 0.02 / zoom }
+fn on_keydown_right() { center_x = center_x + 0.02 / zoom }
+fn on_keydown_up() { center_y = center_y - 0.02 / zoom }
+fn on_keydown_down() { center_y = center_y + 0.02 / zoom }
+fn on_keydown_plus() { zoom = zoom * 1.03 }
+fn on_keydown_minus() { zoom = zoom / 1.03 }
+fn on_keypress_0() {
+    center_x = 0.0
+    center_y = 0.0
+    zoom = 1.0
+}

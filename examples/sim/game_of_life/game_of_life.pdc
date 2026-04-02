@@ -49,11 +49,11 @@ fn on_keypress_period() {
 }
 
 fn on_keypress_bracket_right() {
-    iterations = iterations + 1.0
+    iterations = min(8.0, iterations + 1.0)
 }
 
 fn on_keypress_bracket_left() {
-    iterations = iterations - 1.0
+    iterations = max(iterations - 1.0, 1.0)
 }
 
 fn on_mousedown() {
