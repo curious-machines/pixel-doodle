@@ -283,6 +283,13 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
+        // Frame control
+        self.builtins.insert("request_redraw".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+
         // Progressive rendering
         self.builtins.insert("set_max_samples".into(), BuiltinFn {
             params: vec![PdcType::I32],

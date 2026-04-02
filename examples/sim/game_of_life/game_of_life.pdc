@@ -37,6 +37,7 @@ fn frame() {
     bind_buffer("pixels", _buf_pixels, 1)
     run_kernel(_kern_vis)
     display_buffer(_buf_pixels)
+    request_redraw()
 }
 
 fn on_keypress_space() {

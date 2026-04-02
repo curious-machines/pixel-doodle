@@ -1845,6 +1845,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
                 | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
                 | "display" | "display_buffer" | "load_texture"
+                | "request_redraw"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
                 | "display_accumulated" | "reset_accumulation"
             );
@@ -1874,8 +1875,8 @@ impl<'a> LlvmCodegenCtx<'a> {
             | "fill_styled" | "stroke_styled" | "push" | "set"
             | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
             | "run_kernel" | "display" | "display_buffer"
-            | "set_max_samples" | "accumulate_sample" | "display_accumulated"
-            | "reset_accumulation" => None,
+            | "request_redraw" | "set_max_samples" | "accumulate_sample"
+            | "display_accumulated" | "reset_accumulation" => None,
             _ => Some(self.context.f64_type().into()),
         }
     }

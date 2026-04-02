@@ -71,6 +71,12 @@ pub trait PipelineHost {
     fn is_accumulating(&self) -> bool { false }
     /// Whether any buffers have been created.
     fn has_buffers(&self) -> bool { false }
+    /// Request another frame after this one completes.
+    fn request_redraw(&mut self) {}
+    /// Whether a redraw was requested during this frame.
+    fn was_redraw_requested(&self) -> bool { false }
+    /// Clear the redraw-requested flag for the next frame.
+    fn clear_redraw_requested(&mut self) {}
 }
 
 /// Fill rule for path filling.
@@ -711,6 +717,10 @@ pub extern "C" fn pdc_display_buffer(ctx: *mut PdcContext, buffer_handle: i32) {
     unsafe { get_host(ctx).display_buffer(buffer_handle) }
 }
 
+pub extern "C" fn pdc_request_redraw(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).request_redraw() }
+}
+
 pub extern "C" fn pdc_set_max_samples(ctx: *mut PdcContext, n: i32) {
     unsafe { get_host(ctx).set_max_samples(n) }
 }
@@ -823,6 +833,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_display_buffer", pdc_display_buffer as *const u8),
         ("pdc_load_texture", pdc_load_texture as *const u8),
         // Progressive rendering
+        ("pdc_request_redraw", pdc_request_redraw as *const u8),
         ("pdc_set_max_samples", pdc_set_max_samples as *const u8),
         ("pdc_is_converged", pdc_is_converged as *const u8),
         ("pdc_accumulate_sample", pdc_accumulate_sample as *const u8),

@@ -49,6 +49,8 @@ struct HostState {
     pending_args: Vec<KernelArg>,
     /// Whether display() or display_accumulated() was called this frame.
     display_requested: bool,
+    /// Whether the script requested another frame via request_redraw().
+    redraw_requested: bool,
     /// Accumulation buffer for progressive rendering.
     accum: Option<crate::progressive::AccumulationBuffer>,
     /// Base directory for resolving relative paths.
@@ -306,6 +308,9 @@ impl PipelineHost for HostState {
     fn has_buffers(&self) -> bool {
         !self.buffers.is_empty()
     }
+    fn request_redraw(&mut self) { self.redraw_requested = true; }
+    fn was_redraw_requested(&self) -> bool { self.redraw_requested }
+    fn clear_redraw_requested(&mut self) { self.redraw_requested = false; }
 }
 
 /// PDC-driven pipeline runtime.
@@ -370,6 +375,7 @@ impl PdcRuntime {
             pending_bindings: Vec::new(),
             pending_args: Vec::new(),
             display_requested: false,
+            redraw_requested: false,
             accum: None,
             base_dir: base_dir.to_path_buf(),
             render: "cpu".to_string(),
@@ -507,6 +513,7 @@ impl PdcRuntime {
 
         self.builtins[B::TIME] = time;
         self.host.clear_display_requested();
+        self.host.clear_redraw_requested();
 
         // Clear accumulated scene data from the previous frame to avoid
         // leaking handles created by per-frame host function calls.
@@ -568,12 +575,8 @@ impl PdcRuntime {
         if self.paused {
             return false;
         }
-        if self.animated || self.host.is_accumulating() {
-            return true;
-        }
-        // If frame() exists and the script has created buffers, assume it's
-        // a simulation that needs continuous execution (matches PDP heuristic).
-        self.compiled.has_frame() && self.host.has_buffers()
+        // The PDC script explicitly requests redraws via request_redraw()
+        self.host.was_redraw_requested()
     }
 
     pub fn title(&self) -> String {
