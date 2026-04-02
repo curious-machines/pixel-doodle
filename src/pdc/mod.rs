@@ -537,50 +537,51 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
     unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
 }
 
-/// Compile and execute a PDC source file, producing a VectorScene.
+/// Compile a PDC source for use in a PDP pipeline.
 ///
-/// `source_path` is the optional filesystem path of the `.pdc` file being
-/// compiled, used to resolve relative `import` paths. Pass `None` for
-/// in-memory sources that don't support file imports.
-pub fn compile_and_run(
+/// Performs dead code elimination and test stripping (unlike `compile_only`),
+/// but does not execute the program. Returns a `CompiledProgram` ready for
+/// execution via `fn_ptr` or `call_fn`.
+pub fn compile_for_pipeline(
     source: &str,
-    width: u32,
-    height: u32,
-    tolerance: f32,
-    tile_size: u32,
     source_path: Option<&FsPath>,
-) -> Result<VectorScene, PdcError> {
-    // 1. Load and parse all modules + main
+) -> Result<codegen::CompiledProgram, PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let mut program = load_and_parse(source, base_dir)?;
 
-    // 2. Dead code elimination and strip test blocks (before type checking)
     eliminate_dead_code(&mut program);
     strip_tests(&mut program);
 
-    // 3. Type check
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    // 3. Compile
     let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
+    codegen::compile(
+        &program,
+        &checker.types,
+        &builtins_layout,
+        &checker.user_fns,
+        &checker.structs,
+        &checker.enums,
+        &checker.fn_aliases,
+        &checker.op_overloads,
+    )
+}
 
-    // 4. Execute
-    let builtins = [width as f64, height as f64];
-    let mut scene_builder = SceneBuilder::new();
-    let mut ctx = PdcContext {
-        builtins: builtins.as_ptr(),
-        scene: &mut scene_builder as *mut _,
-    };
-    unsafe {
-        (compiled.fn_ptr)(&mut ctx);
-    }
-
-    // 5. Convert draw commands to paths
+/// Extract a `VectorScene` from an executed `SceneBuilder`.
+///
+/// Converts draw commands to paths, flattens curves, expands strokes,
+/// and bins segments into tiles for GPU rasterization.
+pub fn extract_scene(
+    scene_builder: &SceneBuilder,
+    tolerance: f32,
+    tile_size: u32,
+    width: u32,
+    height: u32,
+) -> VectorScene {
     let mut paths: Vec<Path> = Vec::new();
     let mut path_colors: Vec<u32> = Vec::new();
     let mut path_fill_rules: Vec<u32> = Vec::new();
@@ -628,9 +629,8 @@ pub fn compile_and_run(
         }
     }
 
-    // 6. Flatten all paths and bin tiles
     let (segments, seg_path_ids) = flatten::flatten_paths(&paths, tolerance);
-    Ok(vector::bin_tiles_pub(
+    vector::bin_tiles_pub(
         &segments,
         &seg_path_ids,
         path_colors,
@@ -638,7 +638,54 @@ pub fn compile_and_run(
         tile_size,
         width,
         height,
-    ))
+    )
+}
+
+/// Compile and execute a PDC source file, producing a VectorScene.
+///
+/// `source_path` is the optional filesystem path of the `.pdc` file being
+/// compiled, used to resolve relative `import` paths. Pass `None` for
+/// in-memory sources that don't support file imports.
+pub fn compile_and_run(
+    source: &str,
+    width: u32,
+    height: u32,
+    tolerance: f32,
+    tile_size: u32,
+    source_path: Option<&FsPath>,
+) -> Result<VectorScene, PdcError> {
+    // 1. Load and parse all modules + main
+    let base_dir = source_path.and_then(|p| p.parent());
+    let mut program = load_and_parse(source, base_dir)?;
+
+    // 2. Dead code elimination and strip test blocks (before type checking)
+    eliminate_dead_code(&mut program);
+    strip_tests(&mut program);
+
+    // 3. Type check
+    let mut checker = type_check::TypeChecker::new();
+    checker.check_program(&program)?;
+
+    // 3. Compile
+    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
+        ("width", ast::PdcType::F32),
+        ("height", ast::PdcType::F32),
+    ];
+    let compiled = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
+
+    // 4. Execute
+    let builtins = [width as f64, height as f64];
+    let mut scene_builder = SceneBuilder::new();
+    let mut ctx = PdcContext {
+        builtins: builtins.as_ptr(),
+        scene: &mut scene_builder as *mut _,
+    };
+    unsafe {
+        (compiled.fn_ptr)(&mut ctx);
+    }
+
+    // 5. Extract scene
+    Ok(extract_scene(&scene_builder, tolerance, tile_size, width, height))
 }
 
 #[cfg(test)]
@@ -1204,4 +1251,168 @@ mod tests {
 
     #[test]
     fn pdc_stdlib_affine3d() { run_stdlib_tests(STDLIB_AFFINE3D, "affine3d"); }
+
+    #[test]
+    fn compile_for_pipeline_basic() {
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            var p = Path()
+            move_to(p, 0.0, 0.0)
+            line_to(p, 100.0, 0.0)
+            line_to(p, 100.0, 100.0)
+            close(p)
+            fill(p, 0xFFFF0000)
+        "#;
+        // Should compile without error
+        super::compile_for_pipeline(src, None).unwrap();
+    }
+
+    #[test]
+    fn compile_for_pipeline_strips_tests() {
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            var p = Path()
+            move_to(p, 0.0, 0.0)
+            line_to(p, 10.0, 10.0)
+            close(p)
+            fill(p, 0xFFFF0000)
+            test "should not affect compilation" {
+                assert_eq(1, 1)
+            }
+        "#;
+        super::compile_for_pipeline(src, None).unwrap();
+    }
+
+    #[test]
+    fn compile_for_pipeline_syntax_error() {
+        let src = "??? invalid";
+        let result = super::compile_for_pipeline(src, None);
+        assert!(result.is_err());
+    }
+
+    fn run_scene_pipeline(src: &str, width: u32, height: u32) -> super::VectorScene {
+        let compiled = super::compile_for_pipeline(src, None).unwrap();
+        let builtins = [width as f64, height as f64];
+        let mut scene_builder = super::SceneBuilder::new();
+        let mut ctx = super::PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene_builder as *mut _,
+        };
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        super::extract_scene(&scene_builder, 0.5, 16, width, height)
+    }
+
+    #[test]
+    fn compile_for_pipeline_matches_compile_and_run() {
+        // Use raw Path API (no imports) to test pipeline equivalence.
+        // PDC executes top-level statements, not a main() function.
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            var p = Path()
+            move_to(p, 10.0, 10.0)
+            line_to(p, 50.0, 10.0)
+            line_to(p, 50.0, 50.0)
+            line_to(p, 10.0, 50.0)
+            close(p)
+            fill(p, 0xFFFF0000)
+        "#;
+        let width = 100u32;
+        let height = 100u32;
+
+        let scene_monolithic = super::compile_and_run(src, width, height, 0.5, 16, None).unwrap();
+        let scene_pipeline = run_scene_pipeline(src, width, height);
+
+        // Both should produce non-empty scenes
+        assert!(!scene_monolithic.segments.is_empty(), "monolithic should have segments");
+        assert_eq!(scene_monolithic.segments.len(), scene_pipeline.segments.len());
+        assert_eq!(scene_monolithic.path_colors, scene_pipeline.path_colors);
+        assert_eq!(scene_monolithic.tile_offsets, scene_pipeline.tile_offsets);
+        assert_eq!(scene_monolithic.tile_counts, scene_pipeline.tile_counts);
+        assert_eq!(scene_monolithic.tile_indices, scene_pipeline.tile_indices);
+    }
+
+    #[test]
+    fn extract_scene_basic() {
+        // PDC code runs at top level, not inside main()
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            var p = Path()
+            move_to(p, 10.0, 10.0)
+            line_to(p, 50.0, 10.0)
+            line_to(p, 50.0, 50.0)
+            line_to(p, 10.0, 50.0)
+            close(p)
+            fill(p, 0xFFFF0000)
+        "#;
+        let scene = run_scene_pipeline(src, 100, 100);
+        assert!(!scene.segments.is_empty(), "scene should have segments");
+        assert_eq!(scene.path_colors.len(), 1);
+        assert_eq!(scene.path_colors[0], 0xFFFF0000);
+        let tiles_x = (100 + 15) / 16;
+        let tiles_y = (100 + 15) / 16;
+        assert_eq!(scene.tile_offsets.len(), (tiles_x * tiles_y) as usize);
+        assert_eq!(scene.tile_counts.len(), (tiles_x * tiles_y) as usize);
+        // Non-empty tiles should exist in the 10-50 pixel range
+        let nonempty = scene.tile_counts.iter().filter(|&&c| c > 0).count();
+        assert!(nonempty > 0, "should have non-empty tiles");
+    }
+
+    #[test]
+    fn extract_scene_empty() {
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+        "#;
+        let scene = run_scene_pipeline(src, 100, 100);
+        assert!(scene.segments.is_empty());
+        assert!(scene.path_colors.is_empty());
+        let tiles_x = (100 + 15) / 16;
+        let tiles_y = (100 + 15) / 16;
+        assert_eq!(scene.tile_offsets.len(), (tiles_x * tiles_y) as usize);
+    }
+
+    #[test]
+    fn extract_scene_multiple_paths() {
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            var p1 = Path()
+            move_to(p1, 0.0, 0.0)
+            line_to(p1, 30.0, 0.0)
+            line_to(p1, 30.0, 30.0)
+            line_to(p1, 0.0, 30.0)
+            close(p1)
+            fill(p1, 0xFFFF0000)
+
+            var p2 = Path()
+            move_to(p2, 50.0, 50.0)
+            line_to(p2, 80.0, 50.0)
+            line_to(p2, 80.0, 80.0)
+            line_to(p2, 50.0, 80.0)
+            close(p2)
+            fill(p2, 0xFF00FF00)
+        "#;
+        let scene = run_scene_pipeline(src, 100, 100);
+        assert_eq!(scene.path_colors.len(), 2);
+        assert_eq!(scene.path_colors[0], 0xFFFF0000);
+        assert_eq!(scene.path_colors[1], 0xFF00FF00);
+    }
+
+    #[test]
+    fn extract_scene_tiles_cover_dimensions() {
+        // Odd dimensions that don't divide evenly by tile_size
+        let src = r#"
+            builtin const width: f32
+            builtin const height: f32
+        "#;
+        let scene = run_scene_pipeline(src, 100, 70);
+        let tiles_x = (100 + 15) / 16; // 7
+        let tiles_y = (70 + 15) / 16;  // 5
+        assert_eq!(scene.tile_offsets.len(), (tiles_x * tiles_y) as usize);
+        assert_eq!(scene.tile_counts.len(), (tiles_x * tiles_y) as usize);
+    }
 }

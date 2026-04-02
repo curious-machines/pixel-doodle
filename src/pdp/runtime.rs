@@ -7,6 +7,7 @@ use crate::display::Display;
 use crate::gpu::GpuBackend;
 use crate::gpu::sim_runner::GpuSimRunner;
 use crate::jit::{self, TextureSlot};
+use crate::pdc;
 use crate::progressive::AccumulationBuffer;
 use crate::texture::TextureData;
 
@@ -28,6 +29,10 @@ enum CompiledKernelEntry {
         compiled: jit::CompiledWgslKernel,
         /// Texture slot names in declaration order.
         tex_slot_names: Vec<String>,
+    },
+    /// PDC scene kernel — JIT-compiled vector scene description.
+    Scene {
+        compiled: pdc::codegen::CompiledProgram,
     },
 }
 
@@ -122,6 +127,23 @@ impl Runtime {
             }
         }
 
+        // Apply builtin defaults
+        let mut paused = false;
+        for b in &config.builtins {
+            if let Some(ref default) = b.default {
+                let val = match default {
+                    Literal::Float(f) => *f,
+                    Literal::Int(i) => *i as f64,
+                    Literal::Bool(b) => if *b { 1.0 } else { 0.0 },
+                    _ => 0.0,
+                };
+                match b.name.as_str() {
+                    "paused" => paused = val != 0.0,
+                    _ => {}
+                }
+            }
+        }
+
         Runtime {
             config,
             kernels: HashMap::new(),
@@ -147,8 +169,8 @@ impl Runtime {
             mouse_x: 0.0,
             mouse_y: 0.0,
             time: 0.0,
-            paused: false,
-            frame: 0,
+            paused,
+            frame: if paused { 1 } else { 0 },
             frames_executed: 0,
             mouse_down: false,
             mouse_was_down: false,
@@ -325,8 +347,21 @@ impl Runtime {
                 continue;
             }
 
+            // PDC scene kernels (.pdc) — compile via Cranelift JIT
+            if path.extension().is_some_and(|e| e == "pdc") {
+                let src = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("failed to read PDC kernel '{}': {}", path.display(), e))?;
+                let compiled = pdc::compile_for_pipeline(&src, Some(&path))
+                    .map_err(|e| format!("PDC compile '{}': {}", decl.name, e.format(&src)))?;
+                eprintln!("compiled PDC scene kernel '{}'", decl.name);
+                self.kernels.insert(decl.name.clone(), CompiledKernelEntry::Scene {
+                    compiled,
+                });
+                continue;
+            }
+
             return Err(format!(
-                "unsupported kernel file extension for '{}' — only .wgsl is supported",
+                "unsupported kernel file extension for '{}' — only .wgsl and .pdc are supported",
                 path.display()
             ));
         }
@@ -740,6 +775,15 @@ impl Runtime {
         args: &[NamedArg],
         pool: &Option<rayon::ThreadPool>,
     ) {
+        // Handle scene kernels separately to avoid borrow conflicts —
+        // scene execution needs mutable access to self.gpu_sim_runner and
+        // self.variables while self.kernels is borrowed.
+        if let Some(CompiledKernelEntry::Scene { compiled, .. }) = self.kernels.get(kernel_name) {
+            let fn_ptr = compiled.fn_ptr;
+            self.execute_scene_kernel(kernel_name, fn_ptr);
+            return;
+        }
+
         let entry = self.kernels.get(kernel_name);
         match entry {
             Some(CompiledKernelEntry::Gpu { .. }) => {
@@ -764,8 +808,10 @@ impl Runtime {
                         .iter()
                         .map(|b| (b.param_name.as_str(), b.buffer_name.as_str()))
                         .collect();
-                    // Resolve user args to f32 values for GPU uniform buffer
-                    let user_args: Vec<f32> = args.iter().map(|a| {
+                    // Resolve user args and encode with correct types from WGSL Params struct
+                    let arg_types = runner.user_arg_types(kernel_name);
+                    let mut arg_bytes: Vec<u8> = Vec::new();
+                    for (i, a) in args.iter().enumerate() {
                         let val = match &a.value {
                             Literal::Float(f) => *f,
                             Literal::Int(i) => *i as f64,
@@ -773,9 +819,21 @@ impl Runtime {
                             Literal::Str(_) => 0.0,
                             Literal::VarRef(name) => self.get_variable(name),
                         };
-                        val as f32
-                    }).collect();
-                    runner.dispatch(kernel_name, &bindings, &user_args);
+                        let arg_type = arg_types.get(i).copied()
+                            .unwrap_or(crate::gpu::sim_runner::WgslArgType::F32);
+                        match arg_type {
+                            crate::gpu::sim_runner::WgslArgType::U32 => {
+                                arg_bytes.extend_from_slice(&(val as u32).to_le_bytes());
+                            }
+                            crate::gpu::sim_runner::WgslArgType::I32 => {
+                                arg_bytes.extend_from_slice(&(val as i32).to_le_bytes());
+                            }
+                            crate::gpu::sim_runner::WgslArgType::F32 => {
+                                arg_bytes.extend_from_slice(&(val as f32).to_le_bytes());
+                            }
+                        }
+                    }
+                    runner.dispatch(kernel_name, &bindings, &arg_bytes);
                 }
             }
             #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
@@ -901,10 +959,69 @@ impl Runtime {
                 });
 
             }
+            Some(CompiledKernelEntry::Scene { .. }) => {
+                // Handled above via early return
+                unreachable!()
+            }
             None => {
                 eprintln!("warning: kernel '{}' not found", kernel_name);
             }
         }
+    }
+
+    /// Execute a PDC scene kernel: run the compiled program, extract the
+    /// VectorScene, upload scene data buffers to GpuSimRunner, and set
+    /// runtime variables for the rasterizer.
+    fn execute_scene_kernel(
+        &mut self,
+        kernel_name: &str,
+        fn_ptr: pdc::codegen::PdcSceneFn,
+    ) {
+        let w = self.width;
+        let h = self.height;
+
+        // Execute the compiled PDC main
+        let builtins = [w as f64, h as f64];
+        let mut scene_builder = pdc::runtime::SceneBuilder::new();
+        let mut ctx = pdc::runtime::PdcContext {
+            builtins: builtins.as_ptr(),
+            scene: &mut scene_builder as *mut _,
+        };
+        unsafe {
+            (fn_ptr)(&mut ctx);
+        }
+
+        // Extract VectorScene
+        let tile_size = 16u32;
+        let tolerance = 0.5f32;
+        let scene = pdc::extract_scene(&scene_builder, tolerance, tile_size, w, h);
+
+        eprintln!(
+            "[pdc] scene '{}': {} paths, {} segments",
+            kernel_name,
+            scene.path_colors.len(),
+            scene.segments.len(),
+        );
+
+        // Upload scene data buffers to GpuSimRunner
+        let tiles_x = (w + tile_size - 1) / tile_size;
+        let tiles_y = (h + tile_size - 1) / tile_size;
+        let num_paths = scene.path_colors.len() as u32;
+
+        if let Some(runner) = &mut self.gpu_sim_runner {
+            runner.add_buffer_with_data("segments", bytemuck::cast_slice(&scene.segments));
+            runner.add_buffer_with_data("seg_path_ids", bytemuck::cast_slice(&scene.seg_path_ids));
+            runner.add_buffer_with_data("tile_offsets", bytemuck::cast_slice(&scene.tile_offsets));
+            runner.add_buffer_with_data("tile_counts", bytemuck::cast_slice(&scene.tile_counts));
+            runner.add_buffer_with_data("tile_indices", bytemuck::cast_slice(&scene.tile_indices));
+            runner.add_buffer_with_data("path_colors", bytemuck::cast_slice(&scene.path_colors));
+            runner.add_buffer_with_data("path_fill_rules", bytemuck::cast_slice(&scene.path_fill_rules));
+        }
+
+        // Set runtime variables for the rasterizer
+        self.variables.insert("__scene_tiles_x".to_string(), tiles_x as f64);
+        self.variables.insert("__scene_tiles_y".to_string(), tiles_y as f64);
+        self.variables.insert("__scene_num_paths".to_string(), num_paths as f64);
     }
 
     /// Present pixels to screen.
@@ -1348,6 +1465,9 @@ impl Runtime {
 
     /// Returns true if progressive rendering is active and not yet converged.
     pub fn needs_continuous_redraw(&self) -> bool {
+        if self.paused {
+            return false;
+        }
         if self.animated {
             return true;
         }

@@ -500,3 +500,31 @@ Adding closures to PDC would move almost everything to the PDC column except:
 - ❌ Returning functions
 - ❌ Generics (uses overloading instead)
 - ❌ Lazy evaluation / iterators
+- ❌ Type classes / traits / protocols
+
+### Deferred: Type Classes or Traits
+
+FP languages use type classes (Haskell), traits (Rust/Scala), or protocols (Clojure/Elixir) as the equivalent of interfaces — a contract that says "this type supports these operations." PDC currently has **function overloading** which provides ad-hoc polymorphism (same function name, different parameter types), but no way to express a formal constraint like "type T must support operation X."
+
+| Approach | Description | Complexity |
+|----------|-------------|------------|
+| **Type classes** | Declare a set of functions a type must implement; compiler verifies at use site | High — needs generics |
+| **Protocols** | Runtime dispatch on first argument's type | Medium — no generics needed |
+| **Signatures** | Module-level contracts (OCaml functors) | Medium — needs module system extensions |
+
+Adding any of these would interact with closures and generics — likely best considered together as a package rather than in isolation.
+
+### Rejected: `Any` Type
+
+An `Any` type that represents all types was considered and rejected. While it would simplify writing generic container functions without full generics, the costs outweigh the benefits:
+
+- **Breaks compile-time safety** — PDC currently catches all type errors at compile time; `Any` pushes errors to runtime
+- **Hurts JIT performance** — codegen needs to know sizes and layouts; `Any` requires boxing (pointer + type tag), losing value semantics performance
+- **Spreads virally** — once one function takes `Any`, callers need casts everywhere
+
+**Preferred alternatives:**
+- **Bounded generics** (`fn shuffle<T>(arr: Array<T>) -> Array<T>`) — flexibility without losing type safety
+- **Type classes / protocols** — solve "T must support X" without erasing types
+- **Union types** (`i32 | f64 | string`) — narrower than `Any`, still statically checkable
+
+Bounded generics + type classes together cover the same use cases as `Any` without sacrificing compile-time safety or JIT performance.

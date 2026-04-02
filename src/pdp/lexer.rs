@@ -88,6 +88,7 @@ pub fn lex(input: &str) -> Result<Vec<Spanned>, String> {
             let text: String = chars[start..i].iter().collect();
             let token = match text.as_str() {
                 "pixel" => Token::Pixel,
+                "scene" => Token::Scene,
                 "init" => Token::Init,
                 "kernel" => Token::Kernel,
                 "buffer" => Token::Buffer,

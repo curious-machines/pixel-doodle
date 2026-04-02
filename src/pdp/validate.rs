@@ -177,6 +177,16 @@ pub fn validate(config: &Config) -> Result<(), Vec<ValidationError>> {
                 });
             }
         }
+        // Scene kernels produce runtime-managed buffers for the tile rasterizer
+        let has_scene_kernel = pipeline.kernels.iter().any(|k| k.kind == KernelKind::Scene);
+        if has_scene_kernel {
+            for name in &[
+                "segments", "seg_path_ids", "tile_offsets", "tile_counts",
+                "tile_indices", "path_colors", "path_fill_rules",
+            ] {
+                pipe_buffers.insert(name.to_string());
+            }
+        }
 
         let mut has_display = false;
         validate_steps(
@@ -310,7 +320,8 @@ fn validate_steps(
                 // Validate variable references in run args
                 for arg in args {
                     if let Literal::VarRef(ref name) = arg.value {
-                        if !vars.contains(name) {
+                        // Skip validation for runtime-managed variables (e.g. __scene_*)
+                        if !name.starts_with("__") && !vars.contains(name) {
                             check_undeclared_var(name, arg.span, errors);
                         }
                     }
@@ -755,5 +766,59 @@ mod tests {
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors.iter().any(|e| e.message.contains("duplicate kernel name")));
+    }
+
+    #[test]
+    fn scene_kernel_registers_scene_buffers() {
+        // Scene kernels should auto-register scene data buffers so the
+        // rasterizer can reference them without explicit buffer declarations.
+        let result = parse_and_validate(
+            r#"
+            pipeline gpu {
+              scene kernel basic = "basic.pdc"
+              kernel rasterize = "tile_raster.wgsl"
+              buffer pixels: gpu(u32) = constant(0)
+              run basic
+              run rasterize with(
+                segments: segments,
+                seg_path_ids: seg_path_ids,
+                tile_offsets: tile_offsets,
+                tile_counts: tile_counts,
+                tile_indices: tile_indices,
+                path_colors: path_colors,
+                path_fill_rules: path_fill_rules,
+                pixels: out pixels
+              )
+              display pixels
+            }
+            "#,
+        );
+        assert!(result.is_ok(), "scene kernel pipeline should validate: {:?}", result);
+    }
+
+    #[test]
+    fn scene_kernel_runtime_vars_skip_validation() {
+        // Runtime-managed variables like __scene_tiles_x should not trigger
+        // "undeclared variable" errors.
+        let result = parse_and_validate(
+            r#"
+            pipeline gpu {
+              scene kernel basic = "basic.pdc"
+              kernel rasterize = "tile_raster.wgsl"
+              buffer pixels: gpu(u32) = constant(0)
+              run basic
+              run rasterize(
+                tile_size: 16,
+                tiles_x: __scene_tiles_x,
+                num_paths: __scene_num_paths
+              ) with(
+                segments: segments,
+                pixels: out pixels
+              )
+              display pixels
+            }
+            "#,
+        );
+        assert!(result.is_ok(), "runtime vars should skip validation: {:?}", result);
     }
 }

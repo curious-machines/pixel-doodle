@@ -196,7 +196,7 @@ impl Parser {
 
         while !self.at(&Token::Eof) {
             match self.peek().clone() {
-                Token::Pixel | Token::Kernel => {
+                Token::Pixel | Token::Scene | Token::Kernel => {
                     return Err(self.error(
                         "kernel declarations must be inside a pipeline block".into(),
                     ));
@@ -261,6 +261,10 @@ impl Parser {
             self.advance();
             self.expect(&Token::Kernel)?;
             KernelKind::Pixel
+        } else if self.at(&Token::Scene) {
+            self.advance();
+            self.expect(&Token::Kernel)?;
+            KernelKind::Scene
         } else {
             self.expect(&Token::Kernel)?;
             KernelKind::Standard
@@ -405,10 +409,17 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(&Token::Colon)?;
         let ty = self.parse_builtin_type()?;
+        let default = if self.at(&Token::Eq) {
+            self.advance();
+            Some(self.parse_literal()?)
+        } else {
+            None
+        };
         Ok(BuiltinDecl {
             name,
             ty,
             mutable,
+            default,
             span,
         })
     }
@@ -754,7 +765,7 @@ impl Parser {
                         "included file '{path_str}' must not contain pipeline blocks"
                     )));
                 }
-                Token::Pixel | Token::Kernel => {
+                Token::Pixel | Token::Scene | Token::Kernel => {
                     return Err(self.error(format!(
                         "included file '{path_str}' must not contain kernel declarations"
                     )));
@@ -842,7 +853,7 @@ impl Parser {
                 Token::Builtin => {
                     builtins.push(self.parse_builtin_decl()?);
                 }
-                Token::Pixel | Token::Kernel => {
+                Token::Pixel | Token::Scene | Token::Kernel => {
                     kernels.push(self.parse_kernel_decl()?);
                 }
                 Token::Buffer => {
@@ -1511,5 +1522,97 @@ mod tests {
         assert_eq!(derive_kernel_name("smoke/advect.wgsl"), "advect");
         assert_eq!(derive_kernel_name("my-kernel.wgsl"), "my_kernel");
         assert_eq!(derive_kernel_name("123bad.wgsl"), "_123bad");
+    }
+
+    #[test]
+    fn parse_scene_kernel() {
+        let config = parse_str(
+            r#"
+            pipeline gpu {
+              scene kernel basic = "basic.pdc"
+              kernel rasterize = "tile_raster.wgsl"
+              buffer pixels: gpu(u32) = constant(0)
+              run basic
+              run rasterize
+              display pixels
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.pipelines.len(), 1);
+        let kernels = &config.pipelines[0].kernels;
+        assert_eq!(kernels.len(), 2);
+        assert_eq!(kernels[0].kind, KernelKind::Scene);
+        assert_eq!(kernels[0].name, "basic");
+        assert_eq!(kernels[0].path, "basic.pdc");
+        assert_eq!(kernels[1].kind, KernelKind::Standard);
+        assert_eq!(kernels[1].name, "rasterize");
+    }
+
+    #[test]
+    fn parse_scene_kernel_auto_name() {
+        let config = parse_str(
+            r#"
+            pipeline gpu {
+              scene kernel "my-scene.pdc"
+              run my_scene
+              display
+            }
+            "#,
+        )
+        .unwrap();
+
+        let kernels = &config.pipelines[0].kernels;
+        assert_eq!(kernels[0].kind, KernelKind::Scene);
+        assert_eq!(kernels[0].name, "my_scene");
+        assert_eq!(kernels[0].path, "my-scene.pdc");
+    }
+
+    #[test]
+    fn scene_kernel_outside_pipeline_is_error() {
+        let result = parse_str(
+            r#"
+            scene kernel "basic.pdc"
+            "#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_builtin_with_default_value() {
+        let config = parse_str(
+            r#"
+            builtin var paused: bool = true
+            pipeline {
+              pixel kernel "test.wgsl"
+              run test
+              display
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.builtins.len(), 1);
+        assert_eq!(config.builtins[0].name, "paused");
+        assert!(config.builtins[0].mutable);
+        assert_eq!(config.builtins[0].default, Some(Literal::Bool(true)));
+    }
+
+    #[test]
+    fn parse_builtin_without_default() {
+        let config = parse_str(
+            r#"
+            builtin var paused: bool
+            pipeline {
+              pixel kernel "test.wgsl"
+              run test
+              display
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.builtins[0].default, None);
     }
 }

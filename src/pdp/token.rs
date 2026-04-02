@@ -4,6 +4,7 @@ use std::fmt;
 pub enum Token {
     // Kernel type keywords
     Pixel,
+    Scene,
     Init,
     Kernel,
     // Buffer
@@ -79,6 +80,7 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Token::Pixel => write!(f, "pixel"),
+            Token::Scene => write!(f, "scene"),
             Token::Init => write!(f, "init"),
             Token::Kernel => write!(f, "kernel"),
             Token::Buffer => write!(f, "buffer"),

@@ -6,7 +6,7 @@ pub struct Span {
 }
 
 /// A literal value in the config.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Float(f64),
     Int(i64),
@@ -30,6 +30,7 @@ pub struct NamedArg {
 pub enum KernelKind {
     Pixel,
     Standard,
+    Scene,
 }
 
 impl KernelKind {
@@ -39,6 +40,7 @@ impl KernelKind {
         match self {
             KernelKind::Pixel => &["x", "y", "px", "py", "sample_index", "time", "width", "height"],
             KernelKind::Standard => &["px", "py", "width", "height"],
+            KernelKind::Scene => &[],
         }
     }
 }
@@ -140,6 +142,8 @@ pub struct BuiltinDecl {
     pub ty: BuiltinType,
     /// `true` for `builtin var`, `false` for `builtin const`.
     pub mutable: bool,
+    /// Optional initial value (e.g. `builtin var paused: bool = true`).
+    pub default: Option<Literal>,
     pub span: Span,
 }
 

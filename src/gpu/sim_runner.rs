@@ -22,6 +22,14 @@ struct GpuBuffer {
     element_type: GpuElementType,
 }
 
+/// Type of a user arg field in the WGSL Params struct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WgslArgType {
+    F32,
+    U32,
+    I32,
+}
+
 /// A compiled GPU compute pipeline with binding metadata.
 #[allow(dead_code)]
 struct GpuPipeline {
@@ -31,6 +39,8 @@ struct GpuPipeline {
     binding_map: HashMap<String, u32>,
     /// Total number of bindings (including uniform at 0).
     num_bindings: u32,
+    /// Types of user arg fields in the Params struct (after SimParams).
+    user_arg_types: Vec<WgslArgType>,
 }
 
 /// Generic GPU simulation runner driven by PDP pipeline steps.
@@ -203,6 +213,36 @@ impl GpuSimRunner {
         );
     }
 
+    /// Create or replace a named GPU buffer with the given data.
+    ///
+    /// Unlike `add_buffer`, this accepts arbitrary-sized data (not limited
+    /// to width×height). Used for scene data buffers (segments, tile indices,
+    /// etc.) whose size depends on the scene content.
+    pub fn add_buffer_with_data(&mut self, name: &str, data: &[u8]) {
+        let buf_size = data.len() as u64;
+        // Ensure at least 16 bytes (wgpu minimum buffer size for bindings)
+        let buf_size = buf_size.max(16);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(name),
+            size: buf_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !data.is_empty() {
+            self.queue.write_buffer(&buffer, 0, data);
+        }
+        self.buffers.insert(
+            name.to_string(),
+            GpuBuffer {
+                buffer,
+                element_size: 1,
+                element_type: GpuElementType::U32, // placeholder — WGSL knows the real type
+            },
+        );
+    }
+
     /// Compile a WGSL shader and register it as a named pipeline.
     pub fn add_pipeline(
         &mut self,
@@ -210,6 +250,7 @@ impl GpuSimRunner {
         wgsl_source: &str,
     ) -> Result<(), String> {
         let binding_map = parse_wgsl_bindings(wgsl_source);
+        let user_arg_types = parse_wgsl_user_arg_types(wgsl_source);
         let num_bindings = binding_map
             .values()
             .copied()
@@ -282,6 +323,7 @@ impl GpuSimRunner {
                 bind_group_layout,
                 binding_map,
                 num_bindings,
+                user_arg_types,
             },
         );
         Ok(())
@@ -290,21 +332,19 @@ impl GpuSimRunner {
     /// Dispatch a compute shader with named buffer bindings and optional user args.
     ///
     /// `bindings` maps WGSL variable names to PDP buffer names.
-    /// `user_args` are f32 values written to the uniform buffer after SimParams (offset 16),
-    /// in the order they appear. The WGSL kernel's Params struct must match this layout.
+    /// `user_arg_bytes` are raw bytes written to the uniform buffer after SimParams
+    /// (offset 16). The caller is responsible for encoding each arg with the correct
+    /// type (f32 or u32) to match the WGSL kernel's Params struct layout.
     /// The uniform buffer (binding 0) is always bound automatically.
     pub fn dispatch(
         &self,
         pipeline_name: &str,
         bindings: &[(&str, &str)],
-        user_args: &[f32],
+        user_arg_bytes: &[u8],
     ) {
         // Write user args to uniform buffer after SimParams (16 bytes)
-        if !user_args.is_empty() {
-            let arg_bytes: Vec<u8> = user_args.iter()
-                .flat_map(|v| v.to_le_bytes())
-                .collect();
-            self.queue.write_buffer(&self.uniform_buffer, 16, &arg_bytes);
+        if !user_arg_bytes.is_empty() {
+            self.queue.write_buffer(&self.uniform_buffer, 16, user_arg_bytes);
         }
 
         let gpu_pipeline = match self.pipelines.get(pipeline_name) {
@@ -365,6 +405,13 @@ impl GpuSimRunner {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Return the WGSL user arg types for a named pipeline.
+    pub fn user_arg_types(&self, pipeline_name: &str) -> &[WgslArgType] {
+        self.pipelines.get(pipeline_name)
+            .map(|p| p.user_arg_types.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Swap two named buffer entries (O(1) pointer swap).
@@ -521,6 +568,47 @@ fn is_binding_read_only(source: &str, binding_idx: u32) -> bool {
     false // default to read-write if unclear
 }
 
+/// Parse the WGSL `Params` struct to extract user arg types.
+///
+/// The Params struct has a fixed SimParams header (width, height, stride, _pad)
+/// followed by user-defined fields. This function returns the types of those
+/// user-defined fields in declaration order, skipping padding fields (names
+/// starting with `_`).
+fn parse_wgsl_user_arg_types(source: &str) -> Vec<WgslArgType> {
+    let sim_params = ["width", "height", "stride"];
+    let mut types = Vec::new();
+    let mut in_params = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("struct Params") {
+            in_params = true;
+            continue;
+        }
+        if in_params {
+            if trimmed == "}" || trimmed == "};" {
+                break;
+            }
+            // Parse "name: type," lines
+            if let Some(colon_pos) = trimmed.find(':') {
+                let name = trimmed[..colon_pos].trim();
+                let type_str = trimmed[colon_pos + 1..].trim().trim_end_matches(',');
+                // Skip SimParams fields and padding
+                if sim_params.contains(&name) || name.starts_with('_') {
+                    continue;
+                }
+                let arg_type = match type_str {
+                    "u32" => WgslArgType::U32,
+                    "i32" => WgslArgType::I32,
+                    _ => WgslArgType::F32,
+                };
+                types.push(arg_type);
+            }
+        }
+    }
+    types
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,5 +648,115 @@ mod tests {
         "#;
         assert!(is_binding_read_only(wgsl, 1));
         assert!(!is_binding_read_only(wgsl, 2));
+    }
+
+    #[test]
+    fn parse_user_arg_types_no_user_args() {
+        let wgsl = r#"
+struct Params {
+    width: u32,
+    height: u32,
+    stride: u32,
+    _pad: u32,
+}
+        "#;
+        let types = parse_wgsl_user_arg_types(wgsl);
+        assert!(types.is_empty());
+    }
+
+    #[test]
+    fn parse_user_arg_types_all_u32() {
+        let wgsl = r#"
+struct Params {
+    width: u32,
+    height: u32,
+    stride: u32,
+    _pad: u32,
+    tile_size: u32,
+    tiles_x: u32,
+    num_paths: u32,
+    _pad2: u32,
+}
+        "#;
+        let types = parse_wgsl_user_arg_types(wgsl);
+        assert_eq!(types, vec![WgslArgType::U32, WgslArgType::U32, WgslArgType::U32]);
+    }
+
+    #[test]
+    fn parse_user_arg_types_mixed() {
+        let wgsl = r#"
+struct Params {
+    width: u32,
+    height: u32,
+    stride: u32,
+    _pad: u32,
+    speed: f32,
+    count: u32,
+    threshold: f32,
+}
+        "#;
+        let types = parse_wgsl_user_arg_types(wgsl);
+        assert_eq!(types, vec![WgslArgType::F32, WgslArgType::U32, WgslArgType::F32]);
+    }
+
+    #[test]
+    fn parse_user_arg_types_with_i32() {
+        let wgsl = r#"
+struct Params {
+    width: u32,
+    height: u32,
+    stride: u32,
+    _pad: u32,
+    offset: i32,
+}
+        "#;
+        let types = parse_wgsl_user_arg_types(wgsl);
+        assert_eq!(types, vec![WgslArgType::I32]);
+    }
+
+    #[test]
+    fn parse_user_arg_types_semicolon_style() {
+        // WGSL allows both `,` and `;` terminated struct fields
+        let wgsl = r#"
+struct Params {
+    width: u32,
+    height: u32,
+    stride: u32,
+    _pad: u32,
+    tile_size: u32,
+};
+        "#;
+        let types = parse_wgsl_user_arg_types(wgsl);
+        assert_eq!(types, vec![WgslArgType::U32]);
+    }
+
+    #[test]
+    fn parse_bindings_tile_raster() {
+        let wgsl = r#"
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> segments: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> seg_path_ids: array<u32>;
+@group(0) @binding(3) var<storage, read> tile_offsets: array<u32>;
+@group(0) @binding(4) var<storage, read> tile_counts: array<u32>;
+@group(0) @binding(5) var<storage, read> tile_indices: array<u32>;
+@group(0) @binding(6) var<storage, read> path_colors: array<u32>;
+@group(0) @binding(7) var<storage, read_write> pixels: array<u32>;
+@group(0) @binding(8) var<storage, read> path_fill_rules: array<u32>;
+        "#;
+        let map = parse_wgsl_bindings(wgsl);
+        assert_eq!(map.len(), 8); // 8 storage bindings (binding 0 excluded)
+        assert_eq!(map.get("segments"), Some(&1));
+        assert_eq!(map.get("seg_path_ids"), Some(&2));
+        assert_eq!(map.get("tile_offsets"), Some(&3));
+        assert_eq!(map.get("tile_counts"), Some(&4));
+        assert_eq!(map.get("tile_indices"), Some(&5));
+        assert_eq!(map.get("path_colors"), Some(&6));
+        assert_eq!(map.get("pixels"), Some(&7));
+        assert_eq!(map.get("path_fill_rules"), Some(&8));
+
+        // Check read-only detection
+        assert!(is_binding_read_only(wgsl, 1));  // segments: read
+        assert!(!is_binding_read_only(wgsl, 7)); // pixels: read_write
+        assert!(is_binding_read_only(wgsl, 8));  // path_fill_rules: read
     }
 }
