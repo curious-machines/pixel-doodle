@@ -92,6 +92,8 @@ struct HostState {
     gpu_queue: Option<wgpu::Queue>,
     /// Kernel handle → name mapping for GPU sim kernels.
     gpu_kernel_names: Vec<String>,
+    /// Thread pool for parallel CPU kernel dispatch.
+    thread_pool: Option<rayon::ThreadPool>,
 }
 
 #[allow(dead_code)]
@@ -450,17 +452,47 @@ impl PipelineHost for HostState {
                 }
             }).collect();
 
-            // Dispatch across all rows (single-threaded for simplicity)
+            // Parallel tiled dispatch via rayon (matches PDP behavior).
             let fn_ptr = kernel.compiled.fn_ptr;
-            unsafe {
-                let params_ptr = params.as_ptr();
-                let buffers_ptr = buffer_ptrs.as_ptr() as *const *mut u8;
-                let tex_ptr = if tex_slots.is_empty() {
-                    std::ptr::null()
-                } else {
-                    tex_slots.as_ptr() as *const u8
-                };
-                (fn_ptr)(params_ptr, buffers_ptr, tex_ptr, w, h, w, 0, h);
+            let tile_h = 16usize;
+            let params_ref = &params;
+            // Convert buffer pointers to usize for Send safety across threads.
+            let buf_addrs: Vec<usize> = buffer_ptrs.iter().map(|p| *p as usize).collect();
+            let tex_addr = if tex_slots.is_empty() {
+                0usize
+            } else {
+                tex_slots.as_ptr() as usize
+            };
+
+            let dispatch = || {
+                use rayon::prelude::*;
+                let num_tiles = (h as usize + tile_h - 1) / tile_h;
+                (0..num_tiles).into_par_iter().for_each(|tile| {
+                    let row_start = (tile * tile_h) as u32;
+                    let row_end = ((tile + 1) * tile_h).min(h as usize) as u32;
+                    let buf_ptrs: Vec<*mut u8> = buf_addrs.iter()
+                        .map(|&addr| addr as *mut u8)
+                        .collect();
+                    let tex_ptr = if tex_addr == 0 {
+                        std::ptr::null()
+                    } else {
+                        tex_addr as *const u8
+                    };
+                    unsafe {
+                        (fn_ptr)(
+                            params_ref.as_ptr(),
+                            buf_ptrs.as_ptr() as *const *mut u8,
+                            tex_ptr,
+                            w, h, w,
+                            row_start, row_end,
+                        );
+                    }
+                });
+            };
+
+            match &self.thread_pool {
+                Some(pool) => pool.install(dispatch),
+                None => dispatch(),
             }
         }
 
@@ -672,6 +704,9 @@ impl PipelineHost for HostState {
     fn update_builtins(&mut self, builtins: &[f64]) {
         let n = builtins.len().min(B::COUNT);
         self.builtins_snapshot[..n].copy_from_slice(&builtins[..n]);
+    }
+    fn set_thread_pool(&mut self, pool: Option<rayon::ThreadPool>) {
+        self.thread_pool = pool;
     }
     fn request_redraw(&mut self) { self.redraw_requested = true; }
     fn was_redraw_requested(&self) -> bool { self.redraw_requested }
@@ -952,6 +987,7 @@ impl PdcRuntime {
             gpu_device: None,
             gpu_queue: None,
             gpu_kernel_names: Vec::new(),
+            thread_pool: None,
         });
 
         let title = source_path
@@ -1083,6 +1119,12 @@ impl PdcRuntime {
 
     pub fn thread_count(&self) -> Option<usize> {
         None
+    }
+
+    /// Set the thread pool for parallel CPU kernel dispatch.
+    /// The pool is moved into the runtime and used for all subsequent kernel calls.
+    pub fn set_thread_pool(&mut self, pool: Option<rayon::ThreadPool>) {
+        self.host.set_thread_pool(pool);
     }
 
     /// Initialize: run pdc_main (state init) + call init().

@@ -553,21 +553,22 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
         runtime.apply_overrides(&[("threads".to_string(), n.to_string())]);
     }
 
-    // Build thread pool
+    // Build thread pool and move it into the runtime for parallel kernel dispatch
     let thread_pool = args.threads.map(|n| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(n)
             .build()
             .expect("failed to create thread pool")
     });
+    runtime.set_thread_pool(thread_pool);
 
     // Output-only mode
     if let Some(ref output_path) = args.output {
         if runtime.has_gpu_kernels {
             runtime.execute_gpu_headless();
         } else {
-            runtime.execute_init_block(&thread_pool);
-            runtime.execute_frame(0.0, &thread_pool);
+            runtime.execute_init_block(&None);
+            runtime.execute_frame(0.0, &None);
         }
         bench::write_ppm(output_path, runtime.display_pixels(), runtime.width, runtime.height);
         eprintln!("Wrote {output_path}");
@@ -576,18 +577,18 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
 
     // Benchmark mode
     if args.bench {
-        runtime.execute_init_block(&thread_pool);
+        runtime.execute_init_block(&None);
         let warmup = 5;
         let frames = args.bench_frames;
         eprintln!("[bench] warmup {} frames...", warmup);
         for i in 0..warmup {
-            runtime.execute_frame(i as f64 * 0.016, &thread_pool);
+            runtime.execute_frame(i as f64 * 0.016, &None);
         }
         eprintln!("[bench] timing {} frames...", frames);
         let mut times = Vec::with_capacity(frames as usize);
         for i in 0..frames {
             let t0 = Instant::now();
-            runtime.execute_frame((warmup + i) as f64 * 0.016, &thread_pool);
+            runtime.execute_frame((warmup + i) as f64 * 0.016, &None);
             times.push(t0.elapsed().as_secs_f64() * 1000.0);
         }
         let min = times.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -602,7 +603,6 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = PdcPipelineApp {
         runtime,
-        thread_pool,
         window: None,
         display: None,
         keys_down: Vec::new(),
@@ -614,7 +614,6 @@ fn run_pdc_pipeline(source: &ConfigSource, args: &CliArgs) {
 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
 struct PdcPipelineApp {
     runtime: pixel_doodle::pdc::pipeline_runtime::PdcRuntime,
-    thread_pool: Option<rayon::ThreadPool>,
     window: Option<Arc<Window>>,
     display: Option<Display>,
     keys_down: Vec<KeyCode>,
@@ -640,7 +639,7 @@ impl ApplicationHandler for PdcPipelineApp {
             self.runtime.height,
         );
         self.runtime.init_gpu(&display);
-        self.runtime.execute_init_block(&self.thread_pool);
+        self.runtime.execute_init_block(&None);
         self.display = Some(display);
         self.window = Some(window);
     }
@@ -719,7 +718,7 @@ impl ApplicationHandler for PdcPipelineApp {
 
                 let time = self.start_time.elapsed().as_secs_f64();
                 let t0 = Instant::now();
-                let updated = self.runtime.execute_frame(time, &self.thread_pool);
+                let updated = self.runtime.execute_frame(time, &None);
                 let render_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
                 if updated {

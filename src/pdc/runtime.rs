@@ -89,6 +89,8 @@ pub trait PipelineHost {
     fn update_dimensions(&mut self, _width: u32, _height: u32) {}
     /// Update the builtins snapshot for kernel param population.
     fn update_builtins(&mut self, _builtins: &[f64]) {}
+    /// Set the thread pool for parallel kernel dispatch.
+    fn set_thread_pool(&mut self, _pool: Option<rayon::ThreadPool>) {}
     /// Request another frame after this one completes.
     fn request_redraw(&mut self) {}
     /// Whether a redraw was requested during this frame.
