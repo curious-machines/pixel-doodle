@@ -1050,6 +1050,9 @@ impl PdcRuntime {
                 "codegen" => {
                     self.host.set_codegen(value);
                 }
+                "title" => {
+                    self.title = value.to_string();
+                }
                 "pipeline" => {
                     // Accepted for compatibility
                 }
