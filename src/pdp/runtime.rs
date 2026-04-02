@@ -44,7 +44,7 @@ pub struct Runtime {
     kernels: HashMap<String, CompiledKernelEntry>,
     /// Simulation buffers: name -> f64 array.
     buffers: HashMap<String, Vec<f64>>,
-    /// Byte-level simulation buffers for gpu-cranelift/gpu-llvm backend (name -> raw bytes).
+    /// Byte-level simulation buffers for CPU render backend (name -> raw bytes).
     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
     gpu_cpu_buffers: HashMap<String, Vec<u8>>,
     /// Auto-allocated storage buffers for pixel kernels (not sim — doesn't trigger continuous redraw).
@@ -88,7 +88,10 @@ pub struct Runtime {
 
     pub tile_height: usize,
     pub animated: bool,
-    backend_name: String,
+    /// Where WGSL shaders execute: "gpu" (default) or "cpu".
+    render: String,
+    /// Which JIT backend for WGSL-on-CPU and PDC: "cranelift" (default) or "llvm".
+    codegen: String,
     /// Explicitly selected pipeline name (from settings or --set pipeline=...).
     pipeline_name: Option<String>,
     base_dir: std::path::PathBuf,
@@ -180,7 +183,8 @@ impl Runtime {
             mouse_up_edge: false,
             tile_height: 16,
             animated: false,
-            backend_name: "gpu".into(),
+            render: "gpu".into(),
+            codegen: "cranelift".into(),
             pipeline_name: None,
             base_dir: base_dir.to_path_buf(),
             gpu_backend: None,
@@ -199,14 +203,24 @@ impl Runtime {
         self.config_path = Some(path.to_string());
     }
 
+    /// Whether WGSL shaders run on CPU (JIT'd) rather than GPU.
+    fn is_cpu_render(&self) -> bool {
+        self.render == "cpu"
+    }
+
     /// Apply settings from the config's settings block.
     pub fn apply_settings(&mut self) {
         for entry in &self.config.settings.entries {
             match entry.key.as_str() {
                 "threads" => { /* handled externally */ }
-                "backend" => {
+                "render" => {
                     if let Literal::Str(s) = &entry.value {
-                        self.backend_name = s.clone();
+                        self.render = s.clone();
+                    }
+                }
+                "codegen" => {
+                    if let Literal::Str(s) = &entry.value {
+                        self.codegen = s.clone();
                     }
                 }
                 "pipeline" => {
@@ -242,7 +256,8 @@ impl Runtime {
                         self.pixel_buffer = vec![0u32; (self.width * self.height) as usize];
                     }
                 }
-                "backend" => self.backend_name = value.clone(),
+                "render" => self.render = value.clone(),
+                "codegen" => self.codegen = value.clone(),
                 "pipeline" => self.pipeline_name = Some(value.clone()),
                 "title" => self.config.title = Some(value.clone()),
                 "tile_height" => {
@@ -292,8 +307,9 @@ impl Runtime {
             kernel_decls.extend(pipeline.kernels.iter().cloned());
         }
 
-        let backend_name = self.backend_name.clone();
         let base_dir = self.base_dir.clone();
+        let is_cpu = self.is_cpu_render();
+        let codegen = self.codegen.clone();
 
         for decl in &kernel_decls {
             let path = resolve_path(&decl.path, &base_dir);
@@ -306,31 +322,22 @@ impl Runtime {
                     self.animated = true;
                 }
 
-                #[cfg(feature = "cranelift-backend")]
-                if backend_name == "gpu-cranelift" {
-                    let compiled = jit::wgsl_cranelift::compile_wgsl(&src)
-                        .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
+                #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+                if is_cpu {
+                    let compiled = match codegen.as_str() {
+                        #[cfg(feature = "cranelift-backend")]
+                        "cranelift" => jit::wgsl_cranelift::compile_wgsl(&src)
+                            .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?,
+                        #[cfg(feature = "llvm-backend")]
+                        "llvm" => jit::wgsl_llvm::compile_wgsl(&src)
+                            .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?,
+                        _ => return Err(format!("unsupported codegen '{}' (available: cranelift, llvm)", codegen)),
+                    };
                     let tex_names: Vec<String> = self
                         .selected_pipeline()
                         .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
                         .unwrap_or_default();
-                    eprintln!("compiled WGSL kernel '{}' to CPU via Cranelift ({} storage buffers)", decl.name, compiled.num_storage_buffers);
-                    self.kernels.insert(decl.name.clone(), CompiledKernelEntry::GpuCpu {
-                        compiled,
-                        tex_slot_names: tex_names,
-                    });
-                    continue;
-                }
-
-                #[cfg(feature = "llvm-backend")]
-                if backend_name == "gpu-llvm" {
-                    let compiled = jit::wgsl_llvm::compile_wgsl(&src)
-                        .map_err(|e| format!("WGSL CPU compile '{}': {}", decl.name, e))?;
-                    let tex_names: Vec<String> = self
-                        .selected_pipeline()
-                        .map(|p| p.textures.iter().map(|t| t.name.clone()).collect())
-                        .unwrap_or_default();
-                    eprintln!("compiled WGSL kernel '{}' to CPU via LLVM ({} storage buffers)", decl.name, compiled.num_storage_buffers);
+                    eprintln!("compiled WGSL kernel '{}' to CPU via {} ({} storage buffers)", decl.name, codegen, compiled.num_storage_buffers);
                     self.kernels.insert(decl.name.clone(), CompiledKernelEntry::GpuCpu {
                         compiled,
                         tex_slot_names: tex_names,
@@ -354,9 +361,9 @@ impl Runtime {
             if path.extension().is_some_and(|e| e == "pdc") {
                 let src = std::fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read PDC kernel '{}': {}", path.display(), e))?;
-                let compiled = pdc::compile_for_pipeline(&src, Some(&path))
+                let compiled = pdc::compile_for_pipeline_with_codegen(&src, Some(&path), &codegen)
                     .map_err(|e| format!("PDC compile '{}': {}", decl.name, e.format(&src)))?;
-                eprintln!("compiled PDC scene kernel '{}'", decl.name);
+                eprintln!("compiled PDC scene kernel '{}' via {}", decl.name, codegen);
                 self.kernels.insert(decl.name.clone(), CompiledKernelEntry::Scene {
                     compiled,
                 });
@@ -367,21 +374,6 @@ impl Runtime {
                 "unsupported kernel file extension for '{}' — only .wgsl and .pdc are supported",
                 path.display()
             ));
-        }
-
-        // Warn if backend setting has no effect on the selected pipeline
-        if self.has_gpu_kernels
-            && !matches!(self.backend_name.as_str(), "gpu-cranelift" | "gpu-llvm")
-            && kernel_decls.iter().all(|d| {
-                resolve_path(&d.path, &base_dir)
-                    .extension()
-                    .is_some_and(|e| e == "wgsl")
-            })
-        {
-            eprintln!(
-                "warning: backend='{}' has no effect — selected pipeline uses only WGSL kernels",
-                self.backend_name
-            );
         }
 
         Ok(())
@@ -397,9 +389,9 @@ impl Runtime {
 
         for decl in &buf_decls {
             if let Some(gpu_type) = decl.gpu_type {
-                // GPU buffers — skip for GPU backend, allocate as bytes for gpu-cranelift/gpu-llvm.
+                // GPU buffers — skip for GPU backend, allocate as bytes for CPU render.
                 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
-                if self.backend_name == "gpu-cranelift" || self.backend_name == "gpu-llvm" {
+                if self.is_cpu_render() {
                     let elem_bytes = gpu_type.byte_size() as usize;
                     let buf_size = size * elem_bytes;
                     let mut data = vec![0u8; buf_size];
@@ -725,7 +717,7 @@ impl Runtime {
                         self.buffers.insert(b.clone(), buf_b);
                         swapped = true;
                     }
-                    // Then gpu-cranelift/gpu-llvm byte buffers
+                    // Then CPU-rendered byte buffers
                     #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
                     if !swapped && self.gpu_cpu_buffers.contains_key(a.as_str()) {
                         let mut buf_a = self.gpu_cpu_buffers.remove(a).unwrap();
@@ -1049,7 +1041,7 @@ impl Runtime {
     fn execute_display(&mut self, buffer_name: Option<&str>) {
         match buffer_name {
             Some(name) => {
-                // Check if this is a gpu-cranelift/gpu-llvm buffer — copy to pixel_buffer.
+                // Check if this is a CPU-rendered buffer — copy to pixel_buffer.
                 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
                 if let Some(buf) = self.gpu_cpu_buffers.get(name) {
                     // Interpret as u32 array and copy to pixel_buffer.
@@ -1071,8 +1063,7 @@ impl Runtime {
                 // GPU pixel kernel (real GPU backend) — mark as rendered so
                 // main loop uses the GPU present path. GpuCpu kernels write
                 // directly to pixel_buffer and use the normal CPU display path.
-                let is_gpu_cpu = matches!(self.backend_name.as_str(), "gpu-cranelift" | "gpu-llvm");
-                if self.has_gpu_kernels && self.gpu_sim_runner.is_none() && !is_gpu_cpu {
+                if self.has_gpu_kernels && self.gpu_sim_runner.is_none() && !self.is_cpu_render() {
                     self.gpu_rendered_this_frame = true;
                 }
             }

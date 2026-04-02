@@ -1,9 +1,9 @@
 pub mod ast;
 pub mod codegen_common;
 #[cfg(feature = "cranelift-backend")]
-mod codegen_cranelift;
+pub(crate) mod codegen_cranelift;
 #[cfg(feature = "llvm-backend")]
-mod codegen_llvm;
+pub(crate) mod codegen_llvm;
 pub mod error;
 pub mod lexer;
 pub mod parser;
@@ -585,6 +585,44 @@ pub fn compile_for_pipeline(
         &checker.fn_aliases,
         &checker.op_overloads,
     )
+}
+
+/// Compile a PDC source for use in a PDP pipeline, selecting the codegen
+/// backend at runtime by name ("cranelift" or "llvm").
+pub fn compile_for_pipeline_with_codegen(
+    source: &str,
+    source_path: Option<&FsPath>,
+    codegen_backend: &str,
+) -> Result<codegen::CompiledProgram, error::PdcError> {
+    let base_dir = source_path.and_then(|p| p.parent());
+    let mut program = load_and_parse(source, base_dir)?;
+
+    eliminate_dead_code(&mut program);
+    strip_tests(&mut program);
+
+    let mut checker = type_check::TypeChecker::new();
+    checker.check_program(&program)?;
+
+    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
+        ("width", ast::PdcType::F32),
+        ("height", ast::PdcType::F32),
+    ];
+
+    match codegen_backend {
+        #[cfg(feature = "cranelift-backend")]
+        "cranelift" => codegen_cranelift::compile(
+            &program, &checker.types, &builtins_layout, &checker.user_fns,
+            &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
+        ),
+        #[cfg(feature = "llvm-backend")]
+        "llvm" => codegen_llvm::compile(
+            &program, &checker.types, &builtins_layout, &checker.user_fns,
+            &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
+        ),
+        _ => Err(error::PdcError::Codegen {
+            message: format!("unsupported codegen backend '{codegen_backend}'"),
+        }),
+    }
 }
 
 /// Extract a `VectorScene` from an executed `SceneBuilder`.

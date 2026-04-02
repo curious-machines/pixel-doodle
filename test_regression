@@ -51,7 +51,7 @@ Usage: ./test_regression [options] [example-filter]
 Options:
   --update [filter]    Regenerate golden images (all or filtered)
   --compile-only       Just verify compilation succeeds (no golden compare)
-  --list               List all valid (example, pipeline, backend) combos
+  --list               List all valid (example, pipeline, config) combos
   --threshold N        Per-channel pixel tolerance (default: 0 = exact)
   --no-build           Skip cargo build step
   --help               Show this help
@@ -98,19 +98,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Backend combos for each pipeline type
-backends_for_pipeline() {
+# Render/codegen combos for each pipeline type.
+# Each combo is "render:codegen" — expanded to --set args in run_case.
+configs_for_pipeline() {
     local pipeline="$1"
     case "$pipeline" in
         gpu)
-            echo "gpu"
-            echo "gpu-cranelift"
-            echo "gpu-llvm"
+            echo "gpu:cranelift"
+            echo "cpu:cranelift"
+            echo "cpu:llvm"
             ;;
     esac
 }
 
-# Discover all test cases: (example_path, pipeline, backend)
+# Discover all test cases: (example_path, pipeline, config)
 discover_cases() {
     local pdp_files
     pdp_files=$(find "$SCRIPT_DIR/examples" -name '*.pdp' -not -path '*/shared/*' | sort)
@@ -131,10 +132,10 @@ discover_cases() {
         pipelines=$(grep -oP '^pipeline\s+\K\w+' "$pdp" || true)
 
         for pipeline in $pipelines; do
-            local backends
-            backends=$(backends_for_pipeline "$pipeline")
-            for backend in $backends; do
-                echo "$example_name|$pipeline|$backend"
+            local configs
+            configs=$(configs_for_pipeline "$pipeline")
+            for config in $configs; do
+                echo "$example_name|$pipeline|$config"
             done
         done
     done
@@ -142,8 +143,9 @@ discover_cases() {
 
 # Golden image path for a test case
 golden_path() {
-    local example="$1" pipeline="$2" backend="$3"
-    echo "$GOLDEN_DIR/$example/$pipeline-$backend.ppm"
+    local example="$1" pipeline="$2" config="$3"
+    # config is "render:codegen", use as-is for filename
+    echo "$GOLDEN_DIR/$example/$pipeline-$config.ppm"
 }
 
 # Compare two PPM files, returns 0 if within threshold
@@ -259,18 +261,21 @@ print(f'  max_channel_diff={max_diff} differing_channels={diff_count}/{total} ({
 
 # Run a single test case
 run_case() {
-    local example="$1" pipeline="$2" backend="$3"
-    local label="$example [$pipeline/$backend]"
-    local set_args="pipeline=$pipeline,backend=$backend,width=$WIDTH,height=$HEIGHT"
+    local example="$1" pipeline="$2" config="$3"
+    local label="$example [$pipeline/$config]"
+    # Split config into render:codegen
+    local render="${config%%:*}"
+    local codegen="${config##*:}"
+    local set_args="pipeline=$pipeline,render=$render,codegen=$codegen,width=$WIDTH,height=$HEIGHT"
     local out_dir="$TMP_DIR/$example"
-    local out_file="$out_dir/$pipeline-$backend.ppm"
+    local out_file="$out_dir/$pipeline-$config.ppm"
     local gold
-    gold=$(golden_path "$example" "$pipeline" "$backend")
+    gold=$(golden_path "$example" "$pipeline" "$config")
 
     mkdir -p "$out_dir"
 
     # Render headlessly
-    local stderr_file="$out_dir/$pipeline-$backend.stderr"
+    local stderr_file="$out_dir/$pipeline-$config.stderr"
     local exit_code=0
     timeout "$TIMEOUT" "$BINARY" "examples/$example" \
         --set "$set_args" --output "$out_file" \
@@ -278,7 +283,7 @@ run_case() {
 
     if [[ $exit_code -ne 0 ]]; then
         # Check for GPU unavailability
-        if [[ "$backend" == "gpu" ]] && grep -qiE 'adapter|no suitable|gpu.*not|failed to create' "$stderr_file" 2>/dev/null; then
+        if [[ "$render" == "gpu" ]] && grep -qiE 'adapter|no suitable|gpu.*not|failed to create' "$stderr_file" 2>/dev/null; then
             printf "${YELLOW}SKIP${RESET}  %s (no GPU adapter)\n" "$label"
             inc_counter skipped
             return
@@ -352,10 +357,10 @@ fi
 
 # List mode
 if [[ "$MODE" == "list" ]]; then
-    printf "${BOLD}%-40s %-8s %s${RESET}\n" "Example" "Pipeline" "Backend"
+    printf "${BOLD}%-40s %-8s %s${RESET}\n" "Example" "Pipeline" "Config"
     echo "────────────────────────────────────────────────────────────────"
-    echo "$cases" | while IFS='|' read -r example pipeline backend; do
-        printf "%-40s %-8s %s\n" "$example" "$pipeline" "$backend"
+    echo "$cases" | while IFS='|' read -r example pipeline config; do
+        printf "%-40s %-8s %s\n" "$example" "$pipeline" "$config"
     done
     echo ""
     echo "Total: $total test cases"
@@ -373,8 +378,8 @@ printf "${BOLD}Running %d regression tests (${WIDTH}x${HEIGHT}, threshold=%d)${R
 echo "════════════════════════════════════════════════════════════════"
 
 # Run all cases (use process substitution to avoid subshell)
-while IFS='|' read -r example pipeline backend; do
-    run_case "$example" "$pipeline" "$backend"
+while IFS='|' read -r example pipeline config; do
+    run_case "$example" "$pipeline" "$config"
 done <<< "$cases"
 
 # Read final counters

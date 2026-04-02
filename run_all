@@ -4,10 +4,11 @@ set -euo pipefail
 usage() {
     echo "Usage: ./run_all <category/example> [options]"
     echo ""
-    echo "  Runs the example with all 3 GPU backends sequentially:"
-    echo "    1. gpu"
-    echo "    2. gpu-cranelift"
-    echo "    3. gpu-llvm"
+    echo "  Runs the example with all 4 render/codegen combos sequentially:"
+    echo "    1. render=gpu  codegen=cranelift"
+    echo "    2. render=gpu  codegen=llvm"
+    echo "    3. render=cpu  codegen=cranelift"
+    echo "    4. render=cpu  codegen=llvm"
     echo ""
     echo "  Extra arguments are passed through to each run."
     echo ""
@@ -23,17 +24,17 @@ usage() {
 example="$1"
 shift
 
-backends=(
-    "pipeline=gpu,backend=gpu"
-    "pipeline=gpu,backend=gpu-cranelift"
-    "pipeline=gpu,backend=gpu-llvm"
+configs=(
+    "pipeline=gpu,render=gpu,codegen=cranelift"
+    "pipeline=gpu,render=gpu,codegen=llvm"
+    "pipeline=gpu,render=cpu,codegen=cranelift"
+    "pipeline=gpu,render=cpu,codegen=llvm"
 )
 
-for combo in "${backends[@]}"; do
+for combo in "${configs[@]}"; do
     echo "═══ $combo ═══"
-    # Extract pipeline and backend values for the window title.
     name=$(basename "$example")
-    pip="${combo#*pipeline=}"; pip="${pip%%,*}"
-    be="${combo#*backend=}"; be="${be%%,*}"
-    ./run "$example" --set "$combo,title=$name - $pip/$be" "$@" || echo "  ⚠ exited with $?"
+    render="${combo#*render=}"; render="${render%%,*}"
+    codegen="${combo#*codegen=}"; codegen="${codegen%%,*}"
+    ./run "$example" --set "$combo,title=$name - $render/$codegen" "$@" || echo "  ⚠ exited with $?"
 done

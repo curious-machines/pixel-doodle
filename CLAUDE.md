@@ -34,11 +34,14 @@ Kernels are WGSL compute shaders. The runtime dispatches them either on the GPU 
 - Reference `.wgsl` kernel files
 - Define execution order, loops, swaps, mouse/keyboard handlers
 
-### Backends
+### Settings
 
-- **gpu** (default): Native GPU execution via wgpu compute shaders
-- **gpu-cranelift**: CPU fallback — compiles WGSL to native code via naga + Cranelift
-- **gpu-llvm**: CPU fallback — compiles WGSL to native code via naga + LLVM (optional feature)
+Two orthogonal settings control execution:
+
+- **render**: `"gpu"` (default) — native GPU via wgpu; `"cpu"` — JIT-compiled CPU fallback
+- **codegen**: `"cranelift"` (default) or `"llvm"` — which JIT backend for CPU render and PDC
+
+Set via `--set render=cpu,codegen=llvm`, `.pds` files, or PDP `settings {}` blocks.
 
 ## Implementation Strategy
 
@@ -51,7 +54,7 @@ Kernels are WGSL compute shaders. The runtime dispatches them either on the GPU 
 After making code changes that could affect rendering (backends, codegen, runtime), run the regression test suite:
 
 ```bash
-./test_regression              # Test all sample×backend combos against golden references
+./test_regression              # Test all sample×config combos against golden references
 ./test_regression --no-build   # Skip rebuild if already built
 ./test_regression basic/gradient  # Test a single example
 ```

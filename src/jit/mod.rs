@@ -188,7 +188,7 @@ pub struct ParamMember {
 }
 
 /// Compiled WGSL kernel — holds the JIT handle (to keep code alive) and the
-/// function pointer. Used by both gpu-cranelift and gpu-llvm backends.
+/// function pointer. Used by both Cranelift and LLVM CPU render backends.
 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
 pub struct CompiledWgslKernel {
     _jit_handle: Box<dyn Send + Sync>,

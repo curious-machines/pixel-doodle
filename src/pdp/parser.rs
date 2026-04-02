@@ -1353,7 +1353,7 @@ mod tests {
             r#"
             settings {
               threads = 4
-              backend = "gpu"
+              render = "gpu"
               tile_height = 8
             }
 
@@ -1368,7 +1368,7 @@ mod tests {
 
         assert_eq!(config.settings.entries.len(), 3);
         assert_eq!(config.settings.entries[0].key, "threads");
-        assert_eq!(config.settings.entries[1].key, "backend");
+        assert_eq!(config.settings.entries[1].key, "render");
     }
 
     #[test]
