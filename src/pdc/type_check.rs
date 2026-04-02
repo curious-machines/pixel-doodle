@@ -220,6 +220,69 @@ impl TypeChecker {
                 takes_ctx: false,
             });
         }
+
+        // Pipeline host functions
+        // create_buffer(type_name: string, init_value: f64) -> i32
+        self.builtins.insert("create_buffer".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::F64],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+        // swap_buffers(handle_a: i32, handle_b: i32)
+        self.builtins.insert("swap_buffers".into(), BuiltinFn {
+            params: vec![PdcType::I32, PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // load_kernel(name: string, path: string, kind: i32) -> i32
+        self.builtins.insert("load_kernel".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::Str, PdcType::I32],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+        // bind_buffer(param_name: string, buffer_handle: i32, is_output: i32)
+        self.builtins.insert("bind_buffer".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::I32, PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // set_kernel_arg_f64(name: string, value: f64)
+        self.builtins.insert("set_kernel_arg_f64".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // set_kernel_arg_f32(name: string, value: f32)
+        self.builtins.insert("set_kernel_arg_f32".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::F32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // run_kernel(kernel_handle: i32)
+        self.builtins.insert("run_kernel".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // display()
+        self.builtins.insert("display".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // display_buffer(buffer_handle: i32)
+        self.builtins.insert("display_buffer".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        // load_texture(name: string, path: string) -> i32
+        self.builtins.insert("load_texture".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::Str],
+            ret: PdcType::I32,
+            takes_ctx: true,
+        });
+
     }
 
     fn push_scope(&mut self) {

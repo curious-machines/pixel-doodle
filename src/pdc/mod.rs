@@ -485,6 +485,7 @@ pub fn run_pdc_tests(
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
         // Clear any previous failures
         runtime::take_assert_failures();
@@ -562,6 +563,7 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
         builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: std::ptr::null_mut(),
+            host: std::ptr::null_mut(),
     };
     unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
 }
@@ -748,6 +750,7 @@ pub fn compile_and_run(
         builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
     };
     unsafe {
         (compiled.fn_ptr)(&mut ctx);
@@ -932,6 +935,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
         unsafe { compiled.call_fn(fn_name, &mut ctx, args) }.expect("call_fn failed")
     }
@@ -1105,6 +1109,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
         let err = unsafe { compiled.call_fn("nonexistent", &mut ctx, &[]) };
         assert!(err.is_err());
@@ -1122,6 +1127,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
         let err = unsafe { compiled.call_fn("add", &mut ctx, &[PdcValue::F64(1.0)]) };
         assert!(err.is_err());
@@ -1376,6 +1382,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene_builder as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         super::extract_scene(&scene_builder, 0.5, 16, width, height)
@@ -1520,6 +1527,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         // Run pdc_main to initialize state (var x = 0.0)
@@ -1547,6 +1555,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         // Run pdc_main to initialize state
@@ -1573,6 +1582,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1599,6 +1609,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         // 1. pdc_main initializes state (counter = 0.0)
@@ -1662,6 +1673,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1708,6 +1720,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         // 1. pdc_main initializes state
@@ -1737,6 +1750,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1786,6 +1800,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         // Run pdc_main (processes builtin declarations)
@@ -1848,6 +1863,7 @@ mod tests {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1862,5 +1878,98 @@ mod tests {
         // PDC reads the updated value
         let z = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
         assert_eq!(z, PdcValue::F64(5.0));
+    }
+
+    // ---- Pipeline host function tests (Phase 4) ----
+
+    #[test]
+    fn pipeline_host_basic_operations() {
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var grid: i32 = 0
+            var grid_next: i32 = 0
+            var sim_kernel: i32 = 0
+
+            fn init() {
+                grid = create_buffer("gpu_f32", 0.0)
+                grid_next = create_buffer("gpu_f32", 0.0)
+                sim_kernel = load_kernel("step", "step.wgsl", 1)
+            }
+
+            fn frame() {
+                bind_buffer("input", grid, 0)
+                bind_buffer("output", grid_next, 1)
+                run_kernel(sim_kernel)
+                swap_buffers(grid, grid_next)
+                display()
+            }
+        "#;
+        let (compiled, state_layout) =
+            compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+                .expect("compile failed");
+        let mut builtins = [200.0f64; 12];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        // Use a shared log via Rc<RefCell> so we can read it after the mock is borrowed
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+        struct LoggingHost { log: Rc<RefCell<Vec<String>>>, next_handle: i32 }
+        impl runtime::PipelineHost for LoggingHost {
+            fn create_buffer(&mut self, t: &str, v: f64) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("create_buffer({t}, {v})")); h
+            }
+            fn swap_buffers(&mut self, a: i32, b: i32) { self.log.borrow_mut().push(format!("swap_buffers({a}, {b})")); }
+            fn load_kernel(&mut self, n: &str, p: &str, k: i32) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("load_kernel({n}, {p}, {k})")); h
+            }
+            fn bind_buffer(&mut self, p: &str, h: i32, o: bool) { self.log.borrow_mut().push(format!("bind_buffer({p}, {h}, {o})")); }
+            fn set_kernel_arg_f64(&mut self, n: &str, v: f64) { self.log.borrow_mut().push(format!("set_kernel_arg_f64({n}, {v})")); }
+            fn set_kernel_arg_f32(&mut self, n: &str, v: f32) { self.log.borrow_mut().push(format!("set_kernel_arg_f32({n}, {v})")); }
+            fn run_kernel(&mut self, h: i32) { self.log.borrow_mut().push(format!("run_kernel({h})")); }
+            fn display(&mut self) { self.log.borrow_mut().push("display()".into()); }
+            fn display_buffer(&mut self, h: i32) { self.log.borrow_mut().push(format!("display_buffer({h})")); }
+            fn load_texture(&mut self, n: &str, p: &str) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("load_texture({n}, {p})")); h
+            }
+        }
+
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LoggingHost {
+            log: log.clone(), next_handle: 1,
+        });
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        // Initialize state vars
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Run init
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        // Run one frame
+        unsafe { compiled.call_frame(&mut ctx).unwrap(); }
+
+        let log = log.borrow();
+        assert_eq!(*log, vec![
+            "create_buffer(gpu_f32, 0)",
+            "create_buffer(gpu_f32, 0)",
+            "load_kernel(step, step.wgsl, 1)",
+            "bind_buffer(input, 1, false)",
+            "bind_buffer(output, 2, true)",
+            "run_kernel(3)",
+            "swap_buffers(1, 2)",
+            "display()",
+        ]);
     }
 }

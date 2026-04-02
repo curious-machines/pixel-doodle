@@ -1004,6 +1004,7 @@ impl Runtime {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene_builder as *mut _,
             state: state_ptr,
+            host: std::ptr::null_mut(),
         };
         unsafe {
             (fn_ptr)(&mut ctx);

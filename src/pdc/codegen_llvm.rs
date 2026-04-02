@@ -1842,6 +1842,9 @@ impl<'a> LlvmCodegenCtx<'a> {
                 "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
+                | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
+                | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
+                | "display" | "display_buffer" | "load_texture"
             );
 
             let mut arg_vals: Vec<BasicValueEnum> = Vec::new();
@@ -1862,10 +1865,12 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
-            "Path" | "len" => Some(self.context.i32_type().into()),
+            "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture" => Some(self.context.i32_type().into()),
             "get" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-            | "fill_styled" | "stroke_styled" | "push" | "set" => None,
+            | "fill_styled" | "stroke_styled" | "push" | "set"
+            | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
+            | "run_kernel" | "display" | "display_buffer" => None,
             _ => Some(self.context.f64_type().into()),
         }
     }

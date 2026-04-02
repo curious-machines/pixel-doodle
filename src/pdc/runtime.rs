@@ -10,6 +10,41 @@ pub struct PdcContext {
     /// Pointer to persistent state block for module-level mutable variables.
     /// Null when no state block is needed (e.g., stateless scene scripts).
     pub state: *mut u8,
+    /// Pointer to a `Box<dyn PipelineHost>` for pipeline operations.
+    /// Null when pipeline host functions are not available.
+    /// This is `*mut Box<dyn PipelineHost>` cast to `*mut u8` to keep
+    /// PdcContext repr(C) with fixed-size fields.
+    pub host: *mut u8,
+}
+
+/// Trait for pipeline host operations callable from JIT'd PDC code.
+///
+/// The pipeline runtime implements this trait to provide buffer management,
+/// kernel dispatch, display control, and texture loading to PDC scripts.
+pub trait PipelineHost {
+    /// Create a typed buffer. Returns a handle ID.
+    /// `type_name` is e.g. "gpu_f32", "gpu_u32", "gpu_vec4_f32".
+    fn create_buffer(&mut self, type_name: &str, init_value: f64) -> i32;
+    /// Swap two buffers by handle.
+    fn swap_buffers(&mut self, handle_a: i32, handle_b: i32);
+    /// Load and compile a WGSL kernel. Returns a handle ID.
+    /// `kind` is 0=pixel, 1=standard, 2=scene.
+    fn load_kernel(&mut self, name: &str, path: &str, kind: i32) -> i32;
+    /// Bind a buffer to a kernel parameter for the next `run_kernel` call.
+    /// `is_output` indicates whether this is an output binding.
+    fn bind_buffer(&mut self, param_name: &str, buffer_handle: i32, is_output: bool);
+    /// Set a kernel argument (f64) for the next `run_kernel` call.
+    fn set_kernel_arg_f64(&mut self, name: &str, value: f64);
+    /// Set a kernel argument (f32) for the next `run_kernel` call.
+    fn set_kernel_arg_f32(&mut self, name: &str, value: f32);
+    /// Dispatch a kernel by handle.
+    fn run_kernel(&mut self, kernel_handle: i32);
+    /// Display the current pixel output.
+    fn display(&mut self);
+    /// Display a specific buffer by handle.
+    fn display_buffer(&mut self, buffer_handle: i32);
+    /// Load a texture from a file path. Returns a handle ID.
+    fn load_texture(&mut self, name: &str, path: &str) -> i32;
 }
 
 /// Fill rule for path filling.
@@ -576,6 +611,88 @@ unsafe extern "C" fn pdc_assert_true(_ctx: *mut PdcContext, cond: i64) {
     }
 }
 
+// ── Pipeline host functions ──
+// These functions delegate to the PipelineHost trait object in PdcContext.
+// The host pointer is `*mut Box<dyn PipelineHost>` cast to `*mut u8`.
+
+/// Get a reference to the PipelineHost from a PdcContext.
+/// Panics if the host pointer is null.
+unsafe fn get_host(ctx: *mut PdcContext) -> &'static mut dyn PipelineHost {
+    unsafe {
+        let host_ptr = (*ctx).host as *mut Box<dyn PipelineHost>;
+        assert!(!host_ptr.is_null(), "pipeline host is null");
+        &mut **host_ptr
+    }
+}
+
+/// Get a string from a SceneBuilder handle.
+unsafe fn get_string(ctx: *mut PdcContext, handle: i32) -> &'static str {
+    unsafe {
+        let scene = &*(*ctx).scene;
+        &scene.strings[handle as usize]
+    }
+}
+
+pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_handle: i32, init_value: f64) -> i32 {
+    unsafe {
+        let type_name = get_string(ctx, type_handle);
+        get_host(ctx).create_buffer(type_name, init_value)
+    }
+}
+
+pub extern "C" fn pdc_swap_buffers(ctx: *mut PdcContext, handle_a: i32, handle_b: i32) {
+    unsafe { get_host(ctx).swap_buffers(handle_a, handle_b) }
+}
+
+pub extern "C" fn pdc_load_kernel(ctx: *mut PdcContext, name_handle: i32, path_handle: i32, kind: i32) -> i32 {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        let path = get_string(ctx, path_handle).to_string();
+        get_host(ctx).load_kernel(&name, &path, kind)
+    }
+}
+
+pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, param_handle: i32, buffer_handle: i32, is_output: i32) {
+    unsafe {
+        let param_name = get_string(ctx, param_handle).to_string();
+        get_host(ctx).bind_buffer(&param_name, buffer_handle, is_output != 0)
+    }
+}
+
+pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, name_handle: i32, value: f64) {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        get_host(ctx).set_kernel_arg_f64(&name, value)
+    }
+}
+
+pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, name_handle: i32, value: f32) {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        get_host(ctx).set_kernel_arg_f32(&name, value)
+    }
+}
+
+pub extern "C" fn pdc_run_kernel(ctx: *mut PdcContext, kernel_handle: i32) {
+    unsafe { get_host(ctx).run_kernel(kernel_handle) }
+}
+
+pub extern "C" fn pdc_display(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).display() }
+}
+
+pub extern "C" fn pdc_display_buffer(ctx: *mut PdcContext, buffer_handle: i32) {
+    unsafe { get_host(ctx).display_buffer(buffer_handle) }
+}
+
+pub extern "C" fn pdc_load_texture(ctx: *mut PdcContext, name_handle: i32, path_handle: i32) -> i32 {
+    unsafe {
+        let name = get_string(ctx, name_handle).to_string();
+        let path = get_string(ctx, path_handle).to_string();
+        get_host(ctx).load_texture(&name, &path)
+    }
+}
+
 /// Return all runtime symbols for JIT registration.
 pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
@@ -648,5 +765,16 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_assert_eq_f32", pdc_assert_eq_f32 as *const u8),
         ("pdc_assert_near", pdc_assert_near as *const u8),
         ("pdc_assert_true", pdc_assert_true as *const u8),
+        // Pipeline host functions
+        ("pdc_create_buffer", pdc_create_buffer as *const u8),
+        ("pdc_swap_buffers", pdc_swap_buffers as *const u8),
+        ("pdc_load_kernel", pdc_load_kernel as *const u8),
+        ("pdc_bind_buffer", pdc_bind_buffer as *const u8),
+        ("pdc_set_kernel_arg_f64", pdc_set_kernel_arg_f64 as *const u8),
+        ("pdc_set_kernel_arg_f32", pdc_set_kernel_arg_f32 as *const u8),
+        ("pdc_run_kernel", pdc_run_kernel as *const u8),
+        ("pdc_display", pdc_display as *const u8),
+        ("pdc_display_buffer", pdc_display_buffer as *const u8),
+        ("pdc_load_texture", pdc_load_texture as *const u8),
     ]
 }
