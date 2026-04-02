@@ -164,6 +164,7 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
             p_stride,
             row_ptr,
             col_ptr,
+            workgroup_size: entry.workgroup_size,
             return_block,
             terminated: false,
             loop_stack: Vec::new(),
@@ -467,6 +468,7 @@ struct ShaderCompiler<'a> {
     p_stride: IntValue<'static>,
     row_ptr: PointerValue<'static>,
     col_ptr: PointerValue<'static>,
+    workgroup_size: [u32; 3],
     /// Block to jump to on early return.
     return_block: inkwell::basic_block::BasicBlock<'static>,
     /// Whether the current block has been terminated.
@@ -805,14 +807,36 @@ impl<'a> ShaderCompiler<'a> {
             }
 
             Expression::FunctionArgument(idx) => {
-                if *idx == 0 {
-                    // global_invocation_id: vec3<u32> = (col, row, 0)
-                    let col = self.builder.build_load(i32_type, self.col_ptr, "gid_col").unwrap();
-                    let row = self.builder.build_load(i32_type, self.row_ptr, "gid_row").unwrap();
-                    let z: BasicValueEnum = i32_type.const_zero().into();
-                    vec![col, row, z]
-                } else {
-                    return Err(format!("unsupported function argument index: {idx}"));
+                let col = self.builder.build_load(i32_type, self.col_ptr, "gid_col").unwrap().into_int_value();
+                let row = self.builder.build_load(i32_type, self.row_ptr, "gid_row").unwrap().into_int_value();
+                let z = i32_type.const_zero();
+
+                // Determine which builtin this argument represents
+                let builtin = func.arguments.get(*idx as usize)
+                    .and_then(|arg| arg.binding.as_ref())
+                    .and_then(|b| match b { naga::Binding::BuiltIn(bi) => Some(bi), _ => None });
+
+                match builtin {
+                    Some(naga::BuiltIn::GlobalInvocationId) | None => {
+                        vec![col.into(), row.into(), z.into()]
+                    }
+                    Some(naga::BuiltIn::WorkGroupId) => {
+                        let wg_x = i32_type.const_int(self.workgroup_size[0].max(1) as u64, false);
+                        let wg_y = i32_type.const_int(self.workgroup_size[1].max(1) as u64, false);
+                        let gx = self.builder.build_int_unsigned_div(col, wg_x, "wg_x").unwrap();
+                        let gy = self.builder.build_int_unsigned_div(row, wg_y, "wg_y").unwrap();
+                        vec![gx.into(), gy.into(), z.into()]
+                    }
+                    Some(naga::BuiltIn::LocalInvocationId) => {
+                        let wg_x = i32_type.const_int(self.workgroup_size[0].max(1) as u64, false);
+                        let wg_y = i32_type.const_int(self.workgroup_size[1].max(1) as u64, false);
+                        let lx = self.builder.build_int_unsigned_rem(col, wg_x, "lid_x").unwrap();
+                        let ly = self.builder.build_int_unsigned_rem(row, wg_y, "lid_y").unwrap();
+                        vec![lx.into(), ly.into(), z.into()]
+                    }
+                    Some(other) => {
+                        return Err(format!("unsupported entry point builtin: {other:?}"));
+                    }
                 }
             }
 

@@ -73,7 +73,8 @@ Golden images are stored locally in `tests/golden/` (not tracked in git). Genera
 - Testing must be thorough and exhaustive — all new code must include tests of this calibre
 - Bug fixes: write a failing test first that reproduces the bug, then fix the code so it passes
 - PDC functions must be testable from Rust via `compile_only` + `call_fn`
-- An implementation is not complete until `cargo test` passes with zero failures
+- An implementation is not complete until both `cargo test` and `./test_regression` pass with zero failures
+- Always run `./test_regression` after changes that could affect rendering (backends, codegen, runtime, shaders, PDC)
 
 ## VS Code Extension
 

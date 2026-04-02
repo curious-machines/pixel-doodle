@@ -154,6 +154,7 @@ pub fn compile_wgsl(source: &str) -> Result<CompiledWgslKernel, String> {
             p_stride,
             v_row,
             v_col,
+            entry.workgroup_size,
         );
         compiler.compile_entry_point(&entry.function)?;
 
@@ -372,6 +373,7 @@ struct ShaderCompiler<'a, 'b> {
     p_stride: cranelift_codegen::ir::Value,
     v_row: Variable,
     v_col: Variable,
+    workgroup_size: [u32; 3],
     /// Block to jump to on early return.
     return_block: cranelift_codegen::ir::Block,
     /// Whether the current block has been terminated.
@@ -420,6 +422,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
         p_stride: cranelift_codegen::ir::Value,
         v_row: Variable,
         v_col: Variable,
+        workgroup_size: [u32; 3],
     ) -> Self {
         Self {
             naga_module,
@@ -437,6 +440,7 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             p_stride,
             v_row,
             v_col,
+            workgroup_size,
             return_block: cranelift_codegen::ir::Block::reserved_value(),
             terminated: false,
             loop_stack: Vec::new(),
@@ -739,14 +743,36 @@ impl<'a, 'b> ShaderCompiler<'a, 'b> {
             }
 
             Expression::FunctionArgument(idx) => {
-                if *idx == 0 {
-                    // global_invocation_id: vec3<u32> = (col, row, 0)
-                    let col = self.builder.use_var(self.v_col);
-                    let row = self.builder.use_var(self.v_row);
-                    let z = self.builder.ins().iconst(I32, 0);
-                    vec![col, row, z]
-                } else {
-                    return Err(format!("unsupported function argument index: {idx}"));
+                let col = self.builder.use_var(self.v_col);
+                let row = self.builder.use_var(self.v_row);
+                let z = self.builder.ins().iconst(I32, 0);
+
+                // Determine which builtin this argument represents
+                let builtin = func.arguments.get(*idx as usize)
+                    .and_then(|arg| arg.binding.as_ref())
+                    .and_then(|b| match b { naga::Binding::BuiltIn(bi) => Some(bi), _ => None });
+
+                match builtin {
+                    Some(naga::BuiltIn::GlobalInvocationId) | None => {
+                        vec![col, row, z]
+                    }
+                    Some(naga::BuiltIn::WorkGroupId) => {
+                        let wg_x = self.builder.ins().iconst(I32, self.workgroup_size[0].max(1) as i64);
+                        let wg_y = self.builder.ins().iconst(I32, self.workgroup_size[1].max(1) as i64);
+                        let gx = self.builder.ins().udiv(col, wg_x);
+                        let gy = self.builder.ins().udiv(row, wg_y);
+                        vec![gx, gy, z]
+                    }
+                    Some(naga::BuiltIn::LocalInvocationId) => {
+                        let wg_x = self.builder.ins().iconst(I32, self.workgroup_size[0].max(1) as i64);
+                        let wg_y = self.builder.ins().iconst(I32, self.workgroup_size[1].max(1) as i64);
+                        let lx = self.builder.ins().urem(col, wg_x);
+                        let ly = self.builder.ins().urem(row, wg_y);
+                        vec![lx, ly, z]
+                    }
+                    Some(other) => {
+                        return Err(format!("unsupported entry point builtin: {other:?}"));
+                    }
                 }
             }
 
