@@ -47,8 +47,10 @@ struct HostState {
     pending_bindings: Vec<BufferBinding>,
     /// Pending kernel args for the next run_kernel call.
     pending_args: Vec<KernelArg>,
-    /// Whether display() was called this frame.
+    /// Whether display() or display_accumulated() was called this frame.
     display_requested: bool,
+    /// Accumulation buffer for progressive rendering.
+    accum: Option<crate::progressive::AccumulationBuffer>,
     /// Base directory for resolving relative paths.
     base_dir: PathBuf,
     /// Render mode: "gpu" or "cpu".
@@ -266,9 +268,41 @@ impl PipelineHost for HostState {
         -1
     }
 
+    fn set_max_samples(&mut self, n: i32) {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        self.accum = Some(crate::progressive::AccumulationBuffer::new(w, h, n as u32));
+    }
+
+    fn is_converged(&self) -> bool {
+        self.accum.as_ref().map_or(false, |a| a.is_converged())
+    }
+
+    fn accumulate_sample(&mut self) {
+        if let Some(ref mut accum) = self.accum {
+            accum.accumulate(&self.pixel_buffer);
+        }
+    }
+
+    fn display_accumulated(&mut self) {
+        if let Some(ref accum) = self.accum {
+            accum.resolve(&mut self.pixel_buffer);
+        }
+        self.display_requested = true;
+    }
+
+    fn reset_accumulation(&mut self) {
+        if let Some(ref mut accum) = self.accum {
+            accum.reset();
+        }
+    }
+
     fn was_display_requested(&self) -> bool { self.display_requested }
     fn clear_display_requested(&mut self) { self.display_requested = false; }
     fn pixel_buffer(&self) -> &[u32] { &self.pixel_buffer }
+    fn is_accumulating(&self) -> bool {
+        self.accum.as_ref().map_or(false, |a| !a.is_converged())
+    }
 }
 
 /// PDC-driven pipeline runtime.
@@ -333,6 +367,7 @@ impl PdcRuntime {
             pending_bindings: Vec::new(),
             pending_args: Vec::new(),
             display_requested: false,
+            accum: None,
             base_dir: base_dir.to_path_buf(),
             render: "cpu".to_string(),
             codegen: if cfg!(feature = "cranelift-backend") {
@@ -457,8 +492,8 @@ impl PdcRuntime {
             return false;
         }
 
-        // Skip if this frame was already executed (static scene, no animation)
-        if self.frame <= self.frames_executed && !self.animated {
+        // Skip if this frame was already executed (static scene, no animation/accumulation)
+        if self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
             return false;
         }
 
@@ -526,7 +561,7 @@ impl PdcRuntime {
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
-        self.animated && !self.paused
+        (self.animated || self.host.is_accumulating()) && !self.paused
     }
 
     pub fn title(&self) -> String {
@@ -534,7 +569,9 @@ impl PdcRuntime {
     }
 
     pub fn accumulation_info(&self) -> Option<(u32, u32)> {
-        None // Progressive rendering is Phase 7
+        // Access via the concrete type since we need accum field
+        // The trait object doesn't expose this directly
+        None // TODO: expose via PipelineHost trait if needed for window title
     }
 
     pub fn execute_gpu_headless(&mut self) {

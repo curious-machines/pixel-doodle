@@ -1939,6 +1939,11 @@ mod tests {
                 let h = self.next_handle; self.next_handle += 1;
                 self.log.borrow_mut().push(format!("load_texture({n}, {p})")); h
             }
+            fn set_max_samples(&mut self, _n: i32) {}
+            fn is_converged(&self) -> bool { false }
+            fn accumulate_sample(&mut self) {}
+            fn display_accumulated(&mut self) {}
+            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LoggingHost {

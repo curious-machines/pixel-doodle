@@ -46,14 +46,29 @@ pub trait PipelineHost {
     /// Load a texture from a file path. Returns a handle ID.
     fn load_texture(&mut self, name: &str, path: &str) -> i32;
 
+    // ── Progressive rendering ──
+
+    /// Set the maximum number of accumulation samples.
+    fn set_max_samples(&mut self, n: i32);
+    /// Returns true if accumulation has reached max samples.
+    fn is_converged(&self) -> bool;
+    /// Add current pixel buffer as an accumulation sample.
+    fn accumulate_sample(&mut self);
+    /// Resolve accumulated samples to the display pixel buffer.
+    fn display_accumulated(&mut self);
+    /// Reset accumulation (called on parameter change).
+    fn reset_accumulation(&mut self);
+
     // ── Runtime query methods (used by PdcRuntime) ──
 
-    /// Whether display() was called during this frame.
+    /// Whether display() or display_accumulated() was called during this frame.
     fn was_display_requested(&self) -> bool { false }
     /// Reset the display-requested flag for the next frame.
     fn clear_display_requested(&mut self) {}
     /// Get the pixel buffer as a u32 ARGB slice.
     fn pixel_buffer(&self) -> &[u32] { &[] }
+    /// Whether progressive accumulation is active (not yet converged).
+    fn is_accumulating(&self) -> bool { false }
 }
 
 /// Fill rule for path filling.
@@ -694,6 +709,26 @@ pub extern "C" fn pdc_display_buffer(ctx: *mut PdcContext, buffer_handle: i32) {
     unsafe { get_host(ctx).display_buffer(buffer_handle) }
 }
 
+pub extern "C" fn pdc_set_max_samples(ctx: *mut PdcContext, n: i32) {
+    unsafe { get_host(ctx).set_max_samples(n) }
+}
+
+pub extern "C" fn pdc_is_converged(ctx: *mut PdcContext) -> i32 {
+    unsafe { if get_host(ctx).is_converged() { 1 } else { 0 } }
+}
+
+pub extern "C" fn pdc_accumulate_sample(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).accumulate_sample() }
+}
+
+pub extern "C" fn pdc_display_accumulated(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).display_accumulated() }
+}
+
+pub extern "C" fn pdc_reset_accumulation(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).reset_accumulation() }
+}
+
 pub extern "C" fn pdc_load_texture(ctx: *mut PdcContext, name_handle: i32, path_handle: i32) -> i32 {
     unsafe {
         let name = get_string(ctx, name_handle).to_string();
@@ -785,5 +820,11 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_display", pdc_display as *const u8),
         ("pdc_display_buffer", pdc_display_buffer as *const u8),
         ("pdc_load_texture", pdc_load_texture as *const u8),
+        // Progressive rendering
+        ("pdc_set_max_samples", pdc_set_max_samples as *const u8),
+        ("pdc_is_converged", pdc_is_converged as *const u8),
+        ("pdc_accumulate_sample", pdc_accumulate_sample as *const u8),
+        ("pdc_display_accumulated", pdc_display_accumulated as *const u8),
+        ("pdc_reset_accumulation", pdc_reset_accumulation as *const u8),
     ]
 }

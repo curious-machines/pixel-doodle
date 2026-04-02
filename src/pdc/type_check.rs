@@ -283,6 +283,32 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
+        // Progressive rendering
+        self.builtins.insert("set_max_samples".into(), BuiltinFn {
+            params: vec![PdcType::I32],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("is_converged".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Bool,
+            takes_ctx: true,
+        });
+        self.builtins.insert("accumulate_sample".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("display_accumulated".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("reset_accumulation".into(), BuiltinFn {
+            params: vec![],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
     }
 
     fn push_scope(&mut self) {

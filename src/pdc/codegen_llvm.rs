@@ -654,7 +654,7 @@ impl<'a> LlvmCodegenCtx<'a> {
     }
 
     /// Load a mutable builtin from the builtins array.
-    fn load_mutable_builtin(&self, name: &str) -> Result<BasicValueEnum<'static>, PdcError> {
+    fn load_mutable_builtin(&mut self, name: &str) -> Result<BasicValueEnum<'static>, PdcError> {
         let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
             message: format!("mutable builtin '{name}' not found in layout"),
         })?;
@@ -678,7 +678,7 @@ impl<'a> LlvmCodegenCtx<'a> {
     }
 
     /// Store a value to a mutable builtin in the builtins array.
-    fn store_mutable_builtin(&self, name: &str, val: BasicValueEnum<'static>) -> Result<(), PdcError> {
+    fn store_mutable_builtin(&mut self, name: &str, val: BasicValueEnum<'static>) -> Result<(), PdcError> {
         let info = self.builtin_map.get(name).ok_or_else(|| PdcError::Codegen {
             message: format!("mutable builtin '{name}' not found in layout"),
         })?;
@@ -1845,6 +1845,8 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
                 | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
                 | "display" | "display_buffer" | "load_texture"
+                | "set_max_samples" | "is_converged" | "accumulate_sample"
+                | "display_accumulated" | "reset_accumulation"
             );
 
             let mut arg_vals: Vec<BasicValueEnum> = Vec::new();
@@ -1865,12 +1867,15 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
-            "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture" => Some(self.context.i32_type().into()),
+            "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture"
+            | "is_converged" => Some(self.context.i32_type().into()),
             "get" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled" | "push" | "set"
             | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
-            | "run_kernel" | "display" | "display_buffer" => None,
+            | "run_kernel" | "display" | "display_buffer"
+            | "set_max_samples" | "accumulate_sample" | "display_accumulated"
+            | "reset_accumulation" => None,
             _ => Some(self.context.f64_type().into()),
         }
     }
