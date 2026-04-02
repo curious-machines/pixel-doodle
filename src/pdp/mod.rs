@@ -3,6 +3,7 @@ pub mod ast;
 pub mod lexer;
 pub mod parser;
 pub mod runtime;
+pub mod to_pdc;
 pub mod token;
 pub mod validate;
 
@@ -223,6 +224,86 @@ mod tests {
         assert_eq!(config.event_bindings[1].key_name, "right");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn translate_game_of_life_to_pdc() {
+        let config = parse_pdp(
+            r#"
+            title = "Game of Life"
+
+            builtin var paused: bool
+            builtin var frame: u64
+
+            var iterations: range<u32>(1..10) = 1
+
+            on keypress(space) paused = !paused
+            on keypress(period) frame += 1
+
+            pipeline {
+              kernel "game_of_life.wgsl"
+              kernel init_state = "init/random_binary.wgsl"
+              kernel inject = "shared/inject.wgsl"
+
+              buffer state = constant(0.0)
+              buffer state_next = constant(0.0)
+
+              init {
+                run init_state with(out: out state)
+              }
+              on mousedown {
+                run inject(inject_x: 0.0, inject_y: 0.0) with(target: state, target_out: out state)
+              }
+              loop(iterations: iterations) {
+                run game_of_life with(state_in: state, state_out: out state_next)
+                display
+                swap state, state_next
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let pdc = to_pdc::config_to_pdc(&config);
+
+        // Verify key structural elements
+        assert!(pdc.contains("builtin var paused: bool"), "missing builtin var");
+        assert!(pdc.contains("builtin var frame: u64"), "missing builtin var");
+        assert!(pdc.contains("var iterations: u32 = 1"), "missing user var");
+        assert!(pdc.contains("fn init()"), "missing init function");
+        assert!(pdc.contains("fn frame()"), "missing frame function");
+        assert!(pdc.contains("create_buffer("), "missing create_buffer");
+        assert!(pdc.contains("load_kernel("), "missing load_kernel");
+        assert!(pdc.contains("run_kernel("), "missing run_kernel");
+        assert!(pdc.contains("swap_buffers("), "missing swap_buffers");
+        assert!(pdc.contains("fn on_keypress_space()"), "missing keypress handler");
+        assert!(pdc.contains("fn on_keypress_period()"), "missing keypress handler");
+        assert!(pdc.contains("fn on_mousedown()"), "missing mouse handler");
+        assert!(pdc.contains("paused = !paused"), "missing toggle action");
+
+        // Print for visual inspection
+        eprintln!("--- Generated PDC ---\n{pdc}--- End PDC ---");
+    }
+
+    #[test]
+    fn translate_solid_red_to_pdc() {
+        let config = parse_pdp(
+            r#"
+            pipeline gpu {
+              pixel kernel "solid_red.wgsl"
+              run solid_red
+              display
+            }
+            "#,
+        )
+        .unwrap();
+
+        let pdc = to_pdc::config_to_pdc(&config);
+        assert!(pdc.contains("fn init()"));
+        assert!(pdc.contains("fn frame()"));
+        assert!(pdc.contains("load_kernel(\"solid_red\""));
+        assert!(pdc.contains("run_kernel("));
+        assert!(pdc.contains("display()"));
     }
 
     #[test]
