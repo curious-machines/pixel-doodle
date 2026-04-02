@@ -69,6 +69,8 @@ pub trait PipelineHost {
     fn pixel_buffer(&self) -> &[u32] { &[] }
     /// Whether progressive accumulation is active (not yet converged).
     fn is_accumulating(&self) -> bool { false }
+    /// Whether any buffers have been created.
+    fn has_buffers(&self) -> bool { false }
 }
 
 /// Fill rule for path filling.

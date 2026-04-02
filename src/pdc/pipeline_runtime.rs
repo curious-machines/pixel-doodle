@@ -303,6 +303,9 @@ impl PipelineHost for HostState {
     fn is_accumulating(&self) -> bool {
         self.accum.as_ref().map_or(false, |a| !a.is_converged())
     }
+    fn has_buffers(&self) -> bool {
+        !self.buffers.is_empty()
+    }
 }
 
 /// PDC-driven pipeline runtime.
@@ -488,17 +491,18 @@ impl PdcRuntime {
 
     /// Execute one frame. Returns true if pixels were updated.
     pub fn execute_frame(&mut self, time: f64, _pool: &Option<rayon::ThreadPool>) -> bool {
+        if !self.paused {
+            self.frame += 1;
+        }
+
+        // Skip if paused and this frame was already executed
         if self.paused && self.frame <= self.frames_executed {
             return false;
         }
 
         // Skip if this frame was already executed (static scene, no animation/accumulation)
-        if self.frames_executed > 0 && self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
+        if self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
             return false;
-        }
-
-        if !self.paused {
-            self.frame += 1;
         }
 
         self.builtins[B::TIME] = time;
@@ -561,7 +565,15 @@ impl PdcRuntime {
     }
 
     pub fn needs_continuous_redraw(&self) -> bool {
-        (self.animated || self.host.is_accumulating()) && !self.paused
+        if self.paused {
+            return false;
+        }
+        if self.animated || self.host.is_accumulating() {
+            return true;
+        }
+        // If frame() exists and the script has created buffers, assume it's
+        // a simulation that needs continuous execution (matches PDP heuristic).
+        self.compiled.has_frame() && self.host.has_buffers()
     }
 
     pub fn title(&self) -> String {
