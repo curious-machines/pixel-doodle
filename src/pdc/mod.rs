@@ -1972,4 +1972,88 @@ mod tests {
             "display()",
         ]);
     }
+
+    // ---- Event handler tests (Phase 5) ----
+
+    #[test]
+    fn event_handler_discovery() {
+        let (compiled, _, _) = compile_with_state(r#"
+            var paused: bool = false
+            var zoom: f64 = 1.0
+
+            fn on_keypress_space() { paused = !paused }
+            fn on_keydown_left() { zoom = zoom - 0.1 }
+            fn on_keydown_right() { zoom = zoom + 0.1 }
+            fn on_mousedown() { paused = false }
+            fn on_click() { zoom = 1.0 }
+            fn frame() {}
+            fn helper() {}
+        "#);
+
+        let mut handlers = compiled.event_handlers();
+        handlers.sort();
+        assert_eq!(handlers, vec![
+            "on_click",
+            "on_keydown_left",
+            "on_keydown_right",
+            "on_keypress_space",
+            "on_mousedown",
+        ]);
+
+        let mut kb = compiled.keyboard_handlers();
+        kb.sort();
+        assert_eq!(kb, vec![
+            ("on_keydown", "left"),
+            ("on_keydown", "right"),
+            ("on_keypress", "space"),
+        ]);
+    }
+
+    #[test]
+    fn event_handler_modifies_state() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            var paused: bool = false
+            var zoom: f64 = 1.0
+
+            fn on_keypress_space() { paused = !paused }
+            fn on_keydown_plus() { zoom = zoom * 1.1 }
+            fn on_mousedown() { zoom = 1.0 }
+            fn get_paused() -> bool { return paused }
+            fn get_zoom() -> f64 { return zoom }
+        "#);
+        let mut builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+
+        // Init state
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Toggle pause
+        let handled = unsafe { compiled.call_event("on_keypress_space", &mut ctx).unwrap() };
+        assert!(handled);
+        assert_eq!(unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() }, PdcValue::Bool(true));
+
+        // Toggle again
+        unsafe { compiled.call_event("on_keypress_space", &mut ctx).unwrap(); }
+        assert_eq!(unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() }, PdcValue::Bool(false));
+
+        // Zoom in
+        unsafe { compiled.call_event("on_keydown_plus", &mut ctx).unwrap(); }
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(1.1));
+
+        // Mouse resets zoom
+        unsafe { compiled.call_event("on_mousedown", &mut ctx).unwrap(); }
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(1.0));
+
+        // Non-existent handler returns false
+        let handled = unsafe { compiled.call_event("on_keypress_q", &mut ctx).unwrap() };
+        assert!(!handled);
+    }
 }
