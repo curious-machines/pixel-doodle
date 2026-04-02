@@ -5,7 +5,7 @@ title = "PDC Stress Test"
 builtin var paused: bool = true
 
 pipeline gpu {
-  scene kernel stress = "stress.pdc"
+  scene kernel stress = "stress_scene.pdc"
   kernel rasterize = "../shared/tile_raster.wgsl"
 
   buffer pixels: gpu(u32) = constant(0)

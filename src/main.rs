@@ -54,9 +54,10 @@ fn resolve_dir(dir: &str) -> ConfigSource {
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    // Prefer .pdc, fall back to .pdp
-    if let Some(path) = find_by_ext(dir_path, dir_name, "pdc") {
-        return ConfigSource::File(path);
+    // Prefer .pdc by convention name only (dir_name.pdc), then fall back to .pdp
+    let pdc_convention = dir_path.join(format!("{}.pdc", dir_name));
+    if pdc_convention.is_file() {
+        return ConfigSource::File(pdc_convention.to_string_lossy().into_owned());
     }
     if let Some(path) = find_by_ext(dir_path, dir_name, "pdp") {
         return ConfigSource::File(path);
