@@ -1,0 +1,534 @@
+//! PDC-driven pipeline runtime.
+//!
+//! `PdcRuntime` executes a compiled PDC program as the pipeline orchestrator,
+//! replacing the declarative PDP config. It implements the same public interface
+//! as `pdp::runtime::Runtime` so that `main.rs` can use either.
+
+use std::path::{Path, PathBuf};
+
+use crate::display::Display;
+use crate::jit;
+use crate::pdc;
+use crate::pdc::codegen::{self, CompiledProgram, StateLayout, PIPELINE_BUILTINS};
+use crate::pdc::runtime::{PdcContext, PipelineHost, SceneBuilder};
+
+/// Builtins array indices (must match PIPELINE_BUILTINS order).
+const B_WIDTH: usize = 0;
+const B_HEIGHT: usize = 1;
+const B_TIME: usize = 2;
+const B_MOUSE_X: usize = 3;
+const B_MOUSE_Y: usize = 4;
+const B_CENTER_X: usize = 5;
+const B_CENTER_Y: usize = 6;
+const B_ZOOM: usize = 7;
+const B_PAUSED: usize = 8;
+const B_FRAME: usize = 9;
+const B_MOUSE_DOWN: usize = 10;
+const B_SAMPLE_INDEX: usize = 11;
+const BUILTINS_COUNT: usize = 12;
+
+/// Pipeline host that manages buffers, kernels, and display for PDC scripts.
+struct HostState {
+    width: u32,
+    height: u32,
+    /// Pixel output buffer (ARGB u32).
+    pixel_buffer: Vec<u32>,
+    /// Named WGSL kernels compiled for CPU execution.
+    #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+    cpu_kernels: Vec<CpuKernel>,
+    /// Named buffer storage (raw bytes).
+    buffers: Vec<NamedBuffer>,
+    /// Pending buffer bindings for the next run_kernel call.
+    pending_bindings: Vec<BufferBinding>,
+    /// Pending kernel args for the next run_kernel call.
+    pending_args: Vec<KernelArg>,
+    /// Whether display() was called this frame.
+    display_requested: bool,
+    /// Base directory for resolving relative paths.
+    base_dir: PathBuf,
+    /// Render mode: "gpu" or "cpu".
+    render: String,
+    /// Codegen backend: "cranelift" or "llvm".
+    codegen: String,
+}
+
+struct NamedBuffer {
+    #[allow(dead_code)]
+    name: String,
+    data: Vec<u8>,
+    elem_size: usize,
+}
+
+struct BufferBinding {
+    param_name: String,
+    buffer_handle: i32,
+    is_output: bool,
+}
+
+struct KernelArg {
+    name: String,
+    value: f64,
+}
+
+#[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+struct CpuKernel {
+    #[allow(dead_code)]
+    name: String,
+    compiled: jit::CompiledWgslKernel,
+}
+
+impl PipelineHost for HostState {
+    fn create_buffer(&mut self, type_name: &str, init_value: f64) -> i32 {
+        let elem_size = match type_name {
+            "gpu_f32" => 4,
+            "gpu_i32" | "gpu_u32" => 4,
+            "gpu_vec2_f32" => 8,
+            "gpu_vec3_f32" => 16, // padded
+            "gpu_vec4_f32" => 16,
+            _ => 4,
+        };
+        let count = (self.width as usize) * (self.height as usize);
+        let total_bytes = count * elem_size;
+        let data = if init_value == 0.0 {
+            vec![0u8; total_bytes]
+        } else {
+            // Initialize with the f32 representation of init_value
+            let val = init_value as f32;
+            let bytes = val.to_le_bytes();
+            let mut data = vec![0u8; total_bytes];
+            for chunk in data.chunks_exact_mut(elem_size.min(4)) {
+                chunk.copy_from_slice(&bytes[..chunk.len()]);
+            }
+            data
+        };
+        let handle = self.buffers.len() as i32;
+        self.buffers.push(NamedBuffer {
+            name: format!("buffer_{handle}"),
+            data,
+            elem_size,
+        });
+        handle
+    }
+
+    fn swap_buffers(&mut self, a: i32, b: i32) {
+        let (a, b) = (a as usize, b as usize);
+        if a < self.buffers.len() && b < self.buffers.len() && a != b {
+            // Swap the data vecs
+            let ptr_a = &mut self.buffers[a].data as *mut Vec<u8>;
+            let ptr_b = &mut self.buffers[b].data as *mut Vec<u8>;
+            unsafe { std::ptr::swap(ptr_a, ptr_b); }
+        }
+    }
+
+    fn load_kernel(&mut self, name: &str, path: &str, _kind: i32) -> i32 {
+        let full_path = self.base_dir.join(path);
+        let wgsl_src = match std::fs::read_to_string(&full_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[pdc-runtime] failed to read kernel '{}': {}", full_path.display(), e);
+                return -1;
+            }
+        };
+
+        #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+        {
+            let compiled = match self.codegen.as_str() {
+                #[cfg(feature = "cranelift-backend")]
+                "cranelift" => jit::wgsl_cranelift::compile_wgsl(&wgsl_src),
+                #[cfg(feature = "llvm-backend")]
+                "llvm" => jit::wgsl_llvm::compile_wgsl(&wgsl_src),
+                _ => Err(format!("unsupported codegen backend '{}'", self.codegen)),
+            };
+            let compiled = match compiled {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("[pdc-runtime] failed to compile kernel '{}': {}", name, e);
+                    return -1;
+                }
+            };
+            let handle = self.cpu_kernels.len() as i32;
+            self.cpu_kernels.push(CpuKernel {
+                name: name.to_string(),
+                compiled,
+            });
+            handle
+        }
+        #[cfg(not(any(feature = "cranelift-backend", feature = "llvm-backend")))]
+        {
+            eprintln!("[pdc-runtime] no JIT backend available for kernel '{}'", name);
+            -1
+        }
+    }
+
+    fn bind_buffer(&mut self, param_name: &str, buffer_handle: i32, is_output: bool) {
+        self.pending_bindings.push(BufferBinding {
+            param_name: param_name.to_string(),
+            buffer_handle,
+            is_output,
+        });
+    }
+
+    fn set_kernel_arg_f64(&mut self, name: &str, value: f64) {
+        self.pending_args.push(KernelArg { name: name.to_string(), value });
+    }
+
+    fn set_kernel_arg_f32(&mut self, name: &str, value: f32) {
+        self.pending_args.push(KernelArg { name: name.to_string(), value: value as f64 });
+    }
+
+    fn run_kernel(&mut self, kernel_handle: i32) {
+        #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+        {
+            let handle = kernel_handle as usize;
+            if handle >= self.cpu_kernels.len() {
+                eprintln!("[pdc-runtime] invalid kernel handle {}", kernel_handle);
+                self.pending_bindings.clear();
+                self.pending_args.clear();
+                return;
+            }
+
+            // Build buffer pointer array based on bindings
+            let kernel = &self.cpu_kernels[handle];
+            let num_buffers = kernel.compiled.num_storage_buffers;
+            let mut buffer_ptrs: Vec<*mut u8> = vec![std::ptr::null_mut(); num_buffers];
+
+            for binding in &self.pending_bindings {
+                let buf_idx = binding.buffer_handle as usize;
+                if buf_idx >= self.buffers.len() { continue; }
+                if let Some(&slot) = kernel.compiled.binding_map.get(&binding.param_name) {
+                    buffer_ptrs[slot] = self.buffers[buf_idx].data.as_mut_ptr();
+                }
+            }
+
+            // Build params buffer (256 bytes)
+            let mut params = [0u8; 256];
+            let w = self.width;
+            let h = self.height;
+            for member in &kernel.compiled.params_members {
+                let offset = member.offset as usize;
+                match member.name.as_str() {
+                    "width" => params[offset..offset + 4].copy_from_slice(&w.to_le_bytes()),
+                    "height" => params[offset..offset + 4].copy_from_slice(&h.to_le_bytes()),
+                    "stride" => params[offset..offset + 4].copy_from_slice(&w.to_le_bytes()),
+                    _ => {
+                        // Check pending args
+                        if let Some(arg) = self.pending_args.iter().find(|a| a.name == member.name) {
+                            let val = arg.value as f32;
+                            params[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+                        }
+                    }
+                }
+            }
+
+            // Dispatch across all rows (single-threaded for simplicity)
+            let fn_ptr = kernel.compiled.fn_ptr;
+            unsafe {
+                let params_ptr = params.as_ptr();
+                let buffers_ptr = buffer_ptrs.as_ptr() as *const *mut u8;
+                let tex_ptr = std::ptr::null();
+                (fn_ptr)(params_ptr, buffers_ptr, tex_ptr, w, h, w, 0, h);
+            }
+        }
+
+        self.pending_bindings.clear();
+        self.pending_args.clear();
+    }
+
+    fn display(&mut self) {
+        self.display_requested = true;
+    }
+
+    fn display_buffer(&mut self, buffer_handle: i32) {
+        let handle = buffer_handle as usize;
+        if handle < self.buffers.len() {
+            let buf = &self.buffers[handle];
+            // Copy buffer data to pixel_buffer (assuming u32 ARGB)
+            let pixel_count = self.pixel_buffer.len();
+            let src = &buf.data;
+            for i in 0..pixel_count.min(src.len() / 4) {
+                let offset = i * 4;
+                self.pixel_buffer[i] = u32::from_le_bytes([
+                    src[offset], src[offset + 1], src[offset + 2], src[offset + 3],
+                ]);
+            }
+        }
+        self.display_requested = true;
+    }
+
+    fn load_texture(&mut self, name: &str, path: &str) -> i32 {
+        eprintln!("[pdc-runtime] load_texture({}, {}) — not yet implemented", name, path);
+        -1
+    }
+
+    fn was_display_requested(&self) -> bool { self.display_requested }
+    fn clear_display_requested(&mut self) { self.display_requested = false; }
+    fn pixel_buffer(&self) -> &[u32] { &self.pixel_buffer }
+}
+
+/// PDC-driven pipeline runtime.
+///
+/// Executes a compiled PDC program as the pipeline orchestrator.
+/// Implements the same public interface as `pdp::runtime::Runtime`.
+pub struct PdcRuntime {
+    compiled: CompiledProgram,
+    state_layout: StateLayout,
+    state_block: Box<[u8]>,
+    builtins: [f64; BUILTINS_COUNT],
+    scene_builder: SceneBuilder,
+    host: Box<dyn PipelineHost>,
+
+    // Public fields matching PDP Runtime interface
+    pub width: u32,
+    pub height: u32,
+    pub mouse_x: f64,
+    pub mouse_y: f64,
+    pub mouse_down: bool,
+    pub has_gpu_kernels: bool,
+    pub pixel_buffer: Vec<u32>,
+    pub tile_height: usize,
+
+    title: String,
+    paused: bool,
+    frame: u64,
+    frames_executed: u64,
+}
+
+impl PdcRuntime {
+    /// Create a new PDC pipeline runtime from source code.
+    pub fn new(
+        source: &str,
+        source_path: Option<&Path>,
+        width: u32,
+        height: u32,
+        base_dir: &Path,
+    ) -> Result<Self, String> {
+        let builtins_layout: Vec<(&str, pdc::ast::PdcType)> =
+            PIPELINE_BUILTINS.to_vec();
+
+        let (compiled, state_layout) = pdc::compile_only_with_builtins(
+            source,
+            source_path,
+            &builtins_layout,
+        ).map_err(|e| e.format(source))?;
+
+        let state_block = state_layout.alloc();
+        let pixel_buffer = vec![0xFF000000u32; (width * height) as usize]; // black
+
+        let host: Box<dyn PipelineHost> = Box::new(HostState {
+            width,
+            height,
+            pixel_buffer: vec![0xFF000000u32; (width * height) as usize],
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+            cpu_kernels: Vec::new(),
+            buffers: Vec::new(),
+            pending_bindings: Vec::new(),
+            pending_args: Vec::new(),
+            display_requested: false,
+            base_dir: base_dir.to_path_buf(),
+            render: "cpu".to_string(),
+            codegen: if cfg!(feature = "cranelift-backend") {
+                "cranelift".to_string()
+            } else {
+                "llvm".to_string()
+            },
+        });
+
+        let title = source_path
+            .map(|p| p.file_stem().unwrap_or_default().to_string_lossy().to_string())
+            .unwrap_or_else(|| "PDC Pipeline".to_string());
+
+        let mut builtins = [0.0f64; BUILTINS_COUNT];
+        builtins[B_WIDTH] = width as f64;
+        builtins[B_HEIGHT] = height as f64;
+        builtins[B_ZOOM] = 1.0;
+
+        Ok(PdcRuntime {
+            compiled,
+            state_layout,
+            state_block,
+            builtins,
+            scene_builder: SceneBuilder::new(),
+            host,
+            width,
+            height,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            mouse_down: false,
+            has_gpu_kernels: false, // PDC runtime is CPU-only for now
+            pixel_buffer,
+            tile_height: 16,
+            title,
+            paused: false,
+            frame: 0,
+            frames_executed: 0,
+        })
+    }
+
+    /// Build the PdcContext for calling into JIT'd code.
+    fn make_ctx(&mut self) -> PdcContext {
+        // Update builtins from runtime state
+        self.builtins[B_MOUSE_X] = self.mouse_x;
+        self.builtins[B_MOUSE_Y] = self.mouse_y;
+        self.builtins[B_PAUSED] = if self.paused { 1.0 } else { 0.0 };
+        self.builtins[B_FRAME] = self.frame as f64;
+        self.builtins[B_MOUSE_DOWN] = if self.mouse_down { 1.0 } else { 0.0 };
+
+        let host_ptr: *mut Box<dyn PipelineHost> = &mut self.host;
+
+        PdcContext {
+            builtins: self.builtins.as_mut_ptr(),
+            scene: &mut self.scene_builder as *mut _,
+            state: self.state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        }
+    }
+
+    /// Read back mutable builtins after a PDC call.
+    fn read_back_builtins(&mut self) {
+        self.paused = self.builtins[B_PAUSED] != 0.0;
+        self.frame = self.builtins[B_FRAME] as u64;
+    }
+
+    // ── Public interface matching PDP Runtime ──
+
+    pub fn set_config_path(&mut self, _path: &str) {
+        // Title already set from source_path
+    }
+
+    pub fn apply_settings(&mut self) {
+        // Settings are embedded in the PDC source
+    }
+
+    pub fn apply_overrides(&mut self, _overrides: &[(String, String)]) {
+        // TODO: apply --set overrides to builtins
+    }
+
+    pub fn compile_kernels(&mut self) -> Result<(), String> {
+        // Kernels are compiled on-demand by the PDC init() function via load_kernel()
+        Ok(())
+    }
+
+    pub fn init_buffers(&mut self) -> Result<(), String> {
+        // Buffers are created on-demand by the PDC init() function via create_buffer()
+        Ok(())
+    }
+
+    pub fn load_textures(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn setup_progressive(&mut self) {
+        // Progressive rendering managed by PDC script
+    }
+
+    pub fn thread_count(&self) -> Option<usize> {
+        None
+    }
+
+    /// Initialize: run pdc_main (state init) + call init().
+    pub fn execute_init_block(&mut self, _pool: &Option<rayon::ThreadPool>) {
+        let mut ctx = self.make_ctx();
+
+        // Run pdc_main to initialize state block
+        unsafe { (self.compiled.fn_ptr)(&mut ctx); }
+
+        // Call init() if defined
+        unsafe { self.compiled.call_init(&mut ctx).unwrap(); }
+
+        self.read_back_builtins();
+
+        // Copy host pixel buffer to our pixel buffer
+        self.sync_pixels();
+    }
+
+    /// Execute one frame. Returns true if pixels were updated.
+    pub fn execute_frame(&mut self, time: f64, _pool: &Option<rayon::ThreadPool>) -> bool {
+        if self.paused && self.frame <= self.frames_executed {
+            return false;
+        }
+
+        if !self.paused {
+            self.frame += 1;
+        }
+
+        self.builtins[B_TIME] = time;
+        self.host.clear_display_requested();
+
+        let mut ctx = self.make_ctx();
+        unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
+        self.read_back_builtins();
+
+        if self.host.was_display_requested() {
+            self.sync_pixels();
+        }
+
+        self.frames_executed = self.frame;
+        true
+    }
+
+    pub fn init_gpu(&mut self, _display: &Display) {
+        // GPU not yet supported in PdcRuntime
+    }
+
+    pub fn handle_keypress(&mut self, key_name: &str) -> bool {
+        let event_name = format!("on_keypress_{key_name}");
+        let mut ctx = self.make_ctx();
+        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
+        self.read_back_builtins();
+        false // never quit via keypress for now
+    }
+
+    pub fn handle_keydown(&mut self, key_name: &str) -> bool {
+        let event_name = format!("on_keydown_{key_name}");
+        let mut ctx = self.make_ctx();
+        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
+        self.read_back_builtins();
+        false
+    }
+
+    pub fn handle_keyup(&mut self, key_name: &str) -> bool {
+        let event_name = format!("on_keyup_{key_name}");
+        let mut ctx = self.make_ctx();
+        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
+        self.read_back_builtins();
+        false
+    }
+
+    pub fn render_gpu_frame(&self, _display: &Display) -> bool {
+        false // CPU-only for now
+    }
+
+    pub fn re_present_gpu_frame(&self, _display: &Display) -> bool {
+        false
+    }
+
+    pub fn display_pixels(&self) -> &[u32] {
+        &self.pixel_buffer
+    }
+
+    pub fn needs_continuous_redraw(&self) -> bool {
+        !self.paused
+    }
+
+    pub fn title(&self) -> String {
+        self.title.clone()
+    }
+
+    pub fn accumulation_info(&self) -> Option<(u32, u32)> {
+        None // Progressive rendering is Phase 7
+    }
+
+    pub fn execute_gpu_headless(&mut self) {
+        // No GPU support yet — fall back to CPU
+        self.execute_init_block(&None);
+        self.execute_frame(0.0, &None);
+    }
+
+    // ── Internal ──
+
+    fn sync_pixels(&mut self) {
+        // Copy from host's pixel buffer to our pixel buffer
+        let src = self.host.pixel_buffer();
+        self.pixel_buffer.copy_from_slice(src);
+    }
+}

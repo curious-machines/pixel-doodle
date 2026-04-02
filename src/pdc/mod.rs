@@ -7,6 +7,7 @@ pub(crate) mod codegen_llvm;
 pub mod error;
 pub mod lexer;
 pub mod parser;
+pub mod pipeline_runtime;
 pub mod runtime;
 pub mod span;
 pub mod token;

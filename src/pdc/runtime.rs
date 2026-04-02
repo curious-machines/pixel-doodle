@@ -45,6 +45,15 @@ pub trait PipelineHost {
     fn display_buffer(&mut self, buffer_handle: i32);
     /// Load a texture from a file path. Returns a handle ID.
     fn load_texture(&mut self, name: &str, path: &str) -> i32;
+
+    // ── Runtime query methods (used by PdcRuntime) ──
+
+    /// Whether display() was called during this frame.
+    fn was_display_requested(&self) -> bool { false }
+    /// Reset the display-requested flag for the next frame.
+    fn clear_display_requested(&mut self) {}
+    /// Get the pixel buffer as a u32 ARGB slice.
+    fn pixel_buffer(&self) -> &[u32] { &[] }
 }
 
 /// Fill rule for path filling.
