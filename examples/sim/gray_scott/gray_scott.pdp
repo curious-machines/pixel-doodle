@@ -12,7 +12,7 @@ pipeline gpu {
   kernel step = "gray_scott_step.wgsl"
   kernel vis = "gray_scott_vis.wgsl"
   kernel init_field = "gray_scott_init.wgsl"
-  kernel inject = "../../shared/inject_vec2.wgsl"
+  kernel inject = "../shared/inject_vec2.wgsl"
 
   buffer field: gpu(vec2<f32>) = constant(0.0)
   buffer field_next: gpu(vec2<f32>) = constant(0.0)

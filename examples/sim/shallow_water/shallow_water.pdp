@@ -12,7 +12,7 @@ pipeline gpu {
   kernel step = "shallow_water_step.wgsl"
   kernel vis = "shallow_water_vis.wgsl"
   kernel init_field = "shallow_water_init.wgsl"
-  kernel inject = "../../shared/inject_vec.wgsl"
+  kernel inject = "../shared/inject_vec.wgsl"
 
   buffer field: gpu(vec4<f32>) = constant(0.0)
   buffer field_next: gpu(vec4<f32>) = constant(0.0)

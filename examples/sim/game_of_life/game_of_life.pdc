@@ -12,7 +12,7 @@ var pixels = Buffer.U32()
 var step = Kernel.Sim("step", "game_of_life_step.wgsl")
 var vis = Kernel.Sim("vis", "game_of_life_vis.wgsl")
 var init_grid = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
-var inject = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
+var inject = Kernel.Sim("inject", "../shared/inject_i32.wgsl")
 
 fn init() {
     register_pause_step()

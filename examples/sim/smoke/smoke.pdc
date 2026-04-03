@@ -15,7 +15,7 @@ var divergence = Kernel.Sim("divergence", "smoke_divergence.wgsl")
 var jacobi = Kernel.Sim("jacobi", "smoke_jacobi.wgsl")
 var project = Kernel.Sim("project", "smoke_project.wgsl")
 var vis = Kernel.Sim("vis", "smoke_vis.wgsl")
-var inject = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
+var inject = Kernel.Sim("inject", "../shared/inject_vec.wgsl")
 
 fn init() {
     register_pause_step()

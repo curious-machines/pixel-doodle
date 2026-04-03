@@ -16,7 +16,7 @@ pipeline gpu {
   kernel step = "game_of_life_step.wgsl"
   kernel vis = "game_of_life_vis.wgsl"
   kernel init_grid = "game_of_life_init.wgsl"
-  kernel inject = "../../shared/inject_i32.wgsl"
+  kernel inject = "../shared/inject_i32.wgsl"
 
   buffer grid: gpu(i32) = constant(0.0)
   buffer grid_next: gpu(i32) = constant(0.0)

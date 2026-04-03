@@ -10,7 +10,7 @@ var pixels = Buffer.U32()
 var step = Kernel.Sim("step", "shallow_water_step.wgsl")
 var vis = Kernel.Sim("vis", "shallow_water_vis.wgsl")
 var init_field = Kernel.Sim("init_field", "shallow_water_init.wgsl")
-var inject = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
+var inject = Kernel.Sim("inject", "../shared/inject_vec.wgsl")
 
 fn init() {
     init_field.field_out = Bind.Out(field)

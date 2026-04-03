@@ -14,7 +14,7 @@ pipeline gpu {
   kernel jacobi = "smoke_jacobi.wgsl"
   kernel project = "smoke_project.wgsl"
   kernel vis = "smoke_vis.wgsl"
-  kernel inject = "../../shared/inject_vec.wgsl"
+  kernel inject = "../shared/inject_vec.wgsl"
 
   buffer field: gpu(vec4<f32>) = constant(0.0)
   buffer field_next: gpu(vec4<f32>) = constant(0.0)

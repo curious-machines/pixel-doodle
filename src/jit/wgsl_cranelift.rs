@@ -2207,7 +2207,7 @@ mod tests {
     #[test]
     fn inject_vec2_wgsl_on_cpu() {
         let source = std::fs::read_to_string(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/shared/inject_vec2.wgsl")
+            concat!(env!("CARGO_MANIFEST_DIR"), "/examples/sim/shared/inject_vec2.wgsl")
         ).unwrap();
 
         let compiled = compile_wgsl(&source).expect("failed to compile inject_vec2.wgsl");
