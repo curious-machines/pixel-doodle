@@ -50,10 +50,10 @@ fn on_keypress_bracket_left() {
 }
 
 fn on_mousedown() {
-    inject_kern.set_arg_f64("inject_x", mouse_x)
-    inject_kern.set_arg_f64("inject_y", mouse_y)
-    inject_kern.set_arg_f64("radius", 3.0)
-    inject_kern.set_arg_f64("value", 1.0)
+    inject_kern.set_arg("inject_x", mouse_x)
+    inject_kern.set_arg("inject_y", mouse_y)
+    inject_kern.set_arg("radius", 3.0)
+    inject_kern.set_arg("value", 1.0)
     grid.bind("buf_in", 0)
     grid_next.bind("buf_out", 1)
     inject_kern.run()

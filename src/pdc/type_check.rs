@@ -276,13 +276,8 @@ impl TypeChecker {
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        self.builtins.insert("set_arg_f64".into(), BuiltinFn {
+        self.builtins.insert("set_arg".into(), BuiltinFn {
             params: vec![PdcType::KernelHandle, PdcType::Str, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("set_arg_f32".into(), BuiltinFn {
-            params: vec![PdcType::KernelHandle, PdcType::Str, PdcType::F32],
             ret: PdcType::Void,
             takes_ctx: true,
         });

@@ -21,9 +21,9 @@ fn frame() {
     scene_buffer(scene, "path_colors").bind("path_colors", 0)
     scene_buffer(scene, "path_fill_rules").bind("path_fill_rules", 0)
     pixels.bind("pixels", 1)
-    rasterizer.set_arg_f64("tile_size", 16.0)
-    rasterizer.set_arg_f64("tiles_x", scene_tiles_x(scene))
-    rasterizer.set_arg_f64("num_paths", scene_num_paths(scene))
+    rasterizer.set_arg("tile_size", 16.0)
+    rasterizer.set_arg("tiles_x", scene_tiles_x(scene))
+    rasterizer.set_arg("num_paths", scene_num_paths(scene))
     rasterizer.run()
     pixels.display_buffer()
 }

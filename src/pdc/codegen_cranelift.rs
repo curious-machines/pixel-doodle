@@ -2337,8 +2337,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
-                "set_arg_f64" => "pdc_set_kernel_arg_f64".to_string(),
-                "set_arg_f32" => "pdc_set_kernel_arg_f32".to_string(),
+                "set_arg" => "pdc_set_kernel_arg_f64".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -2356,7 +2355,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
-            | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+            | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
             | "display" | "load_texture"
             | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "request_redraw"
@@ -2413,7 +2412,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
-            | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+            | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
             | "display"
             | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"
