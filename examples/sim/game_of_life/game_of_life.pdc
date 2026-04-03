@@ -24,7 +24,7 @@ fn frame() {
         grid.bind("grid_in", 0)
         grid_next.bind("grid_out", 1)
         step_kern.run()
-        grid.swap(grid_next)
+        swap(grid, grid_next)
     }
     grid.bind("grid_in", 0)
     pixels.bind("pixels", 1)
@@ -57,5 +57,5 @@ fn on_mousedown() {
     grid.bind("buf_in", 0)
     grid_next.bind("buf_out", 1)
     inject_kern.run()
-    grid.swap(grid_next)
+    swap(grid, grid_next)
 }

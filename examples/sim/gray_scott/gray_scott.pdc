@@ -23,7 +23,7 @@ fn frame() {
         field.bind("field_in", 0)
         field_next.bind("field_out", 1)
         step_kern.run()
-        field.swap(field_next)
+        swap(field, field_next)
     }
     field.bind("field_in", 0)
     pixels.bind("pixels", 1)
@@ -45,5 +45,5 @@ fn on_mousedown() {
     field.bind("buf_in", 0)
     field_next.bind("buf_out", 1)
     inject_kern.run()
-    field.swap(field_next)
+    swap(field, field_next)
 }
