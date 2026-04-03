@@ -1,7 +1,5 @@
-// Game of Life — PDC pipeline equivalent of game_of_life.pdp
+import { register_pause_step } from "../pause_step"
 
-builtin var paused: bool
-builtin var frame: u64
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
@@ -17,8 +15,7 @@ var init_grid = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
 var inject = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
 
 fn init() {
-    set_keypress(Key.Space, toggle_pause)
-    set_keypress(Key.Period, step_frame)
+    register_pause_step()
     set_keypress(Key.BracketRight, speed_up)
     set_keypress(Key.BracketLeft, speed_down)
     set_mousedown(inject_at_mouse)
@@ -45,8 +42,6 @@ fn frame() -> bool {
     return true
 }
 
-fn toggle_pause() { paused = !paused }
-fn step_frame() { frame = frame + 1.0 }
 fn speed_up() { iterations = min(8.0, iterations + 1.0) }
 fn speed_down() { iterations = max(iterations - 1.0, 1.0) }
 fn inject_at_mouse() {

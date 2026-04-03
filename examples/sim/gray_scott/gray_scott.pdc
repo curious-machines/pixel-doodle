@@ -1,5 +1,5 @@
-builtin var paused: bool
-builtin var frame: u64
+import { register_pause_step } from "../pause_step"
+
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
@@ -15,8 +15,7 @@ var inject = Kernel.Sim("inject", "../../shared/inject_vec2.wgsl")
 fn init() {
     init_field.field_out = Bind.Out(field)
     init_field.run()
-    set_keypress(Key.Space, toggle_pause)
-    set_keypress(Key.Period, step_frame)
+    register_pause_step()
     set_mousedown(inject_at_mouse)
 }
 
@@ -33,9 +32,6 @@ fn frame() -> bool {
     pixels.display_buffer()
     return true
 }
-
-fn toggle_pause() { paused = !paused }
-fn step_frame() { frame = frame + 1.0 }
 
 fn inject_at_mouse() {
     inject.x = mouse_x

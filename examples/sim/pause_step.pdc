@@ -1,0 +1,10 @@
+builtin var paused: bool
+builtin var frame: u64
+
+pub fn register_pause_step() {
+    set_keypress(Key.Space, toggle_pause)
+    set_keypress(Key.Period, step_frame)
+}
+
+fn toggle_pause() { paused = !paused }
+fn step_frame() { frame = frame + 1.0 }
