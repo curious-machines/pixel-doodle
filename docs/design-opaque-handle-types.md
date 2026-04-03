@@ -1,60 +1,97 @@
-# Design: Opaque Handle Types for Buffer and Kernel
+# Opaque Handle Types
 
-Status: Future work
-Date: 2026-04-02
+## Overview
 
-## Problem
+PDC uses opaque handle types for resources managed by the Rust runtime. These are distinct types at the PDC level but compile down to plain `i32` values — the type system provides safety while the codegen has zero overhead.
 
-`Buffer()` and `Kernel()` return bare `i32` handles. A buffer handle and a kernel handle are interchangeable by accident — nothing prevents passing a kernel handle to `bind_buffer` or vice versa.
+Each handle type is registered as a `PdcType` variant in `ast.rs`, with its constructor and methods registered as builtins in `type_check.rs:register_builtins()`.
 
-## Proposed Design
+## Implemented
 
-Introduce opaque builtin types `Buffer` and `Kernel` that wrap an `i32` handle but are distinct types at the PDC level.
+### Path
+
+Opaque handle for 2D vector paths. Created via constructor, manipulated via methods.
 
 ```
-var field  = Buffer(.Vec4F32, 0.0)       // returns Buffer, not i32
-var advect = Kernel("advect", "smoke_advect.wgsl", .Sim)  // returns Kernel, not i32
-
-bind_buffer("field_in", field, 0)   // requires Buffer
-run_kernel(advect)                   // requires Kernel
+var p = Path()
+p.move_to(0.0, 0.0)
+p.line_to(100.0, 0.0)
+p.quad_to(cx, cy, x, y)
+p.cubic_to(c1x, c1y, c2x, c2y, x, y)
+p.close()
+p.fill(color)
+p.fill(color, FillRule.EvenOdd)           // styled overload
+p.stroke(width, color)
+p.stroke(width, color, LineCap.Round, LineJoin.Miter)  // styled overload
 ```
 
-### Properties
+- Type: `PdcType::PathHandle`
+- Codegen: `i32`
+- Runtime: `pdc_path`, `pdc_move_to`, `pdc_line_to`, etc.
 
-- **Opaque**: users cannot access the inner i32 or construct these types manually
-- **Builtin constructors**: `Buffer(...)` and `Kernel(...)` call through to the host via the bridge
-- **Type-safe APIs**: `bind_buffer`, `run_kernel`, `swap_buffers`, `display_buffer` etc. require the correct handle type
-- **Zero overhead**: codegen treats them as plain i32 — no wrapping struct at the IR level
+### Buffer
 
-### Implementation Sketch
+Opaque handle for GPU/CPU data buffers. Sized to `width × height × element_size`.
 
-1. Add `PdcType::OpaqueHandle(String)` variant (or reuse `PdcType::Struct` with a flag)
-2. Register `Buffer` and `Kernel` as builtin opaque types in the type checker
-3. Register builtin constructors that emit host calls instead of struct packing
-4. Update all host function signatures to use the opaque types instead of `i32`
-5. Codegen: treat opaque handles identically to i32
+```
+var field = Buffer(.Vec4F32, 0.0)
 
-### APIs Affected
+field.bind("field_in", 0)       // bind to kernel parameter
+field.display_buffer()          // display as pixel output
+swap(field, field_next)         // swap two buffers (free function reads more naturally)
+```
 
-**Buffer handle:**
-- `Buffer(type, init_value) -> Buffer` (constructor, currently `create_buffer`)
-- `bind_buffer(name, Buffer, is_output)`
-- `swap_buffers(Buffer, Buffer)`
-- `display_buffer(Buffer)`
-- `scene_buffer(scene_handle, name) -> Buffer`
+- Type: `PdcType::BufferHandle`
+- Codegen: `i32`
+- Constructor: `Buffer(BufferType, f64) -> Buffer` maps to `pdc_create_buffer`
+- BufferType enum: `F32`, `I32`, `U32`, `Vec2F32`, `Vec3F32`, `Vec4F32`
 
-**Kernel handle:**
-- `Kernel(name, path, kind) -> Kernel` (constructor, currently `load_kernel`)
-- `run_kernel(Kernel)`
+### Kernel
+
+Opaque handle for compiled WGSL compute kernels.
+
+```
+var kern = Kernel("advect", "smoke_advect.wgsl", .Sim)
+
+kern.set_arg("radius", 15.0)   // set parameter for next run
+kern.run()                      // dispatch kernel
+```
+
+- Type: `PdcType::KernelHandle`
+- Codegen: `i32`
+- Constructor: `Kernel(string, string, KernelType) -> Kernel` maps to `pdc_load_kernel`
+- KernelType enum: `Pixel` (type 0, writes pixel output), `Sim` (type 1, general compute)
+- Note: `set_arg` accumulates args for the next `run()` call. The kernel handle is passed through but not yet validated against the pending args.
+
+## Future
+
+### Scene
+
+Scene kernels currently use free functions with bare `i32` handles (`load_scene`, `run_scene`, `scene_buffer`, `scene_tiles_x`, `scene_num_paths`). These should become a `Scene` opaque type:
+
+```
+var scene = Scene("stress", "stress_scene.pdc")
+
+scene.run()
+scene.buffer("segments").bind("segments", 0)
+scene.tiles_x()
+scene.num_paths()
+```
+
+### Texture
+
+Textures currently use `load_texture()` returning bare `i32`. Could become:
+
+```
+var tex = Texture("photo", "image.png")
+```
+
+## Open Questions
 
 ### Builtin Enum Discoverability
 
-Builtin enums (`BufferType`, `KernelType`, `FillRule`, etc.) are currently registered only in Rust (`type_check.rs:register_builtins`). There's no way to discover valid variants from PDC source. Options to address:
+Builtin enums (`BufferType`, `KernelType`, `FillRule`, etc.) are registered only in Rust (`type_check.rs:register_builtins`). There's no way to discover valid variants from PDC source. Options:
 
-1. **Better error messages** — when a variant doesn't match, list all valid variants in the error
+1. **Better error messages** — list valid variants when a variant doesn't match
 2. **VS Code autocomplete** — suggest variants when typing `.` inside a typed call
 3. **`builtin enum` declarations** — require `builtin enum BufferType` in `.pdc` files, making the type visible in source while the compiler verifies it matches the Rust-side definition
-
-### Migration
-
-The current `Buffer()` and `Kernel()` functions already return i32 and use the constructor naming convention. When opaque types are implemented, the function signatures change but calling code stays the same — only code that stores handles in `i32` variables would need updating (change `var x: i32 = Buffer(...)` to `var x = Buffer(...)`).
