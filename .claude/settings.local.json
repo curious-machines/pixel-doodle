@@ -73,7 +73,9 @@
       "Bash(./test_regression:*)",
       "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -40 {}')",
       "Bash(./target/release/pixel-doodle:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(xxd)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }
