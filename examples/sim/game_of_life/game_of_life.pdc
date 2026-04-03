@@ -6,37 +6,30 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
-var grid: i32 = 0
-var grid_next: i32 = 0
-var pixels: i32 = 0
-var step_kern: i32 = 0
-var vis_kern: i32 = 0
-var init_grid_kern: i32 = 0
-var inject_kern: i32 = 0
+var grid = Buffer(.I32, 0.0)
+var grid_next = Buffer(.I32, 0.0)
+var pixels = Buffer(.U32, 0.0)
+var step_kern = Kernel("step", "game_of_life_step.wgsl", .Sim)
+var vis_kern = Kernel("vis", "game_of_life_vis.wgsl", .Sim)
+var init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
+var inject_kern = Kernel("inject", "../../shared/inject_i32.wgsl", .Sim)
 
 fn init() {
-    grid = Buffer(.I32, 0.0)
-    grid_next = Buffer(.I32, 0.0)
-    pixels = Buffer(.U32, 0.0)
-    step_kern = Kernel("step", "game_of_life_step.wgsl", .Sim)
-    vis_kern = Kernel("vis", "game_of_life_vis.wgsl", .Sim)
-    init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
-    inject_kern = Kernel("inject", "../../shared/inject_i32.wgsl", .Sim)
-    bind_buffer("grid", grid, 1)
-    run_kernel(init_grid_kern)
+    grid.bind("grid", 1)
+    init_grid_kern.run()
 }
 
 fn frame() {
     for _i in 0..i32(iterations) {
-        bind_buffer("grid_in", grid, 0)
-        bind_buffer("grid_out", grid_next, 1)
-        run_kernel(step_kern)
-        swap_buffers(grid, grid_next)
+        grid.bind("grid_in", 0)
+        grid_next.bind("grid_out", 1)
+        step_kern.run()
+        grid.swap(grid_next)
     }
-    bind_buffer("grid_in", grid, 0)
-    bind_buffer("pixels", pixels, 1)
-    run_kernel(vis_kern)
-    display_buffer(pixels)
+    grid.bind("grid_in", 0)
+    pixels.bind("pixels", 1)
+    vis_kern.run()
+    pixels.display_buffer()
     request_redraw()
 }
 
@@ -57,12 +50,12 @@ fn on_keypress_bracket_left() {
 }
 
 fn on_mousedown() {
-    set_kernel_arg_f64("inject_x", mouse_x)
-    set_kernel_arg_f64("inject_y", mouse_y)
-    set_kernel_arg_f64("radius", 3.0)
-    set_kernel_arg_f64("value", 1.0)
-    bind_buffer("buf_in", grid, 0)
-    bind_buffer("buf_out", grid_next, 1)
-    run_kernel(inject_kern)
-    swap_buffers(grid, grid_next)
+    inject_kern.set_arg_f64("inject_x", mouse_x)
+    inject_kern.set_arg_f64("inject_y", mouse_y)
+    inject_kern.set_arg_f64("radius", 3.0)
+    inject_kern.set_arg_f64("value", 1.0)
+    grid.bind("buf_in", 0)
+    grid_next.bind("buf_out", 1)
+    inject_kern.run()
+    grid.swap(grid_next)
 }

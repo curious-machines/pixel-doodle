@@ -4,18 +4,13 @@ builtin var center_x: f64
 builtin var center_y: f64
 builtin var zoom: f64
 
-var pixels: i32 = 0
-var kern: i32 = 0
-
-fn init() {
-    pixels = Buffer(.U32, 0.0)
-    kern = Kernel("sdf", "sdf.wgsl", .Pixel)
-}
+var pixels = Buffer(.U32, 0.0)
+var kern = Kernel("sdf", "sdf.wgsl", .Pixel)
 
 fn frame() {
-    bind_buffer("output", pixels, 1)
-    run_kernel(kern)
-    display_buffer(pixels)
+    pixels.bind("output", 1)
+    kern.run()
+    pixels.display_buffer()
 }
 
 fn on_keydown_left() { center_x = center_x - 0.02 / zoom }

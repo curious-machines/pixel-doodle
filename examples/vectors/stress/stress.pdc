@@ -4,28 +4,26 @@ builtin const width: f32
 builtin const height: f32
 
 var scene: i32 = 0
-var rasterizer: i32 = 0
-var pixels: i32 = 0
+var rasterizer = Kernel("rasterize", "../shared/tile_raster.wgsl", .Sim)
+var pixels = Buffer(.U32, 0.0)
 
 fn init() {
     scene = load_scene("stress", "stress_scene.pdc")
-    rasterizer = Kernel("rasterize", "../shared/tile_raster.wgsl", .Sim)
-    pixels = Buffer(.U32, 0.0)
 }
 
 fn frame() {
     run_scene(scene)
-    bind_buffer("segments", scene_buffer(scene, "segments"), 0)
-    bind_buffer("seg_path_ids", scene_buffer(scene, "seg_path_ids"), 0)
-    bind_buffer("tile_offsets", scene_buffer(scene, "tile_offsets"), 0)
-    bind_buffer("tile_counts", scene_buffer(scene, "tile_counts"), 0)
-    bind_buffer("tile_indices", scene_buffer(scene, "tile_indices"), 0)
-    bind_buffer("path_colors", scene_buffer(scene, "path_colors"), 0)
-    bind_buffer("path_fill_rules", scene_buffer(scene, "path_fill_rules"), 0)
-    bind_buffer("pixels", pixels, 1)
-    set_kernel_arg_f64("tile_size", 16.0)
-    set_kernel_arg_f64("tiles_x", scene_tiles_x(scene))
-    set_kernel_arg_f64("num_paths", scene_num_paths(scene))
-    run_kernel(rasterizer)
-    display_buffer(pixels)
+    scene_buffer(scene, "segments").bind("segments", 0)
+    scene_buffer(scene, "seg_path_ids").bind("seg_path_ids", 0)
+    scene_buffer(scene, "tile_offsets").bind("tile_offsets", 0)
+    scene_buffer(scene, "tile_counts").bind("tile_counts", 0)
+    scene_buffer(scene, "tile_indices").bind("tile_indices", 0)
+    scene_buffer(scene, "path_colors").bind("path_colors", 0)
+    scene_buffer(scene, "path_fill_rules").bind("path_fill_rules", 0)
+    pixels.bind("pixels", 1)
+    rasterizer.set_arg_f64("tile_size", 16.0)
+    rasterizer.set_arg_f64("tiles_x", scene_tiles_x(scene))
+    rasterizer.set_arg_f64("num_paths", scene_num_paths(scene))
+    rasterizer.run()
+    pixels.display_buffer()
 }

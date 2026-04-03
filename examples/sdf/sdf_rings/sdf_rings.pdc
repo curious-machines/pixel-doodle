@@ -4,20 +4,18 @@ builtin var center_x: f64
 builtin var center_y: f64
 builtin var zoom: f64
 
-var pixels: i32 = 0
-var kern: i32 = 0
+var pixels = Buffer(.U32, 0.0)
+var kern = Kernel("sdf_rings", "sdf_rings.wgsl", .Pixel)
 
 fn init() {
-    pixels = Buffer(.U32, 0.0)
-    kern = Kernel("sdf_rings", "sdf_rings.wgsl", .Pixel)
     set_max_samples(256)
 }
 
 fn frame() {
     if is_converged() { return }
-    bind_buffer("output", pixels, 1)
-    run_kernel(kern)
-    display_buffer(pixels)
+    pixels.bind("output", 1)
+    kern.run()
+    pixels.display_buffer()
     accumulate_sample()
     display_accumulated()
 }

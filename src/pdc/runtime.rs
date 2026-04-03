@@ -739,27 +739,31 @@ pub extern "C" fn pdc_load_kernel(ctx: *mut PdcContext, name_handle: i32, path_h
     }
 }
 
-pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, param_handle: i32, buffer_handle: i32, is_output: i32) {
+// Method-style: buffer.bind("param_name", is_output)
+pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, buffer_handle: i32, param_handle: i32, is_output: i32) {
     unsafe {
         let param_name = get_string(ctx, param_handle).to_string();
         get_host(ctx).bind_buffer(&param_name, buffer_handle, is_output != 0)
     }
 }
 
-pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, name_handle: i32, value: f64) {
+// Method-style: kernel.set_arg_f64("name", value)
+pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, _kernel_handle: i32, name_handle: i32, value: f64) {
     unsafe {
         let name = get_string(ctx, name_handle).to_string();
         get_host(ctx).set_kernel_arg_f64(&name, value)
     }
 }
 
-pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, name_handle: i32, value: f32) {
+// Method-style: kernel.set_arg_f32("name", value)
+pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, _kernel_handle: i32, name_handle: i32, value: f32) {
     unsafe {
         let name = get_string(ctx, name_handle).to_string();
         get_host(ctx).set_kernel_arg_f32(&name, value)
     }
 }
 
+// Method-style: kernel.run()
 pub extern "C" fn pdc_run_kernel(ctx: *mut PdcContext, kernel_handle: i32) {
     unsafe { get_host(ctx).run_kernel(kernel_handle) }
 }

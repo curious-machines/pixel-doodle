@@ -1,18 +1,16 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels: i32 = 0
-var kern: i32 = 0
+var pixels = Buffer(.U32, 0.0)
+var kern = Kernel("texture_test", "texture_test.wgsl", .Pixel)
 var tex: i32 = 0
 
 fn init() {
-    pixels = Buffer(.U32, 0.0)
-    kern = Kernel("texture_test", "texture_test.wgsl", .Pixel)
     tex = load_texture("img", "../../images/lake-2.jpg")
 }
 
 fn frame() {
-    bind_buffer("output", pixels, 1)
-    run_kernel(kern)
-    display_buffer(pixels)
+    pixels.bind("output", 1)
+    kern.run()
+    pixels.display_buffer()
 }

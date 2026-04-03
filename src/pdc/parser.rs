@@ -825,6 +825,8 @@ impl<'a> Parser<'a> {
                 "bool" => PdcType::Bool,
                 "string" => PdcType::Str,
                 "Path" => PdcType::PathHandle,
+                "Buffer" => PdcType::BufferHandle,
+                "Kernel" => PdcType::KernelHandle,
                 // User-defined struct types (starts with uppercase by convention)
                 _ => PdcType::Struct(name),
             };

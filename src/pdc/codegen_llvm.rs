@@ -532,7 +532,7 @@ fn pdc_type_to_llvm<'ctx>(ty: &PdcType, ctx: &'ctx Context) -> BasicTypeEnum<'ct
         PdcType::I16 | PdcType::U16 => ctx.i16_type().into(),
         PdcType::I32 | PdcType::U32 => ctx.i32_type().into(),
         PdcType::I64 | PdcType::U64 => ctx.i64_type().into(),
-        PdcType::PathHandle => ctx.i32_type().into(),
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => ctx.i32_type().into(),
         PdcType::Str => ctx.i32_type().into(),
         PdcType::Array(_) => ctx.i32_type().into(),
         PdcType::Enum(_) => ctx.i32_type().into(),
@@ -548,7 +548,7 @@ fn pdc_type_byte_size(ty: &PdcType) -> u32 {
     match ty {
         PdcType::I8 | PdcType::U8 | PdcType::Bool => 1,
         PdcType::I16 | PdcType::U16 => 2,
-        PdcType::F32 | PdcType::I32 | PdcType::U32 | PdcType::PathHandle
+        PdcType::F32 | PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle
         | PdcType::Str | PdcType::Array(_) | PdcType::Enum(_) => 4,
         PdcType::F64 | PdcType::I64 | PdcType::U64 => 8,
         _ => 8,
@@ -1847,6 +1847,12 @@ impl<'a> LlvmCodegenCtx<'a> {
                 "Path" => "pdc_path".to_string(),
                 "Buffer" => "pdc_create_buffer".to_string(),
                 "Kernel" => "pdc_load_kernel".to_string(),
+                "bind" => "pdc_bind_buffer".to_string(),
+                "display_buffer" => "pdc_display_buffer".to_string(),
+                "swap" => "pdc_swap_buffers".to_string(),
+                "run" => "pdc_run_kernel".to_string(),
+                "set_arg_f64" => "pdc_set_kernel_arg_f64".to_string(),
+                "set_arg_f32" => "pdc_set_kernel_arg_f32".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -1862,9 +1868,8 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
-                | "swap_buffers" | "bind_buffer"
-                | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
-                | "display" | "display_buffer" | "load_texture"
+                | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+                | "display" | "load_texture"
                 | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
                 | "request_redraw"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
@@ -1895,8 +1900,8 @@ impl<'a> LlvmCodegenCtx<'a> {
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled" | "push" | "set"
-            | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
-            | "run_kernel" | "display" | "display_buffer"
+            | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+            | "display"
             | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
@@ -2599,7 +2604,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         match ty {
             PdcType::F64 => val.into_float_value(),
             PdcType::F32 => self.builder.build_float_ext(val.into_float_value(), self.context.f64_type(), "fprom").unwrap(),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
                 self.builder.build_signed_int_to_float(val.into_int_value(), self.context.f64_type(), "i2f").unwrap()
             }
             PdcType::Bool => {
@@ -2614,7 +2619,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         match ty {
             PdcType::F64 => val.into(),
             PdcType::F32 => self.builder.build_float_trunc(val, self.context.f32_type(), "fdem").unwrap().into(),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
                 self.builder.build_float_to_signed_int(val, self.context.i32_type(), "f2i").unwrap().into()
             }
             PdcType::Bool => {

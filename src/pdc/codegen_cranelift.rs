@@ -570,7 +570,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I16 | PdcType::U16 => I16,
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
-        PdcType::PathHandle => I32,
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => I32,
         PdcType::Str => I32, // strings are handles (i32)
         PdcType::Slice(_) => pointer_type, // slices are pointers to (handle, start, len)
         PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
@@ -2333,6 +2333,12 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 "Path" => "pdc_path".to_string(),
                 "Buffer" => "pdc_create_buffer".to_string(),
                 "Kernel" => "pdc_load_kernel".to_string(),
+                "bind" => "pdc_bind_buffer".to_string(),
+                "display_buffer" => "pdc_display_buffer".to_string(),
+                "swap" => "pdc_swap_buffers".to_string(),
+                "run" => "pdc_run_kernel".to_string(),
+                "set_arg_f64" => "pdc_set_kernel_arg_f64".to_string(),
+                "set_arg_f32" => "pdc_set_kernel_arg_f32".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -2350,9 +2356,8 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
-            | "swap_buffers" | "bind_buffer"
-            | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
-            | "display" | "display_buffer" | "load_texture"
+            | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+            | "display" | "load_texture"
             | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "request_redraw"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
@@ -2408,8 +2413,8 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
-            | "swap_buffers" | "bind_buffer" | "set_kernel_arg_f64" | "set_kernel_arg_f32"
-            | "run_kernel" | "display" | "display_buffer"
+            | "bind" | "display_buffer" | "swap" | "run" | "set_arg_f64" | "set_arg_f32"
+            | "display"
             | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
@@ -2437,7 +2442,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fpromote(F64, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
                 self.builder.ins().fcvt_from_sint(F64, val)
             }
             PdcType::Bool => {
@@ -2453,7 +2458,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fdemote(F32, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
                 self.builder.ins().fcvt_to_sint_sat(I32, val)
             }
             PdcType::Bool => {

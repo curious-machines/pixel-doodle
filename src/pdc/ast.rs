@@ -23,6 +23,10 @@ pub enum PdcType {
     Bool,
     /// Opaque path handle (u32 internally). Becomes a struct in later phases.
     PathHandle,
+    /// Opaque buffer handle (i32 internally).
+    BufferHandle,
+    /// Opaque kernel handle (i32 internally).
+    KernelHandle,
     /// UTF-8 string type. Runtime-managed, handle-based.
     Str,
     /// User-defined struct type, referenced by name.
@@ -78,6 +82,8 @@ impl std::fmt::Display for PdcType {
             PdcType::U64 => write!(f, "u64"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
+            PdcType::BufferHandle => write!(f, "Buffer"),
+            PdcType::KernelHandle => write!(f, "Kernel"),
             PdcType::Str => write!(f, "string"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
             PdcType::Array(elem) => write!(f, "Array<{elem}>"),

@@ -1890,21 +1890,15 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var grid: i32 = 0
-            var grid_next: i32 = 0
-            var sim_kernel: i32 = 0
-
-            fn init() {
-                grid = Buffer(.F32, 0.0)
-                grid_next = Buffer(.F32, 0.0)
-                sim_kernel = Kernel("step", "step.wgsl", .Sim)
-            }
+            var grid: Buffer = Buffer(.F32, 0.0)
+            var grid_next: Buffer = Buffer(.F32, 0.0)
+            var sim_kernel: Kernel = Kernel("step", "step.wgsl", .Sim)
 
             fn frame() {
-                bind_buffer("input", grid, 0)
-                bind_buffer("output", grid_next, 1)
-                run_kernel(sim_kernel)
-                swap_buffers(grid, grid_next)
+                grid.bind("input", 0)
+                grid_next.bind("output", 1)
+                sim_kernel.run()
+                grid.swap(grid_next)
                 display()
             }
         "#;
@@ -1958,11 +1952,8 @@ mod tests {
             host: host_ptr as *mut u8,
         };
 
-        // Initialize state vars
+        // Initialize state vars (calls Buffer/Kernel constructors)
         unsafe { (compiled.fn_ptr)(&mut ctx); }
-
-        // Run init
-        unsafe { compiled.call_init(&mut ctx).unwrap(); }
 
         // Run one frame
         unsafe { compiled.call_frame(&mut ctx).unwrap(); }
@@ -1987,11 +1978,7 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var buf: i32 = 0
-
-            fn init() {
-                buf = Buffer(.Vec4F32, 0.0)
-            }
+            var buf: Buffer = Buffer(.Vec4F32, 0.0)
         "#;
         let (compiled, state_layout) =
             compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
@@ -2037,7 +2024,6 @@ mod tests {
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
-        unsafe { compiled.call_init(&mut ctx).unwrap(); }
 
         let log = log.borrow();
         // Vec4F32 is discriminant 5 → maps to "gpu_vec4_f32"

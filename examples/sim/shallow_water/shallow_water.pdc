@@ -5,37 +5,30 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var field: i32 = 0
-var field_next: i32 = 0
-var pixels: i32 = 0
-var step_kern: i32 = 0
-var vis_kern: i32 = 0
-var init_field_kern: i32 = 0
-var inject_kern: i32 = 0
+var field = Buffer(.Vec4F32, 0.0)
+var field_next = Buffer(.Vec4F32, 0.0)
+var pixels = Buffer(.U32, 0.0)
+var step_kern = Kernel("step", "shallow_water_step.wgsl", .Sim)
+var vis_kern = Kernel("vis", "shallow_water_vis.wgsl", .Sim)
+var init_field_kern = Kernel("init_field", "shallow_water_init.wgsl", .Sim)
+var inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
 
 fn init() {
-    field = Buffer(.Vec4F32, 0.0)
-    field_next = Buffer(.Vec4F32, 0.0)
-    pixels = Buffer(.U32, 0.0)
-    step_kern = Kernel("step", "shallow_water_step.wgsl", .Sim)
-    vis_kern = Kernel("vis", "shallow_water_vis.wgsl", .Sim)
-    init_field_kern = Kernel("init_field", "shallow_water_init.wgsl", .Sim)
-    inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
-    bind_buffer("field_out", field, 1)
-    run_kernel(init_field_kern)
+    field.bind("field_out", 1)
+    init_field_kern.run()
 }
 
 fn frame() {
     for _i in 0..4 {
-        bind_buffer("field_in", field, 0)
-        bind_buffer("field_out", field_next, 1)
-        run_kernel(step_kern)
-        swap_buffers(field, field_next)
+        field.bind("field_in", 0)
+        field_next.bind("field_out", 1)
+        step_kern.run()
+        field.swap(field_next)
     }
-    bind_buffer("field_in", field, 0)
-    bind_buffer("pixels", pixels, 1)
-    run_kernel(vis_kern)
-    display_buffer(pixels)
+    field.bind("field_in", 0)
+    pixels.bind("pixels", 1)
+    vis_kern.run()
+    pixels.display_buffer()
     request_redraw()
 }
 
@@ -43,14 +36,14 @@ fn on_keypress_space() { paused = !paused }
 fn on_keypress_period() { frame = frame + 1.0 }
 
 fn on_mousedown() {
-    set_kernel_arg_f64("inject_x", mouse_x)
-    set_kernel_arg_f64("inject_y", mouse_y)
-    set_kernel_arg_f64("radius", 10.0)
-    set_kernel_arg_f64("value", 0.3)
-    set_kernel_arg_f64("falloff_quadratic", 1.0)
-    set_kernel_arg_f64("component", 0.0)
-    bind_buffer("buf_in", field, 0)
-    bind_buffer("buf_out", field_next, 1)
-    run_kernel(inject_kern)
-    swap_buffers(field, field_next)
+    inject_kern.set_arg_f64("inject_x", mouse_x)
+    inject_kern.set_arg_f64("inject_y", mouse_y)
+    inject_kern.set_arg_f64("radius", 10.0)
+    inject_kern.set_arg_f64("value", 0.3)
+    inject_kern.set_arg_f64("falloff_quadratic", 1.0)
+    inject_kern.set_arg_f64("component", 0.0)
+    field.bind("buf_in", 0)
+    field_next.bind("buf_out", 1)
+    inject_kern.run()
+    field.swap(field_next)
 }

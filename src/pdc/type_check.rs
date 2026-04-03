@@ -242,57 +242,53 @@ impl TypeChecker {
         }
 
         // Pipeline host functions
-        // Buffer(type: BufferType, init_value: f64) -> i32
+        // Buffer(type: BufferType, init_value: f64) -> Buffer
         self.builtins.insert("Buffer".into(), BuiltinFn {
             params: vec![PdcType::Enum("BufferType".into()), PdcType::F64],
-            ret: PdcType::I32,
+            ret: PdcType::BufferHandle,
             takes_ctx: true,
         });
-        // swap_buffers(handle_a: i32, handle_b: i32)
-        self.builtins.insert("swap_buffers".into(), BuiltinFn {
-            params: vec![PdcType::I32, PdcType::I32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        // Kernel(name: string, path: string, kind: KernelType) -> i32
+        // Kernel(name: string, path: string, kind: KernelType) -> Kernel
         self.builtins.insert("Kernel".into(), BuiltinFn {
             params: vec![PdcType::Str, PdcType::Str, PdcType::Enum("KernelType".into())],
-            ret: PdcType::I32,
+            ret: PdcType::KernelHandle,
             takes_ctx: true,
         });
-        // bind_buffer(param_name: string, buffer_handle: i32, is_output: i32)
-        self.builtins.insert("bind_buffer".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::I32, PdcType::I32],
+        // Buffer methods
+        self.builtins.insert("bind".into(), BuiltinFn {
+            params: vec![PdcType::BufferHandle, PdcType::Str, PdcType::I32],
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        // set_kernel_arg_f64(name: string, value: f64)
-        self.builtins.insert("set_kernel_arg_f64".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::F64],
+        self.builtins.insert("display_buffer".into(), BuiltinFn {
+            params: vec![PdcType::BufferHandle],
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        // set_kernel_arg_f32(name: string, value: f32)
-        self.builtins.insert("set_kernel_arg_f32".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::F32],
+        self.builtins.insert("swap".into(), BuiltinFn {
+            params: vec![PdcType::BufferHandle, PdcType::BufferHandle],
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        // run_kernel(kernel_handle: i32)
-        self.builtins.insert("run_kernel".into(), BuiltinFn {
-            params: vec![PdcType::I32],
+        // Kernel methods
+        self.builtins.insert("run".into(), BuiltinFn {
+            params: vec![PdcType::KernelHandle],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("set_arg_f64".into(), BuiltinFn {
+            params: vec![PdcType::KernelHandle, PdcType::Str, PdcType::F64],
+            ret: PdcType::Void,
+            takes_ctx: true,
+        });
+        self.builtins.insert("set_arg_f32".into(), BuiltinFn {
+            params: vec![PdcType::KernelHandle, PdcType::Str, PdcType::F32],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         // display()
         self.builtins.insert("display".into(), BuiltinFn {
             params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        // display_buffer(buffer_handle: i32)
-        self.builtins.insert("display_buffer".into(), BuiltinFn {
-            params: vec![PdcType::I32],
             ret: PdcType::Void,
             takes_ctx: true,
         });
@@ -326,7 +322,7 @@ impl TypeChecker {
         });
         self.builtins.insert("scene_buffer".into(), BuiltinFn {
             params: vec![PdcType::I32, PdcType::Str],
-            ret: PdcType::I32,
+            ret: PdcType::BufferHandle,
             takes_ctx: true,
         });
 

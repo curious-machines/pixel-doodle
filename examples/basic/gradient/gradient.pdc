@@ -1,16 +1,11 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels: i32 = 0
-var kern: i32 = 0
-
-fn init() {
-    pixels = Buffer(.U32, 0.0)
-    kern = Kernel("gradient", "gradient.wgsl", .Pixel)
-}
+var pixels = Buffer(.U32, 0.0)
+var kern = Kernel("gradient", "gradient.wgsl", .Pixel)
 
 fn frame() {
-    bind_buffer("output", pixels, 1)
-    run_kernel(kern)
-    display_buffer(pixels)
+    pixels.bind("output", 1)
+    kern.run()
+    pixels.display_buffer()
 }

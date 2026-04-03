@@ -47,6 +47,14 @@ run_kernel(advect)                   // requires Kernel
 - `Kernel(name, path, kind) -> Kernel` (constructor, currently `load_kernel`)
 - `run_kernel(Kernel)`
 
+### Builtin Enum Discoverability
+
+Builtin enums (`BufferType`, `KernelType`, `FillRule`, etc.) are currently registered only in Rust (`type_check.rs:register_builtins`). There's no way to discover valid variants from PDC source. Options to address:
+
+1. **Better error messages** — when a variant doesn't match, list all valid variants in the error
+2. **VS Code autocomplete** — suggest variants when typing `.` inside a typed call
+3. **`builtin enum` declarations** — require `builtin enum BufferType` in `.pdc` files, making the type visible in source while the compiler verifies it matches the Rust-side definition
+
 ### Migration
 
 The current `Buffer()` and `Kernel()` functions already return i32 and use the constructor naming convention. When opaque types are implemented, the function signatures change but calling code stays the same — only code that stores handles in `i32` variables would need updating (change `var x: i32 = Buffer(...)` to `var x = Buffer(...)`).
