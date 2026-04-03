@@ -841,6 +841,7 @@ impl<'a> Parser<'a> {
                 "Buffer" => PdcType::BufferHandle,
                 "Kernel" => PdcType::KernelHandle,
                 "Texture" => PdcType::TextureHandle,
+                "Scene" => PdcType::SceneHandle,
                 // User-defined struct types (starts with uppercase by convention)
                 _ => PdcType::Struct(name),
             };

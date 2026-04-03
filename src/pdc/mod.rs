@@ -2255,6 +2255,183 @@ mod tests {
         assert!(result.is_err(), "assigning Texture to i32 should fail type check");
     }
 
+    #[test]
+    fn scene_opaque_constructor() {
+        // Test that Scene("name", "path") constructor works and returns SceneHandle
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var scene: Scene = Scene("test", "test_scene.pdc")
+        "#;
+        let (compiled, state_layout) =
+            compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+                .expect("compile failed");
+        let mut builtins = [200.0f64; 12];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+        struct LogHost { log: Rc<RefCell<Vec<String>>>, next_handle: i32 }
+        impl runtime::PipelineHost for LogHost {
+            fn create_buffer(&mut self, _t: &str, _v: f64) -> i32 { 0 }
+            fn swap_buffers(&mut self, _a: i32, _b: i32) {}
+            fn load_kernel(&mut self, _n: &str, _p: &str, _k: i32) -> i32 { 0 }
+            fn bind_buffer(&mut self, _kh: i32, _p: &str, _h: i32, _o: bool) {}
+            fn set_kernel_arg_f64(&mut self, _kh: i32, _n: &str, _v: f64) {}
+            fn set_kernel_arg_f32(&mut self, _kh: i32, _n: &str, _v: f32) {}
+            fn run_kernel(&mut self, _h: i32) {}
+            fn display(&mut self) {}
+            fn display_buffer(&mut self, _h: i32) {}
+            fn load_texture(&mut self, _n: &str, _p: &str) -> i32 { 0 }
+            fn load_scene(&mut self, n: &str, p: &str) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("load_scene({n}, {p})")); h
+            }
+            fn set_max_samples(&mut self, _n: i32) {}
+            fn is_converged(&self) -> bool { false }
+            fn accumulate_sample(&mut self) {}
+            fn display_accumulated(&mut self) {}
+            fn reset_accumulation(&mut self) {}
+        }
+
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
+            log: log.clone(), next_handle: 1,
+        });
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        let log = log.borrow();
+        assert_eq!(*log, vec!["load_scene(test, test_scene.pdc)"]);
+    }
+
+    #[test]
+    fn scene_run_method() {
+        // Test that scene.run() compiles and calls pdc_run_scene
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var scene = Scene("test", "test_scene.pdc")
+
+            fn frame() -> bool {
+                scene.run()
+                return false
+            }
+        "#;
+        let (compiled, state_layout) =
+            compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+                .expect("compile failed");
+        let mut builtins = [200.0f64; 12];
+        let mut scene_builder = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+        struct LogHost { log: Rc<RefCell<Vec<String>>>, next_handle: i32 }
+        impl runtime::PipelineHost for LogHost {
+            fn create_buffer(&mut self, _t: &str, _v: f64) -> i32 { 0 }
+            fn swap_buffers(&mut self, _a: i32, _b: i32) {}
+            fn load_kernel(&mut self, _n: &str, _p: &str, _k: i32) -> i32 { 0 }
+            fn bind_buffer(&mut self, _kh: i32, _p: &str, _h: i32, _o: bool) {}
+            fn set_kernel_arg_f64(&mut self, _kh: i32, _n: &str, _v: f64) {}
+            fn set_kernel_arg_f32(&mut self, _kh: i32, _n: &str, _v: f32) {}
+            fn run_kernel(&mut self, _h: i32) {}
+            fn display(&mut self) {}
+            fn display_buffer(&mut self, _h: i32) {}
+            fn load_texture(&mut self, _n: &str, _p: &str) -> i32 { 0 }
+            fn load_scene(&mut self, _n: &str, _p: &str) -> i32 {
+                let h = self.next_handle; self.next_handle += 1; h
+            }
+            fn run_scene(&mut self, h: i32) {
+                self.log.borrow_mut().push(format!("run_scene({h})"));
+            }
+            fn set_max_samples(&mut self, _n: i32) {}
+            fn is_converged(&self) -> bool { false }
+            fn accumulate_sample(&mut self) {}
+            fn display_accumulated(&mut self) {}
+            fn reset_accumulation(&mut self) {}
+        }
+
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
+            log: log.clone(), next_handle: 1,
+        });
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene_builder as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        unsafe { compiled.call_frame(&mut ctx).unwrap(); }
+
+        let log = log.borrow();
+        assert!(log.contains(&"run_scene(1)".to_string()));
+    }
+
+    #[test]
+    fn scene_type_mismatch() {
+        // Scene handle should not be assignable to i32
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var scene: i32 = Scene("test", "test.pdc")
+        "#;
+        let result = compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS);
+        assert!(result.is_err(), "assigning Scene to i32 should fail type check");
+    }
+
+    #[test]
+    fn scene_property_tiles_x() {
+        // Test that scene.tiles_x compiles as a property read
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var scene = Scene("test", "test_scene.pdc")
+            var kern = Kernel.Sim("k", "k.wgsl")
+
+            fn frame() -> bool {
+                kern.tiles_x = scene.tiles_x
+                return false
+            }
+        "#;
+        compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+            .expect("scene.tiles_x property should compile");
+    }
+
+    #[test]
+    fn scene_property_buffer() {
+        // Test that scene.<buffer_name> compiles as a BufferHandle
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var scene = Scene("test", "test_scene.pdc")
+            var kern = Kernel.Sim("k", "k.wgsl")
+
+            fn frame() -> bool {
+                kern.segments = Bind.In(scene.segments)
+                return false
+            }
+        "#;
+        compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+            .expect("scene.segments buffer property should compile");
+    }
+
     // ---- Event handler registration tests ----
 
     /// Minimal PipelineHost implementation that stores event handler registrations.

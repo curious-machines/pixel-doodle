@@ -141,20 +141,40 @@ These are not yet implemented but would be useful additions:
 - **Dynamic texture selection:** pass texture handles to kernels or use them to choose which texture to bind at runtime
 - **Pixel readback in PDC:** `tex.sample(u, v)` or `tex.pixel(x, y)` — read pixel data from PDC code, not just from WGSL shaders
 
-## Future
-
 ### Scene
 
-Scene kernels currently use free functions with bare `i32` handles (`load_scene`, `run_scene`, `scene_buffer`, `scene_tiles_x`, `scene_num_paths`). These should become a `Scene` opaque type:
+Opaque handle for compiled PDC vector scenes. Created via constructor, supports a `run()` method and read-only virtual properties for scene data.
 
 ```
 var scene = Scene("stress", "stress_scene.pdc")
 
 scene.run()
-scene.buffer("segments")
-scene.tiles_x()
-scene.num_paths()
+
+// Read-only properties (no string passing, no function call syntax)
+rasterizer.segments = Bind.In(scene.segments)
+rasterizer.tiles_x = scene.tiles_x
+rasterizer.num_paths = scene.num_paths
 ```
+
+- Type: `PdcType::SceneHandle`
+- Codegen: `i32`
+- Constructor: `Scene(name, path)` — loads scene PDC source, returns handle. Maps to `pdc_load_scene`
+- Method: `scene.run()` — compiles and executes the scene, populating buffers. Maps to `pdc_run_scene`
+- Properties:
+  - `scene.tiles_x` → `f64` — tile count in X direction. Maps to `pdc_scene_tiles_x`
+  - `scene.num_paths` → `f64` — number of paths in the scene. Maps to `pdc_scene_num_paths`
+  - `scene.<buffer_name>` → `BufferHandle` — named buffer lookup (catch-all). Maps to `pdc_scene_buffer`
+
+### Scene Read-Only Virtual Properties
+
+Scene handles are the first opaque type with read-only virtual properties (Kernel has write-only). Field access on a Scene handle dispatches to a runtime call:
+
+- `tiles_x` and `num_paths` are known properties returning `f64`
+- Any other field name is treated as a buffer name, returning `BufferHandle`. The field name is compiled as a string constant and passed to `pdc_scene_buffer` at runtime.
+
+This eliminates the per-frame string allocation overhead of the old `scene_buffer(scene, "segments")` pattern.
+
+## Future
 
 ### Buffer with explicit dimensions
 

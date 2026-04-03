@@ -66,7 +66,7 @@ pub fn state_type_size(ty: &PdcType) -> usize {
         PdcType::F32 | PdcType::I32 | PdcType::U32 => 4,
         PdcType::F64 | PdcType::I64 | PdcType::U64 => 8,
         // Pointer-sized handles
-        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::Str | PdcType::Struct(_)
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle | PdcType::Str | PdcType::Struct(_)
         | PdcType::Enum(_) | PdcType::Array(_) | PdcType::Tuple(_)
         | PdcType::Slice(_) | PdcType::FnRef { .. } | PdcType::Module(_) => 8,
         PdcType::Unknown | PdcType::Void => 0,

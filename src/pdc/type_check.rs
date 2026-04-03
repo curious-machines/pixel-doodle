@@ -294,30 +294,10 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Scene kernels
-        self.builtins.insert("load_scene".into(), BuiltinFn {
+        // Scene(name: string, path: string) -> SceneHandle
+        self.builtins.insert("Scene".into(), BuiltinFn {
             params: vec![PdcType::Str, PdcType::Str],
-            ret: PdcType::I32,
-            takes_ctx: true,
-        });
-        self.builtins.insert("run_scene".into(), BuiltinFn {
-            params: vec![PdcType::I32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("scene_tiles_x".into(), BuiltinFn {
-            params: vec![PdcType::I32],
-            ret: PdcType::F64,
-            takes_ctx: true,
-        });
-        self.builtins.insert("scene_num_paths".into(), BuiltinFn {
-            params: vec![PdcType::I32],
-            ret: PdcType::F64,
-            takes_ctx: true,
-        });
-        self.builtins.insert("scene_buffer".into(), BuiltinFn {
-            params: vec![PdcType::I32, PdcType::Str],
-            ret: PdcType::BufferHandle,
+            ret: PdcType::SceneHandle,
             takes_ctx: true,
         });
 
@@ -1570,6 +1550,15 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &var_info.field_types[i], arg.span)?;
                     }
                     PdcType::Enum(ename.clone())
+                } else if obj_ty == PdcType::SceneHandle && method == "run" {
+                    // scene.run() → pdc_run_scene(ctx, handle)
+                    if !args.is_empty() {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("Scene.run() takes no arguments, got {}", args.len()),
+                        });
+                    }
+                    PdcType::Void
                 } else if let Some(builtin) = self.builtins.get(method.as_str()) {
                     let expected_params = builtin.params.clone();
                     let ret = builtin.ret.clone();
@@ -1705,6 +1694,15 @@ impl TypeChecker {
                             });
                         }
                         PdcType::Enum(name.clone())
+                    }
+                    PdcType::SceneHandle => {
+                        // Scene read-only virtual properties:
+                        // scene.tiles_x, scene.num_paths → f64
+                        // scene.<anything_else> → BufferHandle (scene buffer lookup)
+                        match field.as_str() {
+                            "tiles_x" | "num_paths" => PdcType::F64,
+                            _ => PdcType::BufferHandle,
+                        }
                     }
                     _ => {
                         return Err(PdcError::Type {

@@ -570,7 +570,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I16 | PdcType::U16 => I16,
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
-        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => I32,
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => I32,
         PdcType::Str => I32, // strings are handles (i32)
         PdcType::Slice(_) => pointer_type, // slices are pointers to (handle, start, len)
         PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
@@ -2005,6 +2005,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                         _ => Err(PdcError::Codegen { message: format!("unknown string method '{method}'") }),
                     };
                 }
+                // Scene methods: scene.run() → pdc_run_scene(ctx, handle)
+                if obj_ty == PdcType::SceneHandle {
+                    let handle = self.emit_expr(object)?;
+                    return match method.as_str() {
+                        "run" => {
+                            self.emit_runtime_call_raw("pdc_run_scene",
+                                &[self.ctx_ptr, handle], None)?;
+                            Ok(self.builder.ins().iconst(I32, 0))
+                        }
+                        _ => Err(PdcError::Codegen { message: format!("Scene has no method '{method}'") }),
+                    };
+                }
                 // Array methods with type-aware bitcasting
                 if let PdcType::Array(ref elem_ty) = obj_ty {
                     return self.emit_array_method(object, method, args, elem_ty);
@@ -2173,6 +2185,40 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                         // Data variant without args — shouldn't happen (use MethodCall)
                         return Ok(self.builder.ins().iconst(I32, idx as i64));
                     }
+                }
+
+                // Scene read-only virtual properties
+                if obj_ty == PdcType::SceneHandle {
+                    let handle = self.emit_expr(object)?;
+                    return match field.as_str() {
+                        "tiles_x" => {
+                            self.emit_runtime_call_raw("pdc_scene_tiles_x",
+                                &[self.ctx_ptr, handle], Some(F64))
+                        }
+                        "num_paths" => {
+                            self.emit_runtime_call_raw("pdc_scene_num_paths",
+                                &[self.ctx_ptr, handle], Some(F64))
+                        }
+                        _ => {
+                            // Buffer property: scene.<name> → pdc_scene_buffer(ctx, handle, name)
+                            let field_bytes = field.as_bytes();
+                            let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                                field_bytes.len() as u32,
+                                0,
+                            ));
+                            for (i, &byte) in field_bytes.iter().enumerate() {
+                                let val = self.builder.ins().iconst(I8, byte as i64);
+                                self.builder.ins().stack_store(val, slot, i as i32);
+                            }
+                            let name_ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
+                            let name_len = self.builder.ins().iconst(I32, field_bytes.len() as i64);
+                            let name_handle = self.emit_runtime_call_raw("pdc_string_new",
+                                &[self.ctx_ptr, name_ptr, name_len], Some(I32))?;
+                            self.emit_runtime_call_raw("pdc_scene_buffer",
+                                &[self.ctx_ptr, handle, name_handle], Some(I32))
+                        }
+                    };
                 }
 
                 let obj_val = self.emit_expr(object)?;
@@ -2410,6 +2456,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             match name {
                 "Path" => "pdc_path".to_string(),
                 "Texture" => "pdc_load_texture".to_string(),
+                "Scene" => "pdc_load_scene".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -2432,8 +2479,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
             | "display_buffer" | "swap" | "run" | "render"
-            | "display" | "Texture"
-            | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
+            | "display" | "Texture" | "Scene"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation"
             | "set_keypress" | "set_keydown" | "set_keyup"
@@ -2490,16 +2536,14 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
-            "Path" | "len" | "Texture"
-            | "load_scene" | "scene_buffer"
+            "Path" | "len" | "Texture" | "Scene"
             | "is_converged" | "render" => Some(I32),
-            "get" | "scene_tiles_x" | "scene_num_paths" => Some(F64),
+            "get" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
             | "display_buffer" | "swap" | "run"
             | "display"
-            | "run_scene"
             | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
             _ => Some(F64),
@@ -2531,7 +2575,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fpromote(F64, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => {
                 self.builder.ins().fcvt_from_sint(F64, val)
             }
             PdcType::Bool => {
@@ -2547,7 +2591,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fdemote(F32, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => {
                 self.builder.ins().fcvt_to_sint_sat(I32, val)
             }
             PdcType::Bool => {
