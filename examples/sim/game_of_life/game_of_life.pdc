@@ -15,19 +15,19 @@ var init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
 var inject_kern = Kernel("inject", "../../shared/inject_i32.wgsl", .Sim)
 
 fn init() {
-    grid.bind("grid", .Out)
+    init_grid_kern.grid = Bind.Out(grid)
     init_grid_kern.run()
 }
 
 fn frame() {
+    step_kern.grid_in = Bind.In(grid)
+    step_kern.grid_out = Bind.Out(grid_next)
     for _i in 0..i32(iterations) {
-        grid.bind("grid_in", .In)
-        grid_next.bind("grid_out", .Out)
         step_kern.run()
         swap(grid, grid_next)
     }
-    grid.bind("grid_in", .In)
-    pixels.bind("pixels", .Out)
+    vis_kern.grid_in = Bind.In(grid)
+    vis_kern.pixels = Bind.Out(pixels)
     vis_kern.run()
     pixels.display_buffer()
     request_redraw()
@@ -50,12 +50,12 @@ fn on_keypress_bracket_left() {
 }
 
 fn on_mousedown() {
-    inject_kern.set_arg("inject_x", mouse_x)
-    inject_kern.set_arg("inject_y", mouse_y)
-    inject_kern.set_arg("radius", 3.0)
-    inject_kern.set_arg("value", 1.0)
-    grid.bind("buf_in", .In)
-    grid_next.bind("buf_out", .Out)
+    inject_kern.inject_x = mouse_x
+    inject_kern.inject_y = mouse_y
+    inject_kern.radius = 3.0
+    inject_kern.value = 1.0
+    inject_kern.buf_in = Bind.In(grid)
+    inject_kern.buf_out = Bind.Out(grid_next)
     inject_kern.run()
     swap(grid, grid_next)
 }

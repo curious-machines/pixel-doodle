@@ -298,6 +298,12 @@ pub enum Stmt {
         index: Spanned<Expr>,
         value: Spanned<Expr>,
     },
+    /// `expr.field = value` (kernel virtual property assignment)
+    FieldAssign {
+        object: Spanned<Expr>,
+        field: String,
+        value: Spanned<Expr>,
+    },
     /// `const (a, b, c) = expr` or `var (a, b, c) = expr`
     TupleDestructure {
         names: Vec<String>,

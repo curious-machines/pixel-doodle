@@ -47,10 +47,10 @@ struct HostState {
     cpu_kernels: Vec<CpuKernel>,
     /// Named buffer storage (raw bytes).
     buffers: Vec<NamedBuffer>,
-    /// Pending buffer bindings for the next run_kernel call.
-    pending_bindings: Vec<BufferBinding>,
-    /// Pending kernel args for the next run_kernel call.
-    pending_args: Vec<KernelArg>,
+    /// Per-kernel buffer bindings, indexed by kernel handle. Persist until overwritten.
+    kernel_bindings: Vec<Vec<BufferBinding>>,
+    /// Per-kernel args, indexed by kernel handle. Persist until overwritten.
+    kernel_args: Vec<Vec<KernelArg>>,
     /// Whether display() or display_accumulated() was called this frame.
     display_requested: bool,
     /// Whether the script requested another frame via request_redraw().
@@ -103,6 +103,7 @@ struct NamedBuffer {
     elem_size: usize,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 struct BufferBinding {
     param_name: String,
@@ -110,6 +111,7 @@ struct BufferBinding {
     is_output: bool,
 }
 
+#[derive(Clone)]
 struct KernelArg {
     name: String,
     value: f64,
@@ -265,52 +267,82 @@ impl PipelineHost for HostState {
         }
     }
 
-    fn bind_buffer(&mut self, param_name: &str, buffer_handle: i32, is_output: bool) {
-        self.pending_bindings.push(BufferBinding {
-            param_name: param_name.to_string(),
-            buffer_handle,
-            is_output,
-        });
+    fn bind_buffer(&mut self, kernel_handle: i32, param_name: &str, buffer_handle: i32, is_output: bool) {
+        let kh = kernel_handle as usize;
+        // Grow per-kernel state if needed
+        while self.kernel_bindings.len() <= kh {
+            self.kernel_bindings.push(Vec::new());
+        }
+        // Upsert: overwrite if param_name exists, otherwise insert
+        let bindings = &mut self.kernel_bindings[kh];
+        if let Some(existing) = bindings.iter_mut().find(|b| b.param_name == param_name) {
+            existing.buffer_handle = buffer_handle;
+            existing.is_output = is_output;
+        } else {
+            bindings.push(BufferBinding {
+                param_name: param_name.to_string(),
+                buffer_handle,
+                is_output,
+            });
+        }
     }
 
-    fn set_kernel_arg_f64(&mut self, name: &str, value: f64) {
-        self.pending_args.push(KernelArg { name: name.to_string(), value });
+    fn set_kernel_arg_f64(&mut self, kernel_handle: i32, name: &str, value: f64) {
+        let kh = kernel_handle as usize;
+        while self.kernel_args.len() <= kh {
+            self.kernel_args.push(Vec::new());
+        }
+        // Upsert: overwrite if name exists, otherwise insert
+        let args = &mut self.kernel_args[kh];
+        if let Some(existing) = args.iter_mut().find(|a| a.name == name) {
+            existing.value = value;
+        } else {
+            args.push(KernelArg { name: name.to_string(), value });
+        }
     }
 
-    fn set_kernel_arg_f32(&mut self, name: &str, value: f32) {
-        self.pending_args.push(KernelArg { name: name.to_string(), value: value as f64 });
+    fn set_kernel_arg_f32(&mut self, kernel_handle: i32, name: &str, value: f32) {
+        self.set_kernel_arg_f64(kernel_handle, name, value as f64);
     }
 
     fn run_kernel(&mut self, kernel_handle: i32) {
+        let kh = kernel_handle as usize;
+        // Clone per-kernel state to avoid borrow conflicts with self
+        let bindings: Vec<BufferBinding> = if kh < self.kernel_bindings.len() {
+            self.kernel_bindings[kh].clone()
+        } else {
+            Vec::new()
+        };
+        let args: Vec<KernelArg> = if kh < self.kernel_args.len() {
+            self.kernel_args[kh].clone()
+        } else {
+            Vec::new()
+        };
+
         // GPU path — when GPU resources are available
         let gpu_available = self.gpu_device.is_some() || self.gpu_sim_runner.is_some();
         if self.render == "gpu" && gpu_available {
             // Check if this is a pixel kernel (handle 0 and gpu_pixel_kernel_source is set)
             if self.gpu_pixel_kernel_source.is_some() && kernel_handle == 0 {
                 // Pixel kernel: resolve user args, mark as GPU rendered
-                self.gpu_user_args = self.pending_args.iter()
+                self.gpu_user_args = args.iter()
                     .map(|a| a.value as f32)
                     .collect();
                 self.gpu_rendered_this_frame = true;
-                self.pending_bindings.clear();
-                self.pending_args.clear();
                 return;
             }
 
             // Sim kernel: dispatch via GpuSimRunner
             if let Some(ref runner) = self.gpu_sim_runner {
-                let handle = kernel_handle as usize;
-                let kernel_name = if handle < self.gpu_kernel_names.len() {
-                    self.gpu_kernel_names[handle].clone()
+                let kernel_name = if kh < self.gpu_kernel_names.len() {
+                    self.gpu_kernel_names[kh].clone()
                 } else {
                     eprintln!("[pdc-runtime] invalid GPU kernel handle {}", kernel_handle);
-                    self.pending_bindings.clear();
-                    self.pending_args.clear();
                     return;
                 };
 
                 // Build bindings: map PDC buffer handles to GpuSimRunner buffer names
-                let bindings: Vec<(String, String)> = self.pending_bindings.iter()
+                let gpu_bindings: Vec<(String, String)> = bindings.iter()
                     .filter_map(|b| {
                         let buf_idx = b.buffer_handle as usize;
                         if buf_idx < self.buffers.len() {
@@ -320,14 +352,14 @@ impl PipelineHost for HostState {
                         }
                     })
                     .collect();
-                let binding_refs: Vec<(&str, &str)> = bindings.iter()
+                let binding_refs: Vec<(&str, &str)> = gpu_bindings.iter()
                     .map(|(a, b)| (a.as_str(), b.as_str()))
                     .collect();
 
                 // Resolve user args with correct types from WGSL Params struct
                 let arg_types = runner.user_arg_types(&kernel_name);
                 let mut arg_bytes: Vec<u8> = Vec::new();
-                for (i, a) in self.pending_args.iter().enumerate() {
+                for (i, a) in args.iter().enumerate() {
                     let arg_type = arg_types.get(i).copied()
                         .unwrap_or(gpu::sim_runner::WgslArgType::F32);
                     match arg_type {
@@ -345,8 +377,6 @@ impl PipelineHost for HostState {
                 runner.dispatch(&kernel_name, &binding_refs, &arg_bytes);
             }
 
-            self.pending_bindings.clear();
-            self.pending_args.clear();
             return;
         }
 
@@ -356,8 +386,6 @@ impl PipelineHost for HostState {
             let handle = kernel_handle as usize;
             if handle >= self.cpu_kernels.len() {
                 eprintln!("[pdc-runtime] invalid kernel handle {}", kernel_handle);
-                self.pending_bindings.clear();
-                self.pending_args.clear();
                 return;
             }
 
@@ -366,7 +394,7 @@ impl PipelineHost for HostState {
             let num_buffers = kernel.compiled.num_storage_buffers;
             let mut buffer_ptrs: Vec<*mut u8> = vec![std::ptr::null_mut(); num_buffers];
 
-            for binding in &self.pending_bindings {
+            for binding in bindings {
                 let buf_idx = binding.buffer_handle as usize;
                 if buf_idx >= self.buffers.len() { continue; }
                 if let Some(&slot) = kernel.compiled.binding_map.get(&binding.param_name) {
@@ -428,8 +456,8 @@ impl PipelineHost for HostState {
                     "time" => params[off..off + 4].copy_from_slice(&(time as f32).to_le_bytes()),
                     name if name.starts_with('_') => {} // padding
                     _ => {
-                        // Check pending args first (by name)
-                        if let Some(arg) = self.pending_args.iter().find(|a| a.name == member.name) {
+                        // Check kernel args first (by name)
+                        if let Some(arg) = args.iter().find(|a| a.name == member.name) {
                             if member.is_float {
                                 params[off..off + 4].copy_from_slice(&(arg.value as f32).to_le_bytes());
                             } else {
@@ -496,8 +524,6 @@ impl PipelineHost for HostState {
             }
         }
 
-        self.pending_bindings.clear();
-        self.pending_args.clear();
     }
 
     fn display(&mut self) {
@@ -961,8 +987,8 @@ impl PdcRuntime {
             #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             cpu_kernels: Vec::new(),
             buffers: Vec::new(),
-            pending_bindings: Vec::new(),
-            pending_args: Vec::new(),
+            kernel_bindings: Vec::new(),
+            kernel_args: Vec::new(),
             display_requested: false,
             redraw_requested: false,
             textures: Vec::new(),

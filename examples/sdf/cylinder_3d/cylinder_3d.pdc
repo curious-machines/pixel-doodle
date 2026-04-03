@@ -8,7 +8,7 @@ var pixels = Buffer(.U32)
 var kern = Kernel("cylinder_3d", "cylinder_3d.wgsl", .Pixel)
 
 fn frame() {
-    pixels.bind("output", .Out)
+    kern.output = Bind.Out(pixels)
     kern.run()
     pixels.display_buffer()
 }

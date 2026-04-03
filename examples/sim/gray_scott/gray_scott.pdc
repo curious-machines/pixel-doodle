@@ -14,19 +14,19 @@ var init_field_kern = Kernel("init_field", "gray_scott_init.wgsl", .Sim)
 var inject_kern = Kernel("inject", "../../shared/inject_vec2.wgsl", .Sim)
 
 fn init() {
-    field.bind("field_out", .Out)
+    init_field_kern.field_out = Bind.Out(field)
     init_field_kern.run()
 }
 
 fn frame() {
+    step_kern.field_in = Bind.In(field)
+    step_kern.field_out = Bind.Out(field_next)
     for _i in 0..8 {
-        field.bind("field_in", .In)
-        field_next.bind("field_out", .Out)
         step_kern.run()
         swap(field, field_next)
     }
-    field.bind("field_in", .In)
-    pixels.bind("pixels", .Out)
+    vis_kern.field_in = Bind.In(field)
+    vis_kern.pixels = Bind.Out(pixels)
     vis_kern.run()
     pixels.display_buffer()
     request_redraw()
@@ -36,14 +36,14 @@ fn on_keypress_space() { paused = !paused }
 fn on_keypress_period() { frame = frame + 1.0 }
 
 fn on_mousedown() {
-    inject_kern.set_arg("inject_x", mouse_x)
-    inject_kern.set_arg("inject_y", mouse_y)
-    inject_kern.set_arg("radius", 5.0)
-    inject_kern.set_arg("value", 0.5)
-    inject_kern.set_arg("falloff_quadratic", 0.0)
-    inject_kern.set_arg("component", 1.0)
-    field.bind("buf_in", .In)
-    field_next.bind("buf_out", .Out)
+    inject_kern.inject_x = mouse_x
+    inject_kern.inject_y = mouse_y
+    inject_kern.radius = 5.0
+    inject_kern.value = 0.5
+    inject_kern.falloff_quadratic = 0.0
+    inject_kern.component = 1.0
+    inject_kern.buf_in = Bind.In(field)
+    inject_kern.buf_out = Bind.Out(field_next)
     inject_kern.run()
     swap(field, field_next)
 }

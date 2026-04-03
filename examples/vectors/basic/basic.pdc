@@ -13,17 +13,17 @@ fn init() {
 
 fn frame() {
     run_scene(scene)
-    scene_buffer(scene, "segments").bind("segments", .In)
-    scene_buffer(scene, "seg_path_ids").bind("seg_path_ids", .In)
-    scene_buffer(scene, "tile_offsets").bind("tile_offsets", .In)
-    scene_buffer(scene, "tile_counts").bind("tile_counts", .In)
-    scene_buffer(scene, "tile_indices").bind("tile_indices", .In)
-    scene_buffer(scene, "path_colors").bind("path_colors", .In)
-    scene_buffer(scene, "path_fill_rules").bind("path_fill_rules", .In)
-    pixels.bind("pixels", .Out)
-    rasterizer.set_arg("tile_size", 16.0)
-    rasterizer.set_arg("tiles_x", scene_tiles_x(scene))
-    rasterizer.set_arg("num_paths", scene_num_paths(scene))
+    rasterizer.segments = Bind.In(scene_buffer(scene, "segments"))
+    rasterizer.seg_path_ids = Bind.In(scene_buffer(scene, "seg_path_ids"))
+    rasterizer.tile_offsets = Bind.In(scene_buffer(scene, "tile_offsets"))
+    rasterizer.tile_counts = Bind.In(scene_buffer(scene, "tile_counts"))
+    rasterizer.tile_indices = Bind.In(scene_buffer(scene, "tile_indices"))
+    rasterizer.path_colors = Bind.In(scene_buffer(scene, "path_colors"))
+    rasterizer.path_fill_rules = Bind.In(scene_buffer(scene, "path_fill_rules"))
+    rasterizer.pixels = Bind.Out(pixels)
+    rasterizer.tile_size = 16.0
+    rasterizer.tiles_x = scene_tiles_x(scene)
+    rasterizer.num_paths = scene_num_paths(scene)
     rasterizer.run()
     pixels.display_buffer()
 }

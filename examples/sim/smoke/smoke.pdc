@@ -19,31 +19,31 @@ var vis_kern = Kernel("vis", "smoke_vis.wgsl", .Sim)
 var inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
 
 fn frame() {
-    field.bind("field_in", .In)
-    field_next.bind("field_out", .Out)
+    advect_kern.field_in = Bind.In(field)
+    advect_kern.field_out = Bind.Out(field_next)
     advect_kern.run()
     swap(field, field_next)
 
-    field.bind("field_in", .In)
-    div.bind("div_out", .Out)
+    divergence_kern.field_in = Bind.In(field)
+    divergence_kern.div_out = Bind.Out(div)
     divergence_kern.run()
 
+    jacobi_kern.div_in = Bind.In(div)
+    jacobi_kern.press_in = Bind.In(press_a)
+    jacobi_kern.press_out = Bind.Out(press_b)
     for _i in 0..40 {
-        div.bind("div_in", .In)
-        press_a.bind("press_in", .In)
-        press_b.bind("press_out", .Out)
         jacobi_kern.run()
         swap(press_a, press_b)
     }
 
-    press_a.bind("pressure", .In)
-    field.bind("field_in", .In)
-    field_next.bind("field_out", .Out)
+    project_kern.pressure = Bind.In(press_a)
+    project_kern.field_in = Bind.In(field)
+    project_kern.field_out = Bind.Out(field_next)
     project_kern.run()
     swap(field, field_next)
 
-    field.bind("field_in", .In)
-    pixels.bind("pixels", .Out)
+    vis_kern.field_in = Bind.In(field)
+    vis_kern.pixels = Bind.Out(pixels)
     vis_kern.run()
     pixels.display_buffer()
     request_redraw()
@@ -53,25 +53,25 @@ fn on_keypress_space() { paused = !paused }
 fn on_keypress_period() { frame = frame + 1.0 }
 
 fn on_mousedown() {
-    inject_kern.set_arg("inject_x", mouse_x)
-    inject_kern.set_arg("inject_y", mouse_y)
-    inject_kern.set_arg("radius", 15.0)
-    inject_kern.set_arg("value", -3.0)
-    inject_kern.set_arg("falloff_quadratic", 1.0)
-    inject_kern.set_arg("component", 1.0)
-    field.bind("buf_in", .In)
-    field_next.bind("buf_out", .Out)
+    inject_kern.inject_x = mouse_x
+    inject_kern.inject_y = mouse_y
+    inject_kern.radius = 15.0
+    inject_kern.value = -3.0
+    inject_kern.falloff_quadratic = 1.0
+    inject_kern.component = 1.0
+    inject_kern.buf_in = Bind.In(field)
+    inject_kern.buf_out = Bind.Out(field_next)
     inject_kern.run()
     swap(field, field_next)
 
-    inject_kern.set_arg("inject_x", mouse_x)
-    inject_kern.set_arg("inject_y", mouse_y)
-    inject_kern.set_arg("radius", 15.0)
-    inject_kern.set_arg("value", 0.5)
-    inject_kern.set_arg("falloff_quadratic", 1.0)
-    inject_kern.set_arg("component", 2.0)
-    field.bind("buf_in", .In)
-    field_next.bind("buf_out", .Out)
+    inject_kern.inject_x = mouse_x
+    inject_kern.inject_y = mouse_y
+    inject_kern.radius = 15.0
+    inject_kern.value = 0.5
+    inject_kern.falloff_quadratic = 1.0
+    inject_kern.component = 2.0
+    inject_kern.buf_in = Bind.In(field)
+    inject_kern.buf_out = Bind.Out(field_next)
     inject_kern.run()
     swap(field, field_next)
 }

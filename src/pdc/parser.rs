@@ -151,6 +151,19 @@ impl<'a> Parser<'a> {
                             span,
                         ));
                     }
+                    if let Expr::FieldAccess { object, field } = expr.node {
+                        self.advance(); // consume '='
+                        let value = self.parse_expr()?;
+                        let span = Span::new(start.start, value.span.end);
+                        return Ok(self.ids.spanned(
+                            Stmt::FieldAssign {
+                                object: *object,
+                                field,
+                                value,
+                            },
+                            span,
+                        ));
+                    }
                 }
 
                 // Compound assignment: name += expr → name = name + expr

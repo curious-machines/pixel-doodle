@@ -829,6 +829,47 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr, arr_handle, idx, store_val], None)?;
                 }
             }
+            Stmt::FieldAssign { object, field, value } => {
+                let kernel_handle = self.emit_expr(object)?;
+                let val_ty = self.node_type(value.id).clone();
+
+                // Create string handle for the field name
+                let field_bytes = field.as_bytes();
+                let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    field_bytes.len() as u32,
+                    0,
+                ));
+                for (i, &byte) in field_bytes.iter().enumerate() {
+                    let val = self.builder.ins().iconst(I8, byte as i64);
+                    self.builder.ins().stack_store(val, slot, i as i32);
+                }
+                let field_ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
+                let field_len = self.builder.ins().iconst(I32, field_bytes.len() as i64);
+                let field_handle = self.emit_runtime_call_raw("pdc_string_new",
+                    &[self.ctx_ptr, field_ptr, field_len], Some(I32))?;
+
+                if let PdcType::Enum(ref ename) = val_ty {
+                    if ename == "Bind" {
+                        // Destructure Bind.In(buffer) / Bind.Out(buffer) at compile time
+                        if let Expr::MethodCall { method, args, .. } = &value.node {
+                            let direction = if method == "In" { 0i64 } else { 1i64 };
+                            let buffer_handle = self.emit_expr(&args[0])?;
+                            let dir_val = self.builder.ins().iconst(I32, direction);
+                            self.emit_runtime_call_raw("pdc_bind_buffer",
+                                &[self.ctx_ptr, kernel_handle, buffer_handle, field_handle, dir_val],
+                                None)?;
+                        }
+                    }
+                } else {
+                    // Scalar arg: emit set_kernel_arg_f64
+                    let val = self.emit_expr(value)?;
+                    let converted = self.convert_value(val, &val_ty, &PdcType::F64);
+                    self.emit_runtime_call_raw("pdc_set_kernel_arg_f64",
+                        &[self.ctx_ptr, kernel_handle, field_handle, converted],
+                        None)?;
+                }
+            }
             Stmt::TupleDestructure { names, value, .. } => {
                 let tuple_ptr = self.emit_expr(value)?;
                 let val_ty = self.node_type(value.id).clone();
@@ -2333,11 +2374,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 "Path" => "pdc_path".to_string(),
                 "Buffer" => "pdc_create_buffer".to_string(),
                 "Kernel" => "pdc_load_kernel".to_string(),
-                "bind" => "pdc_bind_buffer".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
-                "set_arg" => "pdc_set_kernel_arg_f64".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -2355,7 +2394,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
-            | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
+            | "display_buffer" | "swap" | "run"
             | "display" | "load_texture"
             | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "request_redraw"
@@ -2412,7 +2451,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
-            | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
+            | "display_buffer" | "swap" | "run"
             | "display"
             | "run_scene"
             | "request_redraw" | "set_max_samples" | "accumulate_sample"

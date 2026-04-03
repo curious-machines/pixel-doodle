@@ -31,13 +31,12 @@ pub trait PipelineHost {
     /// Load and compile a WGSL kernel. Returns a handle ID.
     /// `kind` is 0=pixel, 1=standard, 2=scene.
     fn load_kernel(&mut self, name: &str, path: &str, kind: i32) -> i32;
-    /// Bind a buffer to a kernel parameter for the next `run_kernel` call.
-    /// `is_output` indicates whether this is an output binding.
-    fn bind_buffer(&mut self, param_name: &str, buffer_handle: i32, is_output: bool);
-    /// Set a kernel argument (f64) for the next `run_kernel` call.
-    fn set_kernel_arg_f64(&mut self, name: &str, value: f64);
-    /// Set a kernel argument (f32) for the next `run_kernel` call.
-    fn set_kernel_arg_f32(&mut self, name: &str, value: f32);
+    /// Bind a buffer to a kernel parameter. Persists until overwritten.
+    fn bind_buffer(&mut self, kernel_handle: i32, param_name: &str, buffer_handle: i32, is_output: bool);
+    /// Set a kernel argument (f64). Persists until overwritten.
+    fn set_kernel_arg_f64(&mut self, kernel_handle: i32, name: &str, value: f64);
+    /// Set a kernel argument (f32). Persists until overwritten.
+    fn set_kernel_arg_f32(&mut self, kernel_handle: i32, name: &str, value: f32);
     /// Dispatch a kernel by handle.
     fn run_kernel(&mut self, kernel_handle: i32);
     /// Display the current pixel output.
@@ -739,27 +738,27 @@ pub extern "C" fn pdc_load_kernel(ctx: *mut PdcContext, name_handle: i32, path_h
     }
 }
 
-// Method-style: buffer.bind("param_name", is_output)
-pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, buffer_handle: i32, param_handle: i32, is_output: i32) {
+// Virtual property: kern.param = Bind.In(buffer)
+pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, kernel_handle: i32, buffer_handle: i32, param_handle: i32, is_output: i32) {
     unsafe {
         let param_name = get_string(ctx, param_handle).to_string();
-        get_host(ctx).bind_buffer(&param_name, buffer_handle, is_output != 0)
+        get_host(ctx).bind_buffer(kernel_handle, &param_name, buffer_handle, is_output != 0)
     }
 }
 
-// Method-style: kernel.set_arg_f64("name", value)
-pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, _kernel_handle: i32, name_handle: i32, value: f64) {
+// Virtual property: kern.arg_name = value
+pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, kernel_handle: i32, name_handle: i32, value: f64) {
     unsafe {
         let name = get_string(ctx, name_handle).to_string();
-        get_host(ctx).set_kernel_arg_f64(&name, value)
+        get_host(ctx).set_kernel_arg_f64(kernel_handle, &name, value)
     }
 }
 
-// Method-style: kernel.set_arg_f32("name", value)
-pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, _kernel_handle: i32, name_handle: i32, value: f32) {
+// Virtual property: kern.arg_name = value (f32)
+pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, kernel_handle: i32, name_handle: i32, value: f32) {
     unsafe {
         let name = get_string(ctx, name_handle).to_string();
-        get_host(ctx).set_kernel_arg_f32(&name, value)
+        get_host(ctx).set_kernel_arg_f32(kernel_handle, &name, value)
     }
 }
 

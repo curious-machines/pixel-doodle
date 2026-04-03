@@ -1895,10 +1895,10 @@ mod tests {
             var sim_kernel: Kernel = Kernel("step", "step.wgsl", .Sim)
 
             fn frame() {
-                grid.bind("input", .In)
-                grid_next.bind("output", .Out)
+                sim_kernel.input = Bind.In(grid)
+                sim_kernel.output = Bind.Out(grid_next)
                 sim_kernel.run()
-                grid.swap(grid_next)
+                swap(grid, grid_next)
                 display()
             }
         "#;
@@ -1924,9 +1924,9 @@ mod tests {
                 let h = self.next_handle; self.next_handle += 1;
                 self.log.borrow_mut().push(format!("load_kernel({n}, {p}, {k})")); h
             }
-            fn bind_buffer(&mut self, p: &str, h: i32, o: bool) { self.log.borrow_mut().push(format!("bind_buffer({p}, {h}, {o})")); }
-            fn set_kernel_arg_f64(&mut self, n: &str, v: f64) { self.log.borrow_mut().push(format!("set_kernel_arg_f64({n}, {v})")); }
-            fn set_kernel_arg_f32(&mut self, n: &str, v: f32) { self.log.borrow_mut().push(format!("set_kernel_arg_f32({n}, {v})")); }
+            fn bind_buffer(&mut self, kh: i32, p: &str, h: i32, o: bool) { self.log.borrow_mut().push(format!("bind_buffer({kh}, {p}, {h}, {o})")); }
+            fn set_kernel_arg_f64(&mut self, kh: i32, n: &str, v: f64) { self.log.borrow_mut().push(format!("set_kernel_arg_f64({kh}, {n}, {v})")); }
+            fn set_kernel_arg_f32(&mut self, kh: i32, n: &str, v: f32) { self.log.borrow_mut().push(format!("set_kernel_arg_f32({kh}, {n}, {v})")); }
             fn run_kernel(&mut self, h: i32) { self.log.borrow_mut().push(format!("run_kernel({h})")); }
             fn display(&mut self) { self.log.borrow_mut().push("display()".into()); }
             fn display_buffer(&mut self, h: i32) { self.log.borrow_mut().push(format!("display_buffer({h})")); }
@@ -1963,8 +1963,8 @@ mod tests {
             "create_buffer(gpu_f32, 0)",
             "create_buffer(gpu_f32, 0)",
             "load_kernel(step, step.wgsl, 1)",
-            "bind_buffer(input, 1, false)",
-            "bind_buffer(output, 2, true)",
+            "bind_buffer(3, input, 1, false)",
+            "bind_buffer(3, output, 2, true)",
             "run_kernel(3)",
             "swap_buffers(1, 2)",
             "display()",
@@ -1998,9 +1998,9 @@ mod tests {
             }
             fn swap_buffers(&mut self, _a: i32, _b: i32) {}
             fn load_kernel(&mut self, _n: &str, _p: &str, _k: i32) -> i32 { 0 }
-            fn bind_buffer(&mut self, _p: &str, _h: i32, _o: bool) {}
-            fn set_kernel_arg_f64(&mut self, _n: &str, _v: f64) {}
-            fn set_kernel_arg_f32(&mut self, _n: &str, _v: f32) {}
+            fn bind_buffer(&mut self, _kh: i32, _p: &str, _h: i32, _o: bool) {}
+            fn set_kernel_arg_f64(&mut self, _kh: i32, _n: &str, _v: f64) {}
+            fn set_kernel_arg_f32(&mut self, _kh: i32, _n: &str, _v: f32) {}
             fn run_kernel(&mut self, _h: i32) {}
             fn display(&mut self) {}
             fn display_buffer(&mut self, _h: i32) {}

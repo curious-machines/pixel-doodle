@@ -200,13 +200,13 @@ impl TypeChecker {
         });
         self.define_var("KernelType", PdcType::Enum("KernelType".into()));
 
-        self.enums.insert("BindMode".into(), EnumInfo {
+        self.enums.insert("Bind".into(), EnumInfo {
             variants: vec![
-                EnumVariantInfo { name: "In".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "Out".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "In".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle] },
+                EnumVariantInfo { name: "Out".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle] },
             ],
         });
-        self.define_var("BindMode", PdcType::Enum("BindMode".into()));
+        self.define_var("Bind", PdcType::Enum("Bind".into()));
 
         self.enums.insert("FillRule".into(), EnumInfo {
             variants: vec![
@@ -263,11 +263,6 @@ impl TypeChecker {
             takes_ctx: true,
         });
         // Buffer methods
-        self.builtins.insert("bind".into(), BuiltinFn {
-            params: vec![PdcType::BufferHandle, PdcType::Str, PdcType::Enum("BindMode".into())],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
         self.builtins.insert("display_buffer".into(), BuiltinFn {
             params: vec![PdcType::BufferHandle],
             ret: PdcType::Void,
@@ -281,11 +276,6 @@ impl TypeChecker {
         // Kernel methods
         self.builtins.insert("run".into(), BuiltinFn {
             params: vec![PdcType::KernelHandle],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("set_arg".into(), BuiltinFn {
-            params: vec![PdcType::KernelHandle, PdcType::Str, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
@@ -726,6 +716,17 @@ impl TypeChecker {
                         message: format!("cannot index-assign non-array type {obj_ty}"),
                     });
                 }
+            }
+            Stmt::FieldAssign { object, field: _, value } => {
+                let obj_ty = self.check_expr(object)?;
+                if obj_ty != PdcType::KernelHandle {
+                    return Err(PdcError::Type {
+                        span: object.span,
+                        message: format!("field assignment is only supported on Kernel handles, got {obj_ty}"),
+                    });
+                }
+                // Virtual property: type is inferred from RHS, always valid
+                self.check_expr(value)?;
             }
             Stmt::Assign { name, value } => {
                 if self.const_vars.contains(name) {
