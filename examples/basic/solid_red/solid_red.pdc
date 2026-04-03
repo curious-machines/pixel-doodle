@@ -1,6 +1,3 @@
-// Solid red — PDC pipeline equivalent of solid_red.pdp
-// Loads the same WGSL kernel and dispatches it via the host API.
-
 var pixels = Buffer.U32()
 var kern = Kernel.Pixel("solid_red", "solid_red.wgsl")
 
