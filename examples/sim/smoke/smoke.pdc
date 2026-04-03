@@ -2,8 +2,6 @@ builtin var paused: bool
 builtin var frame: u64
 builtin var mouse_x: f64
 builtin var mouse_y: f64
-builtin const width: f32
-builtin const height: f32
 
 var field = Buffer.Vec4F32()
 var field_next = Buffer.Vec4F32()
@@ -24,7 +22,7 @@ fn init() {
     set_mousedown(inject_at_mouse)
 }
 
-fn frame() {
+fn frame() -> bool {
     advect_kern.field_in = Bind.In(field)
     advect_kern.field_out = Bind.Out(field_next)
     advect_kern.run()
@@ -52,7 +50,7 @@ fn frame() {
     vis_kern.pixels = Bind.Out(pixels)
     vis_kern.run()
     pixels.display_buffer()
-    request_redraw()
+    return true
 }
 
 fn toggle_pause() { paused = !paused }

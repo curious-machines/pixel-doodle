@@ -1,8 +1,5 @@
 // PDC Stress Test — 1000 filled+stroked circles via PDC pipeline
 
-builtin const width: f32
-builtin const height: f32
-
 var scene: i32 = 0
 var rasterizer = Kernel.Sim("rasterize", "../shared/tile_raster.wgsl")
 var pixels = Buffer.U32()
@@ -11,7 +8,7 @@ fn init() {
     scene = load_scene("stress", "stress_scene.pdc")
 }
 
-fn frame() {
+fn frame() -> bool {
     run_scene(scene)
     rasterizer.segments = Bind.In(scene_buffer(scene, "segments"))
     rasterizer.seg_path_ids = Bind.In(scene_buffer(scene, "seg_path_ids"))
@@ -26,4 +23,5 @@ fn frame() {
     rasterizer.num_paths = scene_num_paths(scene)
     rasterizer.run()
     pixels.display_buffer()
+    return false
 }

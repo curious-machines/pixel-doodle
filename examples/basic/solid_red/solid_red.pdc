@@ -1,14 +1,12 @@
 // Solid red — PDC pipeline equivalent of solid_red.pdp
 // Loads the same WGSL kernel and dispatches it via the host API.
 
-builtin const width: f32
-builtin const height: f32
-
 var pixels = Buffer.U32()
 var kern = Kernel.Pixel("solid_red", "solid_red.wgsl")
 
-fn frame() {
+fn frame() -> bool {
     kern.output = Bind.Out(pixels)
     kern.run()
     pixels.display_buffer()
+    return false
 }

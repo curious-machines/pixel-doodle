@@ -27,7 +27,7 @@ fn init() {
     init_grid_kern.run()
 }
 
-fn frame() {
+fn frame() -> bool {
     step_kern.grid_in = Bind.In(grid)
     step_kern.grid_out = Bind.Out(grid_next)
 
@@ -42,14 +42,13 @@ fn frame() {
 
     pixels.display_buffer()
 
-    request_redraw()
+    return true
 }
 
 fn toggle_pause() { paused = !paused }
 fn step_frame() { frame = frame + 1.0 }
 fn speed_up() { iterations = min(8.0, iterations + 1.0) }
 fn speed_down() { iterations = max(iterations - 1.0, 1.0) }
-
 fn inject_at_mouse() {
     inject_kern.inject_x = mouse_x
     inject_kern.inject_y = mouse_y

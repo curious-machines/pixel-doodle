@@ -1,6 +1,3 @@
-builtin const width: f32
-builtin const height: f32
-
 var pixels = Buffer.U32()
 var kern = Kernel.Pixel("texture_test", "texture_test.wgsl")
 var tex: i32 = 0
@@ -9,8 +6,9 @@ fn init() {
     tex = load_texture("img", "../../images/lake-2.jpg")
 }
 
-fn frame() {
+fn frame() -> bool {
     kern.output = Bind.Out(pixels)
     kern.run()
     pixels.display_buffer()
+    return false
 }
