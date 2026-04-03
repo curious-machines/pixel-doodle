@@ -179,26 +179,10 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Built-in enums: BufferType, KernelType, FillRule, LineCap, LineJoin
-        self.enums.insert("BufferType".into(), EnumInfo {
-            variants: vec![
-                EnumVariantInfo { name: "F32".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "I32".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "U32".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "Vec2F32".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "Vec3F32".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "Vec4F32".into(), field_names: vec![], field_types: vec![] },
-            ],
-        });
-        self.define_var("BufferType", PdcType::Enum("BufferType".into()));
-
-        self.enums.insert("KernelType".into(), EnumInfo {
-            variants: vec![
-                EnumVariantInfo { name: "Pixel".into(), field_names: vec![], field_types: vec![] },
-                EnumVariantInfo { name: "Sim".into(), field_names: vec![], field_types: vec![] },
-            ],
-        });
-        self.define_var("KernelType", PdcType::Enum("KernelType".into()));
+        // Built-in enums: Bind, FillRule, LineCap, LineJoin
+        // Buffer and Kernel are type namespaces with factory constructors
+        self.define_var("Buffer", PdcType::Module("Buffer".into()));
+        self.define_var("Kernel", PdcType::Module("Kernel".into()));
 
         self.enums.insert("Bind".into(), EnumInfo {
             variants: vec![
@@ -250,18 +234,6 @@ impl TypeChecker {
         }
 
         // Pipeline host functions
-        // Buffer(type: BufferType) -> Buffer
-        self.builtins.insert("Buffer".into(), BuiltinFn {
-            params: vec![PdcType::Enum("BufferType".into())],
-            ret: PdcType::BufferHandle,
-            takes_ctx: true,
-        });
-        // Kernel(name: string, path: string, kind: KernelType) -> Kernel
-        self.builtins.insert("Kernel".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::Str, PdcType::Enum("KernelType".into())],
-            ret: PdcType::KernelHandle,
-            takes_ctx: true,
-        });
         // Buffer methods
         self.builtins.insert("display_buffer".into(), BuiltinFn {
             params: vec![PdcType::BufferHandle],
@@ -1280,6 +1252,47 @@ impl TypeChecker {
 
                 // Module namespaced call: math.sin(x) → math::sin(x)
                 if let PdcType::Module(mod_name) = &obj_ty {
+                    // Buffer factory constructors: Buffer.I32(), Buffer.Vec4F32(), etc.
+                    if mod_name == "Buffer" {
+                        let valid = ["F32", "I32", "U32", "Vec2F32", "Vec3F32", "Vec4F32"];
+                        if !valid.contains(&method.as_str()) {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("Buffer has no variant '{method}'. Valid: {}", valid.join(", ")),
+                            });
+                        }
+                        if !args.is_empty() {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("Buffer.{method}() takes no arguments, got {}", args.len()),
+                            });
+                        }
+                        self.set_type(expr.id, PdcType::BufferHandle);
+                        return Ok(PdcType::BufferHandle);
+                    }
+                    // Kernel factory constructors: Kernel.Sim("name", "path"), Kernel.Pixel(...)
+                    if mod_name == "Kernel" {
+                        let valid = ["Pixel", "Sim"];
+                        if !valid.contains(&method.as_str()) {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("Kernel has no variant '{method}'. Valid: {}", valid.join(", ")),
+                            });
+                        }
+                        if args.len() != 2 {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("Kernel.{method}() expects 2 arguments (name, path), got {}", args.len()),
+                            });
+                        }
+                        for arg in args.iter() {
+                            let arg_ty = self.check_expr(arg)?;
+                            self.check_compatible(&arg_ty, &PdcType::Str, arg.span)?;
+                        }
+                        self.set_type(expr.id, PdcType::KernelHandle);
+                        return Ok(PdcType::KernelHandle);
+                    }
+
                     let qualified = format!("{mod_name}::{method}");
 
                     // Check pub visibility

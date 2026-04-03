@@ -4,8 +4,8 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels = Buffer(.U32)
-var kern = Kernel("solid_red", "solid_red.wgsl", .Pixel)
+var pixels = Buffer.U32()
+var kern = Kernel.Pixel("solid_red", "solid_red.wgsl")
 
 fn frame() {
     kern.output = Bind.Out(pixels)

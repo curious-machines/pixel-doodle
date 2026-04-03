@@ -1890,9 +1890,9 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var grid: Buffer = Buffer(.F32)
-            var grid_next: Buffer = Buffer(.F32)
-            var sim_kernel: Kernel = Kernel("step", "step.wgsl", .Sim)
+            var grid: Buffer = Buffer.F32()
+            var grid_next: Buffer = Buffer.F32()
+            var sim_kernel: Kernel = Kernel.Sim("step", "step.wgsl")
 
             fn frame() {
                 sim_kernel.input = Bind.In(grid)
@@ -1972,13 +1972,13 @@ mod tests {
     }
 
     #[test]
-    fn dot_shorthand_enum_in_call() {
-        // Test that .Variant shorthand works in function call arguments
+    fn buffer_factory_constructor() {
+        // Test that Buffer.Variant() factory syntax works
         let source = r#"
             builtin const width: f32
             builtin const height: f32
 
-            var buf: Buffer = Buffer(.Vec4F32)
+            var buf: Buffer = Buffer.Vec4F32()
         "#;
         let (compiled, state_layout) =
             compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)

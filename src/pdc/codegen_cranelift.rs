@@ -1917,6 +1917,28 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let obj_ty = self.node_type(object.id).clone();
                 // Module namespaced call: math.sin(x) → math::sin(x)
                 if let PdcType::Module(ref mod_name) = obj_ty {
+                    // Buffer factory: Buffer.I32() → pdc_create_buffer(ctx, type_code)
+                    if mod_name == "Buffer" {
+                        let type_code: i64 = match method.as_str() {
+                            "F32" => 0, "I32" => 1, "U32" => 2,
+                            "Vec2F32" => 3, "Vec3F32" => 4, "Vec4F32" => 5,
+                            _ => 0,
+                        };
+                        let code_val = self.builder.ins().iconst(I32, type_code);
+                        return self.emit_runtime_call_raw("pdc_create_buffer",
+                            &[self.ctx_ptr, code_val], Some(I32));
+                    }
+                    // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name, path, kind)
+                    if mod_name == "Kernel" {
+                        let kind: i64 = match method.as_str() {
+                            "Pixel" => 0, "Sim" => 1, _ => 0,
+                        };
+                        let name_val = self.emit_expr(&args[0])?;
+                        let path_val = self.emit_expr(&args[1])?;
+                        let kind_val = self.builder.ins().iconst(I32, kind);
+                        return self.emit_runtime_call_raw("pdc_load_kernel",
+                            &[self.ctx_ptr, name_val, path_val, kind_val], Some(I32));
+                    }
                     let qualified = format!("{mod_name}::{method}");
                     return self.emit_call(&qualified, args, expr.id);
                 }
@@ -2372,8 +2394,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let runtime_name = {
             match name {
                 "Path" => "pdc_path".to_string(),
-                "Buffer" => "pdc_create_buffer".to_string(),
-                "Kernel" => "pdc_load_kernel".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -2390,7 +2410,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
         let takes_ctx = matches!(
             name,
-            "Path" | "Buffer" | "Kernel"
+            "Path"
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
@@ -2444,7 +2464,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
-            "Path" | "Buffer" | "Kernel" | "len" | "load_texture"
+            "Path" | "len" | "load_texture"
             | "load_scene" | "scene_buffer"
             | "is_converged" => Some(I32),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(F64),

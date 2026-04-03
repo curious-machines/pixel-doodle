@@ -6,13 +6,13 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
-var grid = Buffer(.I32)
-var grid_next = Buffer(.I32)
-var pixels = Buffer(.U32)
-var step_kern = Kernel("step", "game_of_life_step.wgsl", .Sim)
-var vis_kern = Kernel("vis", "game_of_life_vis.wgsl", .Sim)
-var init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
-var inject_kern = Kernel("inject", "../../shared/inject_i32.wgsl", .Sim)
+var grid = Buffer.I32()
+var grid_next = Buffer.I32()
+var pixels = Buffer.U32()
+var step_kern = Kernel.Sim("step", "game_of_life_step.wgsl")
+var vis_kern = Kernel.Sim("vis", "game_of_life_vis.wgsl")
+var init_grid_kern = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
+var inject_kern = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
 
 fn init() {
     init_grid_kern.grid = Bind.Out(grid)

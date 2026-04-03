@@ -4,8 +4,8 @@ builtin var center_x: f64
 builtin var center_y: f64
 builtin var zoom: f64
 
-var pixels = Buffer(.U32)
-var kern = Kernel("sdf3d_demo", "sdf3d_demo.wgsl", .Pixel)
+var pixels = Buffer.U32()
+var kern = Kernel.Pixel("sdf3d_demo", "sdf3d_demo.wgsl")
 
 fn frame() {
     kern.output = Bind.Out(pixels)

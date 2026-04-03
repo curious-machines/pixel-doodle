@@ -4,8 +4,8 @@ builtin const width: f32
 builtin const height: f32
 
 var scene: i32 = 0
-var rasterizer = Kernel("rasterize", "../shared/tile_raster.wgsl", .Sim)
-var pixels = Buffer(.U32)
+var rasterizer = Kernel.Sim("rasterize", "../shared/tile_raster.wgsl")
+var pixels = Buffer.U32()
 
 fn init() {
     scene = load_scene("stress", "stress_scene.pdc")

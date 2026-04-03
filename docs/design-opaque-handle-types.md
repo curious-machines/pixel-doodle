@@ -34,7 +34,9 @@ p.stroke(width, color, LineCap.Round, LineJoin.Miter)  // styled overload
 Opaque handle for GPU/CPU data buffers. Sized to `width × height × element_size`.
 
 ```
-var field = Buffer(.Vec4F32)
+var field = Buffer.Vec4F32()
+var grid = Buffer.I32()
+var pixels = Buffer.U32()
 
 field.display_buffer()          // display as pixel output
 swap(field, field_next)         // swap two buffers (free function)
@@ -42,8 +44,8 @@ swap(field, field_next)         // swap two buffers (free function)
 
 - Type: `PdcType::BufferHandle`
 - Codegen: `i32`
-- Constructor: `Buffer(BufferType) -> Buffer` maps to `pdc_create_buffer`, always zero-initialized
-- BufferType enum: `F32`, `I32`, `U32`, `Vec2F32`, `Vec3F32`, `Vec4F32`
+- Constructor: `Buffer.Variant()` — variant is the element type. Maps to `pdc_create_buffer`, always zero-initialized
+- Variants: `F32`, `I32`, `U32`, `Vec2F32`, `Vec3F32`, `Vec4F32`
 - Non-zero initialization: use an init kernel (several examples already do this)
 
 ### Kernel
@@ -51,7 +53,8 @@ swap(field, field_next)         // swap two buffers (free function)
 Opaque handle for compiled WGSL compute kernels. Supports virtual properties for buffer bindings and scalar arguments.
 
 ```
-var kern = Kernel("advect", "smoke_advect.wgsl", .Sim)
+var kern = Kernel.Sim("advect", "smoke_advect.wgsl")
+var pixel_kern = Kernel.Pixel("render", "render.wgsl")
 
 // Buffer bindings via virtual properties
 kern.field_in = Bind.In(field)
@@ -66,8 +69,8 @@ kern.run()                      // dispatch kernel
 
 - Type: `PdcType::KernelHandle`
 - Codegen: `i32`
-- Constructor: `Kernel(string, string, KernelType) -> Kernel` maps to `pdc_load_kernel`
-- KernelType enum: `Pixel` (type 0, writes pixel output), `Sim` (type 1, general compute)
+- Constructor: `Kernel.Variant(name, path)` — variant is the kernel kind. Maps to `pdc_load_kernel`
+- Variants: `Pixel` (type 0, writes pixel output), `Sim` (type 1, general compute)
 
 ### Kernel Virtual Properties
 
@@ -138,22 +141,15 @@ Textures currently use `load_texture()` returning bare `i32`. Could become:
 var tex = Texture("photo", "image.png")
 ```
 
-### Generic Buffer constructor syntax
+### Buffer with explicit dimensions
 
-Replace `Buffer(.Vec4F32)` with WGSL type syntax: `Buffer<vec4<f32>>()`. This would:
-- Use the actual WGSL type names directly, reducing the conceptual mapping
-- Eliminate the `BufferType` enum entirely
-- Follow the existing `Array<f64>()` pattern in PDC
+Currently `Buffer.I32()` always creates a buffer sized to `width × height`. A future extension could allow explicit dimensions:
 
 ```
-var field = Buffer<vec4<f32>>()
-var grid = Buffer<i32>()
-var pixels = Buffer<u32>()
+var grid = Buffer.I32(width: 100, height: 1)
 ```
 
-The parser would handle `Buffer<type>()` like it handles `Array<type>()`, encoding the WGSL type in the call name. The codegen maps WGSL type names to type codes.
-
-Parsing challenge: WGSL types like `vec4<f32>` have nested angle brackets. The parser would need to handle the full set: `f32`, `i32`, `u32`, `vec2<f32>`, `vec3<f32>`, `vec4<f32>`.
+This would be useful for 1D buffers, non-square grids, or buffers that don't match the display dimensions.
 
 ## Open Questions
 

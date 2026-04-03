@@ -5,13 +5,13 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var field = Buffer(.Vec4F32)
-var field_next = Buffer(.Vec4F32)
-var pixels = Buffer(.U32)
-var step_kern = Kernel("step", "shallow_water_step.wgsl", .Sim)
-var vis_kern = Kernel("vis", "shallow_water_vis.wgsl", .Sim)
-var init_field_kern = Kernel("init_field", "shallow_water_init.wgsl", .Sim)
-var inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
+var field = Buffer.Vec4F32()
+var field_next = Buffer.Vec4F32()
+var pixels = Buffer.U32()
+var step_kern = Kernel.Sim("step", "shallow_water_step.wgsl")
+var vis_kern = Kernel.Sim("vis", "shallow_water_vis.wgsl")
+var init_field_kern = Kernel.Sim("init_field", "shallow_water_init.wgsl")
+var inject_kern = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
 
 fn init() {
     init_field_kern.field_out = Bind.Out(field)

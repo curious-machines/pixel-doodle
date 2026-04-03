@@ -1,8 +1,8 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels = Buffer(.U32)
-var kern = Kernel("gradient", "gradient.wgsl", .Pixel)
+var pixels = Buffer.U32()
+var kern = Kernel.Pixel("gradient", "gradient.wgsl")
 
 fn frame() {
     kern.output = Bind.Out(pixels)

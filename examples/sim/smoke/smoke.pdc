@@ -5,18 +5,18 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var field = Buffer(.Vec4F32)
-var field_next = Buffer(.Vec4F32)
-var div = Buffer(.F32)
-var press_a = Buffer(.F32)
-var press_b = Buffer(.F32)
-var pixels = Buffer(.U32)
-var advect_kern = Kernel("advect", "smoke_advect.wgsl", .Sim)
-var divergence_kern = Kernel("divergence", "smoke_divergence.wgsl", .Sim)
-var jacobi_kern = Kernel("jacobi", "smoke_jacobi.wgsl", .Sim)
-var project_kern = Kernel("project", "smoke_project.wgsl", .Sim)
-var vis_kern = Kernel("vis", "smoke_vis.wgsl", .Sim)
-var inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
+var field = Buffer.Vec4F32()
+var field_next = Buffer.Vec4F32()
+var div = Buffer.F32()
+var press_a = Buffer.F32()
+var press_b = Buffer.F32()
+var pixels = Buffer.U32()
+var advect_kern = Kernel.Sim("advect", "smoke_advect.wgsl")
+var divergence_kern = Kernel.Sim("divergence", "smoke_divergence.wgsl")
+var jacobi_kern = Kernel.Sim("jacobi", "smoke_jacobi.wgsl")
+var project_kern = Kernel.Sim("project", "smoke_project.wgsl")
+var vis_kern = Kernel.Sim("vis", "smoke_vis.wgsl")
+var inject_kern = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
 
 fn frame() {
     advect_kern.field_in = Bind.In(field)

@@ -5,8 +5,8 @@ builtin var center_y: f64
 builtin var zoom: f64
 builtin var time: f64
 
-var pixels = Buffer(.U32)
-var kern = Kernel("gears", "gears.wgsl", .Pixel)
+var pixels = Buffer.U32()
+var kern = Kernel.Pixel("gears", "gears.wgsl")
 
 fn frame() {
     kern.output = Bind.Out(pixels)
