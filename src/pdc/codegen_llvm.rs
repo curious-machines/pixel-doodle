@@ -1946,7 +1946,6 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "display_buffer" | "swap" | "run"
                 | "display" | "load_texture"
                 | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
-                | "request_redraw"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
                 | "display_accumulated" | "reset_accumulation"
                 | "set_keypress" | "set_keydown" | "set_keyup"
@@ -1982,7 +1981,7 @@ impl<'a> LlvmCodegenCtx<'a> {
             | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
             | "display"
             | "run_scene"
-            | "request_redraw" | "set_max_samples" | "accumulate_sample"
+            | "set_max_samples" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation" => None,
             _ => Some(self.context.f64_type().into()),
         }

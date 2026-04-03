@@ -175,14 +175,23 @@ impl CompiledProgram {
 
     /// Call the `frame()` lifecycle function if it exists.
     ///
+    /// Returns the bool returned by `frame()` (true = request another frame,
+    /// false = stop). Returns `false` when no `frame()` function is defined.
+    ///
     /// # Safety
     /// The `ctx` must have a valid state block pointer if the program has state variables.
     #[allow(unsafe_op_in_unsafe_fn)]
-    pub unsafe fn call_frame(&self, ctx: &mut runtime::PdcContext) -> Result<(), PdcError> {
+    pub unsafe fn call_frame(&self, ctx: &mut runtime::PdcContext) -> Result<bool, PdcError> {
         if self.has_frame() {
-            self.call_fn("frame", ctx, &[])?;
+            match self.call_fn("frame", ctx, &[])? {
+                PdcValue::Bool(b) => Ok(b),
+                other => Err(PdcError::Codegen {
+                    message: format!("frame() must return bool, got {:?}", other),
+                }),
+            }
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     /// Call a user-defined function by qualified name with typed arguments.

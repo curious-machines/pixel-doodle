@@ -12,7 +12,7 @@ use super::ast::*;
 /// - Builtin declarations (const/var)
 /// - State variables for buffer and kernel handles
 /// - `fn init()` — creates buffers, loads kernels, runs init steps
-/// - `fn frame()` — executes pipeline steps
+/// - `fn frame() -> bool` — executes pipeline steps, returns false (static)
 /// - Event handler functions (keyboard + mouse)
 pub fn config_to_pdc(config: &Config) -> String {
     let mut out = String::new();
@@ -117,14 +117,14 @@ pub fn config_to_pdc(config: &Config) -> String {
     out.push_str("}\n\n");
 
     // frame() function — non-init steps
-    out.push_str("fn frame() {\n");
+    out.push_str("fn frame() -> bool {\n");
     for step in &pipeline.steps {
         if matches!(step, PipelineStep::Init { .. }) {
             continue;
         }
         emit_steps(&mut out, std::slice::from_ref(step), &buf_names, &kern_names, 1);
     }
-    out.push_str("}\n");
+    out.push_str("    return false\n}\n");
 
     // Event bindings → handler functions
     for binding in &config.event_bindings {

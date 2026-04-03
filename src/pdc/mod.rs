@@ -1601,7 +1601,10 @@ mod tests {
         let (compiled, _layout, mut state_block) = compile_with_state(r#"
             var counter: f64 = 0.0
             fn init() { counter = 10.0 }
-            fn frame() { counter = counter + 1.0 }
+            fn frame() -> bool {
+                counter = counter + 1.0
+                return true
+            }
             fn get_counter() -> f64 { return counter }
         "#);
         let mut builtins = [200.0f64, 200.0f64];
@@ -1692,7 +1695,7 @@ mod tests {
     fn has_init_and_frame() {
         let (compiled, _, _) = compile_with_state(r#"
             fn init() {}
-            fn frame() {}
+            fn frame() -> bool { return false }
         "#);
         assert!(compiled.has_init());
         assert!(compiled.has_frame());
@@ -1712,7 +1715,10 @@ mod tests {
         let (compiled, _layout, mut state_block) = compile_with_state(r#"
             var counter: f64 = 0.0
             fn init() { counter = 10.0 }
-            fn frame() { counter = counter + 1.0 }
+            fn frame() -> bool {
+                counter = counter + 1.0
+                return true
+            }
             fn get_counter() -> f64 { return counter }
         "#);
         let mut builtins = [200.0f64, 200.0f64];
@@ -1760,6 +1766,72 @@ mod tests {
 
         let result = unsafe { compiled.call_fn("get_x", &mut ctx, &[]).unwrap() };
         assert_eq!(result, PdcValue::F64(5.0));
+    }
+
+    #[test]
+    fn frame_returns_true() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            fn frame() -> bool { return true }
+        "#);
+        let mut builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
+        assert!(result);
+    }
+
+    #[test]
+    fn frame_returns_false() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            fn frame() -> bool { return false }
+        "#);
+        let mut builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
+        assert!(!result);
+    }
+
+    #[test]
+    fn frame_absent_returns_false() {
+        let (compiled, _layout, mut state_block) = compile_with_state(r#"
+            fn foo() -> f64 { return 1.0 }
+        "#);
+        let mut builtins = [200.0f64, 200.0f64];
+        let mut scene = SceneBuilder::new();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
+        assert!(!result);
+    }
+
+    #[test]
+    fn frame_must_return_bool() {
+        let result = compile_only("fn frame() { }", None);
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("frame() must return bool"), "got: {msg}");
+            }
+            Ok(_) => panic!("expected compile error for frame() without -> bool"),
+        }
     }
 
     // ---- Mutable builtins tests (Phase 3) ----
@@ -1894,12 +1966,13 @@ mod tests {
             var grid_next: Buffer = Buffer.F32()
             var sim_kernel: Kernel = Kernel.Sim("step", "step.wgsl")
 
-            fn frame() {
+            fn frame() -> bool {
                 sim_kernel.input = Bind.In(grid)
                 sim_kernel.output = Bind.Out(grid_next)
                 sim_kernel.run()
                 swap(grid, grid_next)
                 display()
+                return false
             }
         "#;
         let (compiled, state_layout) =
@@ -2342,5 +2415,133 @@ mod tests {
         }
         let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
         assert_eq!(zoom, PdcValue::F64(6.0)); // 2.0 * 3.0
+    }
+
+    #[test]
+    fn builtin_decl_in_module() {
+        // Write a module that declares builtins and uses them in functions
+        let tmp = std::env::temp_dir().join("pdc_test_builtin_mod");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let module_src = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin var zoom: f64
+
+            pub fn get_area() -> f32 { return width * height }
+            pub fn get_zoom() -> f64 { return zoom }
+            pub fn set_zoom(z: f64) { zoom = z }
+        "#;
+        std::fs::write(tmp.join("shared.pdc"), module_src).unwrap();
+
+        let main_src = r#"
+            import { get_area, get_zoom, set_zoom } from shared
+
+            fn area() -> f32 { return get_area() }
+            fn read_zoom() -> f64 { return get_zoom() }
+            fn write_zoom(z: f64) { set_zoom(z) }
+        "#;
+
+        let main_path = tmp.join("main.pdc");
+        let (compiled, state_layout) = compile_only_with_builtins(
+            main_src,
+            Some(main_path.as_path()),
+            codegen::PIPELINE_BUILTINS,
+        ).expect("compile failed");
+
+        // Pipeline builtins: width=320, height=240, ...
+        let mut builtins = [
+            320.0f64, 240.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 4.0, 0.0, 0.0,
+            0.0, 0.0,
+        ];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        // Test immutable builtins: width=320, height=240, area=76800
+        let area = unsafe { compiled.call_fn("area", &mut ctx, &[]).unwrap() };
+        assert_eq!(area, PdcValue::F32(76800.0));
+
+        // Test mutable builtin read: zoom=4.0
+        let zoom = unsafe { compiled.call_fn("read_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(4.0));
+
+        // Test mutable builtin write
+        unsafe { compiled.call_fn("write_zoom", &mut ctx, &[PdcValue::F64(8.0)]).unwrap(); }
+        let zoom = unsafe { compiled.call_fn("read_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(8.0));
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn builtin_decl_in_module_and_main() {
+        // Both module and main declare builtins — should not conflict
+        let tmp = std::env::temp_dir().join("pdc_test_builtin_mod_both");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let module_src = r#"
+            builtin const width: f32
+            builtin var zoom: f64
+
+            pub fn double_zoom() { zoom = zoom * 2.0 }
+        "#;
+        std::fs::write(tmp.join("controls.pdc"), module_src).unwrap();
+
+        let main_src = r#"
+            import { double_zoom } from controls
+
+            builtin const width: f32
+            builtin var zoom: f64
+
+            fn get_width() -> f32 { return width }
+            fn get_zoom() -> f64 { return zoom }
+            fn do_double_zoom() { double_zoom() }
+        "#;
+
+        let main_path = tmp.join("main.pdc");
+        let (compiled, state_layout) = compile_only_with_builtins(
+            main_src,
+            Some(main_path.as_path()),
+            codegen::PIPELINE_BUILTINS,
+        ).expect("compile failed");
+
+        let mut builtins = [
+            640.0f64, 480.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 3.0, 0.0, 0.0,
+            0.0, 0.0,
+        ];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: std::ptr::null_mut(),
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        let w = unsafe { compiled.call_fn("get_width", &mut ctx, &[]).unwrap() };
+        assert_eq!(w, PdcValue::F32(640.0));
+
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(3.0));
+
+        // Module function (called via main wrapper) can modify the mutable builtin
+        unsafe { compiled.call_fn("do_double_zoom", &mut ctx, &[]).unwrap(); }
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(6.0));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

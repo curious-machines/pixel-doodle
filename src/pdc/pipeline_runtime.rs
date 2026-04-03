@@ -54,8 +54,6 @@ struct HostState {
     kernel_args: Vec<Vec<KernelArg>>,
     /// Whether display() or display_accumulated() was called this frame.
     display_requested: bool,
-    /// Whether the script requested another frame via request_redraw().
-    redraw_requested: bool,
     /// Loaded textures, indexed by handle.
     textures: Vec<TextureData>,
     /// Compiled scene programs, indexed by handle.
@@ -747,9 +745,6 @@ impl PipelineHost for HostState {
     fn set_thread_pool(&mut self, pool: Option<rayon::ThreadPool>) {
         self.thread_pool = pool;
     }
-    fn request_redraw(&mut self) { self.redraw_requested = true; }
-    fn was_redraw_requested(&self) -> bool { self.redraw_requested }
-    fn clear_redraw_requested(&mut self) { self.redraw_requested = false; }
 
     fn set_render(&mut self, mode: &str) { self.render = mode.to_string(); }
     fn set_codegen(&mut self, backend: &str) { self.codegen = backend.to_string(); }
@@ -1025,6 +1020,8 @@ pub struct PdcRuntime {
     frames_executed: u64,
     /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
     animated: bool,
+    /// Whether the last frame() call returned true (requesting another frame).
+    frame_requested_redraw: bool,
     /// Previous mouse_down state for edge detection.
     mouse_was_down: bool,
 }
@@ -1060,7 +1057,6 @@ impl PdcRuntime {
             kernel_bindings: Vec::new(),
             kernel_args: Vec::new(),
             display_requested: false,
-            redraw_requested: false,
             textures: Vec::new(),
             scenes: Vec::new(),
             accum: None,
@@ -1121,6 +1117,7 @@ impl PdcRuntime {
             frame: 0,
             frames_executed: 0,
             animated: false,
+            frame_requested_redraw: false,
             mouse_was_down: false,
         })
     }
@@ -1271,7 +1268,6 @@ impl PdcRuntime {
         self.host.end_frame_gpu(); // save last_frame_was_gpu, clear gpu_rendered_this_frame
         self.host.update_builtins(&self.builtins);
         self.host.clear_display_requested();
-        self.host.clear_redraw_requested();
 
         // Clear accumulated scene data from the previous frame to avoid
         // leaking handles created by per-frame host function calls.
@@ -1300,7 +1296,7 @@ impl PdcRuntime {
             }
         }
 
-        unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
+        self.frame_requested_redraw = unsafe { self.compiled.call_frame(&mut ctx).unwrap() };
         self.read_back_builtins();
 
         if self.host.was_display_requested() && !self.host.gpu_rendered_this_frame() {
@@ -1361,8 +1357,8 @@ impl PdcRuntime {
         if self.paused {
             return false;
         }
-        // The PDC script explicitly requests redraws via request_redraw()
-        self.host.was_redraw_requested()
+        // The frame() function returns true to request continuous redraws
+        self.frame_requested_redraw
     }
 
     pub fn title(&self) -> String {

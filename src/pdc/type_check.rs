@@ -315,13 +315,6 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Frame control
-        self.builtins.insert("request_redraw".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
         // Progressive rendering
         self.builtins.insert("set_max_samples".into(), BuiltinFn {
             params: vec![PdcType::I32],
@@ -539,13 +532,23 @@ impl TypeChecker {
                 self.check_stmt(stmt)?;
             }
 
-            // Persist module const/var types with qualified names in the global scope
+            // Persist module const/var/builtin types with qualified names in the global scope
             for stmt in &module.stmts {
                 match &stmt.node {
                     Stmt::ConstDecl { vis: _, name, .. } | Stmt::VarDecl { vis: _, name, .. } => {
                         if let Some(ty) = self.lookup_var(name).cloned() {
                             let qualified = format!("{mod_name}::{name}");
                             self.scopes[0].insert(qualified, ty);
+                        }
+                    }
+                    // Builtins are global (runtime-provided), so persist them into
+                    // the global scope directly — no qualified name needed.
+                    Stmt::BuiltinDecl { name, mutable, .. } => {
+                        if let Some(ty) = self.lookup_var(name).cloned() {
+                            self.scopes[0].insert(name.clone(), ty);
+                            if !mutable {
+                                self.const_vars.insert(name.clone());
+                            }
                         }
                     }
                     _ => {}
@@ -1035,6 +1038,16 @@ impl TypeChecker {
                 // Already registered in first pass
             }
             Stmt::FnDef(fndef) => {
+                // Lifecycle function frame() must return bool
+                if fndef.name == "frame" && fndef.return_type != PdcType::Bool {
+                    return Err(PdcError::Type {
+                        span: stmt.span,
+                        message: format!(
+                            "frame() must return bool, found {}",
+                            fndef.return_type
+                        ),
+                    });
+                }
                 // Type-check default value expressions in the outer scope
                 for param in &fndef.params {
                     if let Some(ref default_expr) = param.default {
