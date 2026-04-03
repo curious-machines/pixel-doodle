@@ -289,7 +289,7 @@ fn collect_expr_refs(expr: &Spanned<Expr>, refs: &mut HashSet<String>) {
             collect_expr_refs(else_expr, refs);
         }
         Expr::Variable(name) => { refs.insert(name.clone()); }
-        Expr::Literal(_) => {}
+        Expr::Literal(_) | Expr::DotShorthand(_) => {}
     }
 }
 
@@ -1895,9 +1895,9 @@ mod tests {
             var sim_kernel: i32 = 0
 
             fn init() {
-                grid = create_buffer("gpu_f32", 0.0)
-                grid_next = create_buffer("gpu_f32", 0.0)
-                sim_kernel = load_kernel("step", "step.wgsl", 1)
+                grid = Buffer(.F32, 0.0)
+                grid_next = Buffer(.F32, 0.0)
+                sim_kernel = Kernel("step", "step.wgsl", .Sim)
             }
 
             fn frame() {
@@ -1978,6 +1978,70 @@ mod tests {
             "swap_buffers(1, 2)",
             "display()",
         ]);
+    }
+
+    #[test]
+    fn dot_shorthand_enum_in_call() {
+        // Test that .Variant shorthand works in function call arguments
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var buf: i32 = 0
+
+            fn init() {
+                buf = Buffer(.Vec4F32, 0.0)
+            }
+        "#;
+        let (compiled, state_layout) =
+            compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+                .expect("compile failed");
+        let mut builtins = [200.0f64; 12];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+        struct LogHost { log: Rc<RefCell<Vec<String>>>, next_handle: i32 }
+        impl runtime::PipelineHost for LogHost {
+            fn create_buffer(&mut self, t: &str, v: f64) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("create_buffer({t}, {v})")); h
+            }
+            fn swap_buffers(&mut self, _a: i32, _b: i32) {}
+            fn load_kernel(&mut self, _n: &str, _p: &str, _k: i32) -> i32 { 0 }
+            fn bind_buffer(&mut self, _p: &str, _h: i32, _o: bool) {}
+            fn set_kernel_arg_f64(&mut self, _n: &str, _v: f64) {}
+            fn set_kernel_arg_f32(&mut self, _n: &str, _v: f32) {}
+            fn run_kernel(&mut self, _h: i32) {}
+            fn display(&mut self) {}
+            fn display_buffer(&mut self, _h: i32) {}
+            fn load_texture(&mut self, _n: &str, _p: &str) -> i32 { 0 }
+            fn set_max_samples(&mut self, _n: i32) {}
+            fn is_converged(&self) -> bool { false }
+            fn accumulate_sample(&mut self) {}
+            fn display_accumulated(&mut self) {}
+            fn reset_accumulation(&mut self) {}
+        }
+
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
+            log: log.clone(), next_handle: 1,
+        });
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        let log = log.borrow();
+        // Vec4F32 is discriminant 5 → maps to "gpu_vec4_f32"
+        assert_eq!(*log, vec!["create_buffer(gpu_vec4_f32, 0)"]);
     }
 
     // ---- Event handler tests (Phase 5) ----

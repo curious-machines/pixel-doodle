@@ -5,12 +5,12 @@ builtin const height: f32
 
 var scene: i32 = 0
 var rasterizer: i32 = 0
-var _buf_pixels: i32 = 0
+var pixels: i32 = 0
 
 fn init() {
     scene = load_scene("basic", "basic_scene.pdc")
-    rasterizer = load_kernel("rasterize", "../shared/tile_raster.wgsl", 1)
-    _buf_pixels = create_buffer("gpu_u32", 0.0)
+    rasterizer = Kernel("rasterize", "../shared/tile_raster.wgsl", .Sim)
+    pixels = Buffer(.U32, 0.0)
 }
 
 fn frame() {
@@ -22,10 +22,10 @@ fn frame() {
     bind_buffer("tile_indices", scene_buffer(scene, "tile_indices"), 0)
     bind_buffer("path_colors", scene_buffer(scene, "path_colors"), 0)
     bind_buffer("path_fill_rules", scene_buffer(scene, "path_fill_rules"), 0)
-    bind_buffer("pixels", _buf_pixels, 1)
+    bind_buffer("pixels", pixels, 1)
     set_kernel_arg_f64("tile_size", 16.0)
     set_kernel_arg_f64("tiles_x", scene_tiles_x(scene))
     set_kernel_arg_f64("num_paths", scene_num_paths(scene))
     run_kernel(rasterizer)
-    display_buffer(_buf_pixels)
+    display_buffer(pixels)
 }

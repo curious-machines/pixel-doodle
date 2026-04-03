@@ -179,7 +179,27 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Built-in enums: FillRule, LineCap, LineJoin
+        // Built-in enums: BufferType, KernelType, FillRule, LineCap, LineJoin
+        self.enums.insert("BufferType".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "F32".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "I32".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "U32".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Vec2F32".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Vec3F32".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Vec4F32".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("BufferType", PdcType::Enum("BufferType".into()));
+
+        self.enums.insert("KernelType".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "Pixel".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Sim".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("KernelType", PdcType::Enum("KernelType".into()));
+
         self.enums.insert("FillRule".into(), EnumInfo {
             variants: vec![
                 EnumVariantInfo { name: "EvenOdd".into(), field_names: vec![], field_types: vec![] },
@@ -222,9 +242,9 @@ impl TypeChecker {
         }
 
         // Pipeline host functions
-        // create_buffer(type_name: string, init_value: f64) -> i32
-        self.builtins.insert("create_buffer".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::F64],
+        // Buffer(type: BufferType, init_value: f64) -> i32
+        self.builtins.insert("Buffer".into(), BuiltinFn {
+            params: vec![PdcType::Enum("BufferType".into()), PdcType::F64],
             ret: PdcType::I32,
             takes_ctx: true,
         });
@@ -234,9 +254,9 @@ impl TypeChecker {
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        // load_kernel(name: string, path: string, kind: i32) -> i32
-        self.builtins.insert("load_kernel".into(), BuiltinFn {
-            params: vec![PdcType::Str, PdcType::Str, PdcType::I32],
+        // Kernel(name: string, path: string, kind: KernelType) -> i32
+        self.builtins.insert("Kernel".into(), BuiltinFn {
+            params: vec![PdcType::Str, PdcType::Str, PdcType::Enum("KernelType".into())],
             ret: PdcType::I32,
             takes_ctx: true,
         });
@@ -1218,15 +1238,23 @@ impl TypeChecker {
                         });
                     }
                     for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr(arg)?;
+                        let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i]))?;
                         self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
                     }
                     ret
                 } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
-                    // Type-check args first to get their types for overload resolution
+                    // Type-check args first to get their types for overload resolution.
+                    // If there's exactly one overload, use its param types as hints
+                    // to resolve dot-shorthand enum values.
+                    let hints: Option<Vec<PdcType>> = if overloads.sigs.len() == 1 {
+                        Some(overloads.sigs[0].params.clone())
+                    } else {
+                        None
+                    };
                     let mut arg_types = Vec::new();
-                    for arg in args.iter() {
-                        arg_types.push(self.check_expr(arg)?);
+                    for (i, arg) in args.iter().enumerate() {
+                        let hint = hints.as_ref().and_then(|h| h.get(i));
+                        arg_types.push(self.check_expr_with_hint(arg, hint)?);
                     }
                     let sig = self.resolve_overload(&overloads, &arg_types)
                         .ok_or_else(|| PdcError::Type {
@@ -1591,6 +1619,12 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::DotShorthand(variant) => {
+                return Err(PdcError::Type {
+                    span: expr.span,
+                    message: format!("'.{variant}' enum shorthand can only be used where the enum type is known (e.g., function arguments)"),
+                });
+            }
             Expr::Ternary { condition, then_expr, else_expr } => {
                 let cond_ty = self.check_expr(condition)?;
                 if cond_ty != PdcType::Bool {
@@ -1634,6 +1668,34 @@ impl TypeChecker {
 
         self.set_type(expr.id, ty.clone());
         Ok(ty)
+    }
+
+    /// Check an expression with an optional type hint. When the expression is a
+    /// `.Variant` dot-shorthand and the hint is an enum type, resolve the variant
+    /// against that enum. Otherwise falls back to `check_expr`.
+    fn check_expr_with_hint(
+        &mut self,
+        expr: &Spanned<Expr>,
+        hint: Option<&PdcType>,
+    ) -> Result<PdcType, PdcError> {
+        if let Expr::DotShorthand(variant) = &expr.node {
+            if let Some(PdcType::Enum(enum_name)) = hint {
+                let info = self.enums.get(enum_name).cloned().ok_or_else(|| PdcError::Type {
+                    span: expr.span,
+                    message: format!("undefined enum '{enum_name}'"),
+                })?;
+                if !info.variants.iter().any(|v| v.name == *variant) {
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: format!("enum '{enum_name}' has no variant '{variant}'"),
+                    });
+                }
+                let ty = PdcType::Enum(enum_name.clone());
+                self.set_type(expr.id, ty.clone());
+                return Ok(ty);
+            }
+        }
+        self.check_expr(expr)
     }
 
     fn is_type_cast(&self, name: &str) -> Option<PdcType> {

@@ -4,18 +4,18 @@ builtin var center_x: f64
 builtin var center_y: f64
 builtin var zoom: f64
 
-var _buf_pixels: i32 = 0
-var _kern: i32 = 0
+var pixels: i32 = 0
+var kern: i32 = 0
 
 fn init() {
-    _buf_pixels = create_buffer("gpu_u32", 0.0)
-    _kern = load_kernel("sdf3d_demo", "sdf3d_demo.wgsl", 0)
+    pixels = Buffer(.U32, 0.0)
+    kern = Kernel("sdf3d_demo", "sdf3d_demo.wgsl", .Pixel)
 }
 
 fn frame() {
-    bind_buffer("output", _buf_pixels, 1)
-    run_kernel(_kern)
-    display_buffer(_buf_pixels)
+    bind_buffer("output", pixels, 1)
+    run_kernel(kern)
+    display_buffer(pixels)
 }
 
 fn on_keydown_left() { center_x = center_x - 0.02 / zoom }

@@ -1270,6 +1270,12 @@ impl<'a> Parser<'a> {
                     Ok(first)
                 }
             }
+            TokenKind::Dot => {
+                self.advance(); // consume '.'
+                let (variant, _) = self.expect_ident()?;
+                let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                Ok(self.ids.spanned(Expr::DotShorthand(variant), span))
+            }
             _ => Err(PdcError::Parse {
                 span: start,
                 message: format!("unexpected token {:?}", self.peek()),

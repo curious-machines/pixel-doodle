@@ -5,37 +5,37 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var _buf_field: i32 = 0
-var _buf_field_next: i32 = 0
-var _buf_pixels: i32 = 0
-var _kern_step: i32 = 0
-var _kern_vis: i32 = 0
-var _kern_init_field: i32 = 0
-var _kern_inject: i32 = 0
+var field: i32 = 0
+var field_next: i32 = 0
+var pixels: i32 = 0
+var step_kern: i32 = 0
+var vis_kern: i32 = 0
+var init_field_kern: i32 = 0
+var inject_kern: i32 = 0
 
 fn init() {
-    _buf_field = create_buffer("gpu_vec2_f32", 0.0)
-    _buf_field_next = create_buffer("gpu_vec2_f32", 0.0)
-    _buf_pixels = create_buffer("gpu_u32", 0.0)
-    _kern_step = load_kernel("step", "gray_scott_step.wgsl", 1)
-    _kern_vis = load_kernel("vis", "gray_scott_vis.wgsl", 1)
-    _kern_init_field = load_kernel("init_field", "gray_scott_init.wgsl", 1)
-    _kern_inject = load_kernel("inject", "../../shared/inject_vec2.wgsl", 1)
-    bind_buffer("field_out", _buf_field, 1)
-    run_kernel(_kern_init_field)
+    field = Buffer(.Vec2F32, 0.0)
+    field_next = Buffer(.Vec2F32, 0.0)
+    pixels = Buffer(.U32, 0.0)
+    step_kern = Kernel("step", "gray_scott_step.wgsl", .Sim)
+    vis_kern = Kernel("vis", "gray_scott_vis.wgsl", .Sim)
+    init_field_kern = Kernel("init_field", "gray_scott_init.wgsl", .Sim)
+    inject_kern = Kernel("inject", "../../shared/inject_vec2.wgsl", .Sim)
+    bind_buffer("field_out", field, 1)
+    run_kernel(init_field_kern)
 }
 
 fn frame() {
     for _i in 0..8 {
-        bind_buffer("field_in", _buf_field, 0)
-        bind_buffer("field_out", _buf_field_next, 1)
-        run_kernel(_kern_step)
-        swap_buffers(_buf_field, _buf_field_next)
+        bind_buffer("field_in", field, 0)
+        bind_buffer("field_out", field_next, 1)
+        run_kernel(step_kern)
+        swap_buffers(field, field_next)
     }
-    bind_buffer("field_in", _buf_field, 0)
-    bind_buffer("pixels", _buf_pixels, 1)
-    run_kernel(_kern_vis)
-    display_buffer(_buf_pixels)
+    bind_buffer("field_in", field, 0)
+    bind_buffer("pixels", pixels, 1)
+    run_kernel(vis_kern)
+    display_buffer(pixels)
     request_redraw()
 }
 
@@ -49,8 +49,8 @@ fn on_mousedown() {
     set_kernel_arg_f64("value", 0.5)
     set_kernel_arg_f64("falloff_quadratic", 0.0)
     set_kernel_arg_f64("component", 1.0)
-    bind_buffer("buf_in", _buf_field, 0)
-    bind_buffer("buf_out", _buf_field_next, 1)
-    run_kernel(_kern_inject)
-    swap_buffers(_buf_field, _buf_field_next)
+    bind_buffer("buf_in", field, 0)
+    bind_buffer("buf_out", field_next, 1)
+    run_kernel(inject_kern)
+    swap_buffers(field, field_next)
 }

@@ -714,11 +714,17 @@ unsafe fn get_string(ctx: *mut PdcContext, handle: i32) -> &'static str {
     }
 }
 
-pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_handle: i32, init_value: f64) -> i32 {
-    unsafe {
-        let type_name = get_string(ctx, type_handle);
-        get_host(ctx).create_buffer(type_name, init_value)
-    }
+pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32, init_value: f64) -> i32 {
+    let type_name = match type_code {
+        0 => "gpu_f32",
+        1 => "gpu_i32",
+        2 => "gpu_u32",
+        3 => "gpu_vec2_f32",
+        4 => "gpu_vec3_f32",
+        5 => "gpu_vec4_f32",
+        _ => "gpu_f32",
+    };
+    unsafe { get_host(ctx).create_buffer(type_name, init_value) }
 }
 
 pub extern "C" fn pdc_swap_buffers(ctx: *mut PdcContext, handle_a: i32, handle_b: i32) {

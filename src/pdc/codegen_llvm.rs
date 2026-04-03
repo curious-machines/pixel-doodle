@@ -1630,6 +1630,23 @@ impl<'a> LlvmCodegenCtx<'a> {
                     })
                 }
             }
+            Expr::DotShorthand(variant) => {
+                let ty = self.node_type(expr.id).clone();
+                if let PdcType::Enum(ref ename) = ty {
+                    let info = self.enums.get(ename).ok_or_else(|| PdcError::Codegen {
+                        message: format!("undefined enum '{ename}'"),
+                    })?.clone();
+                    let idx = info.variants.iter().position(|v| v.name == *variant)
+                        .ok_or_else(|| PdcError::Codegen {
+                            message: format!("enum '{ename}' has no variant '{variant}'"),
+                        })?;
+                    Ok(self.i32_const(idx as i64).into())
+                } else {
+                    Err(PdcError::Codegen {
+                        message: format!("dot-shorthand '.{variant}' was not resolved to an enum type"),
+                    })
+                }
+            }
         }
     }
 
@@ -1828,6 +1845,8 @@ impl<'a> LlvmCodegenCtx<'a> {
             // Runtime function call
             let runtime_name = match name {
                 "Path" => "pdc_path".to_string(),
+                "Buffer" => "pdc_create_buffer".to_string(),
+                "Kernel" => "pdc_load_kernel".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -1839,10 +1858,11 @@ impl<'a> LlvmCodegenCtx<'a> {
 
             let takes_ctx = matches!(
                 name,
-                "Path" | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
+                "Path" | "Buffer" | "Kernel"
+                | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
-                | "create_buffer" | "swap_buffers" | "load_kernel" | "bind_buffer"
+                | "swap_buffers" | "bind_buffer"
                 | "set_kernel_arg_f64" | "set_kernel_arg_f32" | "run_kernel"
                 | "display" | "display_buffer" | "load_texture"
                 | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
@@ -1869,7 +1889,7 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
-            "Path" | "len" | "create_buffer" | "load_kernel" | "load_texture"
+            "Path" | "Buffer" | "Kernel" | "len" | "load_texture"
             | "load_scene" | "scene_buffer"
             | "is_converged" => Some(self.context.i32_type().into()),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(self.context.f64_type().into()),

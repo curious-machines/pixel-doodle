@@ -235,6 +235,9 @@ pub enum Expr {
         object: Box<Spanned<Expr>>,
         field: String,
     },
+    /// Dot-shorthand enum variant: `.Variant` — resolved by the type checker
+    /// when the expected type (e.g., a function parameter) is an enum.
+    DotShorthand(String),
     /// Struct constructor with named args: `TypeName(field: value, ...)`
     StructConstruct {
         name: String,

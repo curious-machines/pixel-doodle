@@ -4,16 +4,16 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixel_buf: i32 = 0
-var kernel: i32 = 0
+var pixels: i32 = 0
+var kern: i32 = 0
 
 fn init() {
-    pixel_buf = create_buffer("gpu_u32", 0.0)
-    kernel = load_kernel("solid_red", "solid_red.wgsl", 0)
+    pixels = Buffer(.U32, 0.0)
+    kern = Kernel("solid_red", "solid_red.wgsl", .Pixel)
 }
 
 fn frame() {
-    bind_buffer("output", pixel_buf, 1)
-    run_kernel(kernel)
-    display_buffer(pixel_buf)
+    bind_buffer("output", pixels, 1)
+    run_kernel(kern)
+    display_buffer(pixels)
 }
