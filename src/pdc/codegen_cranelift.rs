@@ -2456,6 +2456,43 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let from_cl = pdc_type_to_cl(from, self.pointer_type);
         let to_cl = pdc_type_to_cl(to, self.pointer_type);
 
+        // Bool → float: zero-extend to I32, then int-to-float
+        if *from == PdcType::Bool && to.is_float() {
+            let i32_val = self.builder.ins().uextend(I32, val);
+            let f64_val = self.builder.ins().fcvt_from_sint(F64, i32_val);
+            return if to_cl == F32 {
+                self.builder.ins().fdemote(F32, f64_val)
+            } else {
+                f64_val
+            };
+        }
+
+        // Float → bool: compare != 0.0
+        if from.is_float() && *to == PdcType::Bool {
+            let f64_val = if from_cl == F32 {
+                self.builder.ins().fpromote(F64, val)
+            } else {
+                val
+            };
+            let zero = self.builder.ins().f64const(0.0);
+            return self.builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::NotEqual, f64_val, zero);
+        }
+
+        // Bool → int: zero-extend
+        if *from == PdcType::Bool && to.is_int() {
+            return if to_cl.bytes() > 1 {
+                self.builder.ins().uextend(to_cl, val)
+            } else {
+                val
+            };
+        }
+
+        // Int → bool: compare != 0
+        if from.is_int() && *to == PdcType::Bool {
+            let zero = self.builder.ins().iconst(from_cl, 0);
+            return self.builder.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::NotEqual, val, zero);
+        }
+
         // Float ↔ float
         if from.is_float() && to.is_float() {
             return if to_cl == F64 {
@@ -2604,11 +2641,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             };
         }
 
-        let lval = self.convert_value(lval, lt, result_ty);
-        let rval = self.convert_value(rval, rt, result_ty);
-
         // Logical operators — bool operands, bool result
         if matches!(op, BinOp::And | BinOp::Or) {
+            let lval = self.convert_value(lval, lt, result_ty);
+            let rval = self.convert_value(rval, rt, result_ty);
             return Ok(match op {
                 BinOp::And => self.builder.ins().band(lval, rval),
                 BinOp::Or => self.builder.ins().bor(lval, rval),
@@ -2626,8 +2662,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             } else {
                 PdcType::I32
             };
-            let lval = self.convert_value(lval, result_ty, &cmp_type);
-            let rval = self.convert_value(rval, result_ty, &cmp_type);
+            // Convert operands from their original types to the comparison type,
+            // not from result_ty (Bool), to avoid double-conversion.
+            let lval = self.convert_value(lval, lt, &cmp_type);
+            let rval = self.convert_value(rval, rt, &cmp_type);
 
             return if cmp_type.is_float() {
                 let cc = match op {
@@ -2653,6 +2691,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 Ok(self.builder.ins().icmp(cc, lval, rval))
             };
         }
+
+        // For arithmetic and bitwise operators, convert operands to result type.
+        let lval = self.convert_value(lval, lt, result_ty);
+        let rval = self.convert_value(rval, rt, result_ty);
 
         // Bitwise operators — always integer
         match op {

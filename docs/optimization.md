@@ -141,3 +141,95 @@ Raw benchmark data is stored in the repo root:
 - `bench_scaling_plot.png` -- Thread scaling plot
 - `bench_perf_plot.png` -- perf stat analysis plot
 - `bench_tile_plot.png` -- Tile height sweep plot
+
+## PDC vs PDP Bridge Overhead Analysis
+
+Analysis date: 2026-04-02
+
+### Background
+
+PDC pipelines are slower than their PDP equivalents despite dispatching the same WGSL kernels. The difference is architectural: PDP orchestrates kernels entirely in Rust with zero per-frame bridge crossings, while PDC's JIT'd `frame()` function calls back into Rust for every pipeline operation.
+
+### Per-Frame Bridge Crossings
+
+Each PDC host function call crosses the JIT→Rust boundary via an `extern "C"` wrapper that goes through `get_host()` (double-deref through `Box<dyn PipelineHost>` vtable dispatch).
+
+**Game of Life example** (`iterations=1`, typical frame):
+
+| Operation | Bridge Crossings | String Allocations |
+|---|---|---|
+| `bind_buffer` × 4 | 4 | 4 (`.to_string()` each) |
+| `run_kernel` × 2 | 2 | 0 |
+| `swap_buffers` × 1 | 1 | 0 |
+| `display_buffer` × 1 | 1 | 0 |
+| `request_redraw` × 1 | 1 | 0 |
+| **Total** | **9** | **4** |
+
+With `on_mousedown` active, add 4 more `set_kernel_arg` calls (4 crossings, 4 string allocs) plus `bind_buffer` × 2 + `run_kernel` + `swap_buffers` = 11 additional crossings, 6 more string allocs.
+
+**PDP equivalent: 0 bridge crossings.** Rust reads pre-parsed `PipelineStep` structs and calls kernel function pointers directly.
+
+### Bottleneck Inventory
+
+#### 1. String allocations on every bind/arg call (high impact)
+
+`pipeline_runtime.rs` — `bind_buffer()` (line ~270) and `set_kernel_arg_*()` (lines ~277, ~281) each call `.to_string()` to create an owned `String` from the `&str` handle. These are used once in `run_kernel` then discarded when `pending_bindings.clear()` runs.
+
+In PDP: bindings are parsed once at startup — no per-frame string allocation.
+
+#### 2. Linear search for kernel args by name (medium impact)
+
+`pipeline_runtime.rs` line ~432 — inside `run_kernel`, for each WGSL param member:
+```rust
+self.pending_args.iter().find(|a| a.name == member.name)
+```
+Linear scan with string comparison, O(n×m) where n=params, m=pending_args.
+
+In PDP: args matched positionally (`args.get(user_arg_index)`) — O(1).
+
+#### 3. Trait object dispatch overhead (low-medium impact)
+
+`runtime.rs` lines 701-706 — every host call goes through:
+```rust
+let host_ptr = (*ctx).host as *mut Box<dyn PipelineHost>;
+&mut **host_ptr  // double deref + vtable lookup
+```
+Not huge per-call, but multiplied across 9+ calls per frame.
+
+#### 4. Auto-buffer allocation leak (correctness + perf)
+
+`pipeline_runtime.rs` lines ~387-394 — if any buffer slot is unbound, `run_kernel` pushes a **new** `NamedBuffer` with `format!()` name and fresh `Vec<u8>` every frame. These never get freed.
+
+PDP caches these in `gpu_cpu_auto_buffers` HashMap.
+
+#### 5. Per-tile Vec allocation inside rayon loop (low impact, both paths)
+
+Both PDP (`pdp/runtime.rs` ~953) and PDC (`pipeline_runtime.rs` ~473) create a `Vec<*mut u8>` inside each tile closure. At 1080p with tile_height=1, that's ~1080 small Vec allocations per kernel dispatch. Affects both paths equally.
+
+### Improvement Ideas
+
+#### Quick wins (reduce overhead, no architecture change)
+
+1. **Pre-intern binding/arg names** — PDC compiler knows strings at compile time. Emit buffer slot indices directly instead of string handles that get converted to owned Strings.
+
+2. **Cache bindings across frames** — For kernels where bindings don't change frame-to-frame (common pattern), skip re-binding. Add a "bindings dirty" flag.
+
+3. **Fix auto-buffer leak** — Cache auto-allocated buffers keyed by `(handle, slot)` instead of pushing new ones every frame.
+
+4. **Hoist per-tile Vec** — Pre-build `*mut u8` pointer array once, share read-only across tiles.
+
+#### Medium-term (reduce crossing count)
+
+5. **Batch kernel dispatch** — Single `dispatch_kernel(handle, bindings[], args[])` host function instead of separate `bind_buffer` + `set_kernel_arg` + `run_kernel` calls.
+
+6. **Move kernel arg packing into PDC** — PDC compiler knows the WGSL Params layout at compile time. PDC could write the 256-byte params buffer directly and pass it to a simpler `run_kernel_with_params(handle, params_ptr)`.
+
+#### Longer-term (move more into PDC)
+
+7. **Move buffer pointer resolution into PDC** — If PDC held raw pointers to buffer data (updated once per frame), it could build `buffer_ptrs` without crossing the bridge for each binding.
+
+8. **Move tiled dispatch into PDC** — If PDC could call WGSL kernel function pointers directly, the entire `run_kernel` could happen in JIT code. Only rayon dispatch truly needs Rust.
+
+### Status
+
+None of the above have been implemented yet. Items 3-4 are bug fixes that should be done regardless. Items 1-2 and 5-6 are the most promising for measurable speedup. Items 7-8 align with the longer-term goal of consolidating PDP functionality into PDC.

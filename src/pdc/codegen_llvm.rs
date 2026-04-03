@@ -2363,11 +2363,10 @@ impl<'a> LlvmCodegenCtx<'a> {
             };
         }
 
-        let lval = self.convert_value(lval, lt, result_ty);
-        let rval = self.convert_value(rval, rt, result_ty);
-
         // Logical
         if matches!(op, BinOp::And | BinOp::Or) {
+            let lval = self.convert_value(lval, lt, result_ty);
+            let rval = self.convert_value(rval, rt, result_ty);
             return Ok(match op {
                 BinOp::And => self.builder.build_and(lval.into_int_value(), rval.into_int_value(), "and").unwrap().into(),
                 BinOp::Or => self.builder.build_or(lval.into_int_value(), rval.into_int_value(), "or").unwrap().into(),
@@ -2382,8 +2381,10 @@ impl<'a> LlvmCodegenCtx<'a> {
             } else {
                 PdcType::I32
             };
-            let lval = self.convert_value(lval, result_ty, &cmp_type);
-            let rval = self.convert_value(rval, result_ty, &cmp_type);
+            // Convert operands from their original types to the comparison type,
+            // not from result_ty (Bool), to avoid double-conversion.
+            let lval = self.convert_value(lval, lt, &cmp_type);
+            let rval = self.convert_value(rval, rt, &cmp_type);
 
             return if cmp_type.is_float() {
                 let pred = match op {
@@ -2412,6 +2413,10 @@ impl<'a> LlvmCodegenCtx<'a> {
                 Ok(self.builder.build_int_z_extend(cmp, self.context.i8_type(), "zext").unwrap().into())
             };
         }
+
+        // For arithmetic and bitwise operators, convert operands to result type.
+        let lval = self.convert_value(lval, lt, result_ty);
+        let rval = self.convert_value(rval, rt, result_ty);
 
         // Bitwise
         match op {
@@ -2472,6 +2477,46 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn convert_value(&mut self, val: BasicValueEnum<'static>, from: &PdcType, to: &PdcType) -> BasicValueEnum<'static> {
         if from == to { return val; }
+
+        // Bool -> float: zero-extend to i32, then int-to-float
+        if *from == PdcType::Bool && to.is_float() {
+            let i32_val = self.builder.build_int_z_extend(val.into_int_value(), self.context.i32_type(), "zext").unwrap();
+            let f64_val = self.builder.build_signed_int_to_float(i32_val, self.context.f64_type(), "b2f").unwrap();
+            return if *to == PdcType::F32 {
+                self.builder.build_float_trunc(f64_val, self.context.f32_type(), "fdem").unwrap().into()
+            } else {
+                f64_val.into()
+            };
+        }
+
+        // Float -> bool: compare != 0.0
+        if from.is_float() && *to == PdcType::Bool {
+            let f64_val = if *from == PdcType::F32 {
+                self.builder.build_float_ext(val.into_float_value(), self.context.f64_type(), "fprom").unwrap()
+            } else {
+                val.into_float_value()
+            };
+            let zero = self.context.f64_type().const_float(0.0);
+            let cmp = self.builder.build_float_compare(
+                inkwell::FloatPredicate::ONE, f64_val, zero, "f2b",
+            ).unwrap();
+            return self.builder.build_int_z_extend(cmp, self.context.i8_type(), "zext").unwrap().into();
+        }
+
+        // Bool -> int: zero-extend
+        if *from == PdcType::Bool && to.is_int() {
+            let to_ty = pdc_type_to_llvm(to, self.context).into_int_type();
+            return self.builder.build_int_z_extend(val.into_int_value(), to_ty, "zext").unwrap().into();
+        }
+
+        // Int -> bool: compare != 0
+        if from.is_int() && *to == PdcType::Bool {
+            let zero = pdc_type_to_llvm(from, self.context).into_int_type().const_zero();
+            let cmp = self.builder.build_int_compare(
+                inkwell::IntPredicate::NE, val.into_int_value(), zero, "i2b",
+            ).unwrap();
+            return self.builder.build_int_z_extend(cmp, self.context.i8_type(), "zext").unwrap().into();
+        }
 
         // Float -> float
         if from.is_float() && to.is_float() {
