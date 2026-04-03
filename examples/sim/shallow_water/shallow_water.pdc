@@ -6,29 +6,30 @@ builtin var mouse_y: f64
 var field = Buffer.Vec4F32()
 var field_next = Buffer.Vec4F32()
 var pixels = Buffer.U32()
-var step_kern = Kernel.Sim("step", "shallow_water_step.wgsl")
-var vis_kern = Kernel.Sim("vis", "shallow_water_vis.wgsl")
-var init_field_kern = Kernel.Sim("init_field", "shallow_water_init.wgsl")
-var inject_kern = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
+
+var step = Kernel.Sim("step", "shallow_water_step.wgsl")
+var vis = Kernel.Sim("vis", "shallow_water_vis.wgsl")
+var init_field = Kernel.Sim("init_field", "shallow_water_init.wgsl")
+var inject = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
 
 fn init() {
-    init_field_kern.field_out = Bind.Out(field)
-    init_field_kern.run()
+    init_field.field_out = Bind.Out(field)
+    init_field.run()
     set_keypress(Key.Space, toggle_pause)
     set_keypress(Key.Period, step_frame)
     set_mousedown(inject_at_mouse)
 }
 
 fn frame() -> bool {
-    step_kern.field_in = Bind.In(field)
-    step_kern.field_out = Bind.Out(field_next)
+    step.field_in = Bind.In(field)
+    step.field_out = Bind.Out(field_next)
     for _i in 0..4 {
-        step_kern.run()
+        step.run()
         swap(field, field_next)
     }
-    vis_kern.field_in = Bind.In(field)
-    vis_kern.pixels = Bind.Out(pixels)
-    vis_kern.run()
+    vis.field_in = Bind.In(field)
+    vis.pixels = Bind.Out(pixels)
+    vis.run()
     pixels.display_buffer()
     return true
 }
@@ -37,14 +38,14 @@ fn toggle_pause() { paused = !paused }
 fn step_frame() { frame = frame + 1.0 }
 
 fn inject_at_mouse() {
-    inject_kern.inject_x = mouse_x
-    inject_kern.inject_y = mouse_y
-    inject_kern.radius = 10.0
-    inject_kern.value = 0.3
-    inject_kern.falloff_quadratic = 1.0
-    inject_kern.component = 0.0
-    inject_kern.buf_in = Bind.In(field)
-    inject_kern.buf_out = Bind.Out(field_next)
-    inject_kern.run()
+    inject.inject_x = mouse_x
+    inject.inject_y = mouse_y
+    inject.radius = 10.0
+    inject.value = 0.3
+    inject.falloff_quadratic = 1.0
+    inject.component = 0.0
+    inject.buf_in = Bind.In(field)
+    inject.buf_out = Bind.Out(field_next)
+    inject.run()
     swap(field, field_next)
 }

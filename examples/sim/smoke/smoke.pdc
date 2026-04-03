@@ -9,12 +9,13 @@ var div = Buffer.F32()
 var press_a = Buffer.F32()
 var press_b = Buffer.F32()
 var pixels = Buffer.U32()
-var advect_kern = Kernel.Sim("advect", "smoke_advect.wgsl")
-var divergence_kern = Kernel.Sim("divergence", "smoke_divergence.wgsl")
-var jacobi_kern = Kernel.Sim("jacobi", "smoke_jacobi.wgsl")
-var project_kern = Kernel.Sim("project", "smoke_project.wgsl")
-var vis_kern = Kernel.Sim("vis", "smoke_vis.wgsl")
-var inject_kern = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
+
+var advect = Kernel.Sim("advect", "smoke_advect.wgsl")
+var divergence = Kernel.Sim("divergence", "smoke_divergence.wgsl")
+var jacobi = Kernel.Sim("jacobi", "smoke_jacobi.wgsl")
+var project = Kernel.Sim("project", "smoke_project.wgsl")
+var vis = Kernel.Sim("vis", "smoke_vis.wgsl")
+var inject = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
 
 fn init() {
     set_keypress(Key.Space, toggle_pause)
@@ -23,32 +24,32 @@ fn init() {
 }
 
 fn frame() -> bool {
-    advect_kern.field_in = Bind.In(field)
-    advect_kern.field_out = Bind.Out(field_next)
-    advect_kern.run()
+    advect.field_in = Bind.In(field)
+    advect.field_out = Bind.Out(field_next)
+    advect.run()
     swap(field, field_next)
 
-    divergence_kern.field_in = Bind.In(field)
-    divergence_kern.div_out = Bind.Out(div)
-    divergence_kern.run()
+    divergence.field_in = Bind.In(field)
+    divergence.div_out = Bind.Out(div)
+    divergence.run()
 
-    jacobi_kern.div_in = Bind.In(div)
-    jacobi_kern.press_in = Bind.In(press_a)
-    jacobi_kern.press_out = Bind.Out(press_b)
+    jacobi.div_in = Bind.In(div)
+    jacobi.press_in = Bind.In(press_a)
+    jacobi.press_out = Bind.Out(press_b)
     for _i in 0..40 {
-        jacobi_kern.run()
+        jacobi.run()
         swap(press_a, press_b)
     }
 
-    project_kern.pressure = Bind.In(press_a)
-    project_kern.field_in = Bind.In(field)
-    project_kern.field_out = Bind.Out(field_next)
-    project_kern.run()
+    project.pressure = Bind.In(press_a)
+    project.field_in = Bind.In(field)
+    project.field_out = Bind.Out(field_next)
+    project.run()
     swap(field, field_next)
 
-    vis_kern.field_in = Bind.In(field)
-    vis_kern.pixels = Bind.Out(pixels)
-    vis_kern.run()
+    vis.field_in = Bind.In(field)
+    vis.pixels = Bind.Out(pixels)
+    vis.run()
     pixels.display_buffer()
     return true
 }
@@ -57,25 +58,25 @@ fn toggle_pause() { paused = !paused }
 fn step_frame() { frame = frame + 1.0 }
 
 fn inject_at_mouse() {
-    inject_kern.inject_x = mouse_x
-    inject_kern.inject_y = mouse_y
-    inject_kern.radius = 15.0
-    inject_kern.value = -3.0
-    inject_kern.falloff_quadratic = 1.0
-    inject_kern.component = 1.0
-    inject_kern.buf_in = Bind.In(field)
-    inject_kern.buf_out = Bind.Out(field_next)
-    inject_kern.run()
+    inject.inject_x = mouse_x
+    inject.inject_y = mouse_y
+    inject.radius = 15.0
+    inject.value = -3.0
+    inject.falloff_quadratic = 1.0
+    inject.component = 1.0
+    inject.buf_in = Bind.In(field)
+    inject.buf_out = Bind.Out(field_next)
+    inject.run()
     swap(field, field_next)
 
-    inject_kern.inject_x = mouse_x
-    inject_kern.inject_y = mouse_y
-    inject_kern.radius = 15.0
-    inject_kern.value = 0.5
-    inject_kern.falloff_quadratic = 1.0
-    inject_kern.component = 2.0
-    inject_kern.buf_in = Bind.In(field)
-    inject_kern.buf_out = Bind.Out(field_next)
-    inject_kern.run()
+    inject.inject_x = mouse_x
+    inject.inject_y = mouse_y
+    inject.radius = 15.0
+    inject.value = 0.5
+    inject.falloff_quadratic = 1.0
+    inject.component = 2.0
+    inject.buf_in = Bind.In(field)
+    inject.buf_out = Bind.Out(field_next)
+    inject.run()
     swap(field, field_next)
 }

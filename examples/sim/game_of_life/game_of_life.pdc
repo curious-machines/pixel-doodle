@@ -11,10 +11,10 @@ var grid = Buffer.I32()
 var grid_next = Buffer.I32()
 var pixels = Buffer.U32()
 
-var step_kern = Kernel.Sim("step", "game_of_life_step.wgsl")
-var vis_kern = Kernel.Sim("vis", "game_of_life_vis.wgsl")
-var init_grid_kern = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
-var inject_kern = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
+var step = Kernel.Sim("step", "game_of_life_step.wgsl")
+var vis = Kernel.Sim("vis", "game_of_life_vis.wgsl")
+var init_grid = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
+var inject = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
 
 fn init() {
     set_keypress(Key.Space, toggle_pause)
@@ -23,22 +23,22 @@ fn init() {
     set_keypress(Key.BracketLeft, speed_down)
     set_mousedown(inject_at_mouse)
 
-    init_grid_kern.grid = Bind.Out(grid)
-    init_grid_kern.run()
+    init_grid.grid = Bind.Out(grid)
+    init_grid.run()
 }
 
 fn frame() -> bool {
-    step_kern.grid_in = Bind.In(grid)
-    step_kern.grid_out = Bind.Out(grid_next)
+    step.grid_in = Bind.In(grid)
+    step.grid_out = Bind.Out(grid_next)
 
     for _i in 0..i32(iterations) {
-        step_kern.run()
+        step.run()
         swap(grid, grid_next)
     }
 
-    vis_kern.grid_in = Bind.In(grid)
-    vis_kern.pixels = Bind.Out(pixels)
-    vis_kern.run()
+    vis.grid_in = Bind.In(grid)
+    vis.pixels = Bind.Out(pixels)
+    vis.run()
 
     pixels.display_buffer()
 
@@ -50,12 +50,12 @@ fn step_frame() { frame = frame + 1.0 }
 fn speed_up() { iterations = min(8.0, iterations + 1.0) }
 fn speed_down() { iterations = max(iterations - 1.0, 1.0) }
 fn inject_at_mouse() {
-    inject_kern.inject_x = mouse_x
-    inject_kern.inject_y = mouse_y
-    inject_kern.radius = 3.0
-    inject_kern.value = 1.0
-    inject_kern.buf_in = Bind.In(grid)
-    inject_kern.buf_out = Bind.Out(grid_next)
-    inject_kern.run()
+    inject.inject_x = mouse_x
+    inject.inject_y = mouse_y
+    inject.radius = 3.0
+    inject.value = 1.0
+    inject.buf_in = Bind.In(grid)
+    inject.buf_out = Bind.Out(grid_next)
+    inject.run()
     swap(grid, grid_next)
 }
