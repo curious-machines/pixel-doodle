@@ -5,12 +5,12 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var field = Buffer(.Vec4F32, 0.0)
-var field_next = Buffer(.Vec4F32, 0.0)
-var div = Buffer(.F32, 0.0)
-var press_a = Buffer(.F32, 0.0)
-var press_b = Buffer(.F32, 0.0)
-var pixels = Buffer(.U32, 0.0)
+var field = Buffer(.Vec4F32)
+var field_next = Buffer(.Vec4F32)
+var div = Buffer(.F32)
+var press_a = Buffer(.F32)
+var press_b = Buffer(.F32)
+var pixels = Buffer(.U32)
 var advect_kern = Kernel("advect", "smoke_advect.wgsl", .Sim)
 var divergence_kern = Kernel("divergence", "smoke_divergence.wgsl", .Sim)
 var jacobi_kern = Kernel("jacobi", "smoke_jacobi.wgsl", .Sim)

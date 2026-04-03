@@ -714,7 +714,7 @@ unsafe fn get_string(ctx: *mut PdcContext, handle: i32) -> &'static str {
     }
 }
 
-pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32, init_value: f64) -> i32 {
+pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32) -> i32 {
     let type_name = match type_code {
         0 => "gpu_f32",
         1 => "gpu_i32",
@@ -724,7 +724,7 @@ pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32, init_v
         5 => "gpu_vec4_f32",
         _ => "gpu_f32",
     };
-    unsafe { get_host(ctx).create_buffer(type_name, init_value) }
+    unsafe { get_host(ctx).create_buffer(type_name, 0.0) }
 }
 
 pub extern "C" fn pdc_swap_buffers(ctx: *mut PdcContext, handle_a: i32, handle_b: i32) {

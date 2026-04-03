@@ -1,7 +1,7 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels = Buffer(.U32, 0.0)
+var pixels = Buffer(.U32)
 var kern = Kernel("gradient", "gradient.wgsl", .Pixel)
 
 fn frame() {

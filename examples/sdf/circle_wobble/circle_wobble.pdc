@@ -5,7 +5,7 @@ builtin var center_y: f64
 builtin var zoom: f64
 builtin var time: f64
 
-var pixels = Buffer(.U32, 0.0)
+var pixels = Buffer(.U32)
 var kern = Kernel("circle_wobble", "circle_wobble.wgsl", .Pixel)
 
 fn frame() {

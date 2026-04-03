@@ -250,9 +250,9 @@ impl TypeChecker {
         }
 
         // Pipeline host functions
-        // Buffer(type: BufferType, init_value: f64) -> Buffer
+        // Buffer(type: BufferType) -> Buffer
         self.builtins.insert("Buffer".into(), BuiltinFn {
-            params: vec![PdcType::Enum("BufferType".into()), PdcType::F64],
+            params: vec![PdcType::Enum("BufferType".into())],
             ret: PdcType::BufferHandle,
             takes_ctx: true,
         });

@@ -4,7 +4,7 @@ builtin var center_x: f64
 builtin var center_y: f64
 builtin var zoom: f64
 
-var pixels = Buffer(.U32, 0.0)
+var pixels = Buffer(.U32)
 var kern = Kernel("checkerboard", "checkerboard.wgsl", .Pixel)
 
 fn frame() {

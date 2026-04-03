@@ -1,7 +1,7 @@
 builtin const width: f32
 builtin const height: f32
 
-var pixels = Buffer(.U32, 0.0)
+var pixels = Buffer(.U32)
 var kern = Kernel("texture_test", "texture_test.wgsl", .Pixel)
 var tex: i32 = 0
 

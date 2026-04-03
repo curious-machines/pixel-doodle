@@ -5,9 +5,9 @@ builtin var mouse_y: f64
 builtin const width: f32
 builtin const height: f32
 
-var field = Buffer(.Vec4F32, 0.0)
-var field_next = Buffer(.Vec4F32, 0.0)
-var pixels = Buffer(.U32, 0.0)
+var field = Buffer(.Vec4F32)
+var field_next = Buffer(.Vec4F32)
+var pixels = Buffer(.U32)
 var step_kern = Kernel("step", "shallow_water_step.wgsl", .Sim)
 var vis_kern = Kernel("vis", "shallow_water_vis.wgsl", .Sim)
 var init_field_kern = Kernel("init_field", "shallow_water_init.wgsl", .Sim)

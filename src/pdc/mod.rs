@@ -1890,8 +1890,8 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var grid: Buffer = Buffer(.F32, 0.0)
-            var grid_next: Buffer = Buffer(.F32, 0.0)
+            var grid: Buffer = Buffer(.F32)
+            var grid_next: Buffer = Buffer(.F32)
             var sim_kernel: Kernel = Kernel("step", "step.wgsl", .Sim)
 
             fn frame() {
@@ -1978,7 +1978,7 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var buf: Buffer = Buffer(.Vec4F32, 0.0)
+            var buf: Buffer = Buffer(.Vec4F32)
         "#;
         let (compiled, state_layout) =
             compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)

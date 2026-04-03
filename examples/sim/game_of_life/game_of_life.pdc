@@ -6,9 +6,9 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
-var grid = Buffer(.I32, 0.0)
-var grid_next = Buffer(.I32, 0.0)
-var pixels = Buffer(.U32, 0.0)
+var grid = Buffer(.I32)
+var grid_next = Buffer(.I32)
+var pixels = Buffer(.U32)
 var step_kern = Kernel("step", "game_of_life_step.wgsl", .Sim)
 var vis_kern = Kernel("vis", "game_of_life_vis.wgsl", .Sim)
 var init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
