@@ -27,6 +27,8 @@ pub enum PdcType {
     BufferHandle,
     /// Opaque kernel handle (i32 internally).
     KernelHandle,
+    /// Opaque texture handle (i32 internally).
+    TextureHandle,
     /// UTF-8 string type. Runtime-managed, handle-based.
     Str,
     /// User-defined struct type, referenced by name.
@@ -84,6 +86,7 @@ impl std::fmt::Display for PdcType {
             PdcType::PathHandle => write!(f, "Path"),
             PdcType::BufferHandle => write!(f, "Buffer"),
             PdcType::KernelHandle => write!(f, "Kernel"),
+            PdcType::TextureHandle => write!(f, "Texture"),
             PdcType::Str => write!(f, "string"),
             PdcType::Struct(name) | PdcType::Enum(name) => write!(f, "{name}"),
             PdcType::Array(elem) => write!(f, "Array<{elem}>"),

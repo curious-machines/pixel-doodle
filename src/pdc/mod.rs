@@ -2184,6 +2184,77 @@ mod tests {
         assert_eq!(*log, vec!["create_buffer(gpu_vec4_f32, 0)"]);
     }
 
+    #[test]
+    fn texture_opaque_constructor() {
+        // Test that Texture("name", "path") constructor works and returns TextureHandle
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var tex: Texture = Texture("img", "images/lake.jpg")
+        "#;
+        let (compiled, state_layout) =
+            compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)
+                .expect("compile failed");
+        let mut builtins = [200.0f64; 12];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+        struct LogHost { log: Rc<RefCell<Vec<String>>>, next_handle: i32 }
+        impl runtime::PipelineHost for LogHost {
+            fn create_buffer(&mut self, _t: &str, _v: f64) -> i32 { 0 }
+            fn swap_buffers(&mut self, _a: i32, _b: i32) {}
+            fn load_kernel(&mut self, _n: &str, _p: &str, _k: i32) -> i32 { 0 }
+            fn bind_buffer(&mut self, _kh: i32, _p: &str, _h: i32, _o: bool) {}
+            fn set_kernel_arg_f64(&mut self, _kh: i32, _n: &str, _v: f64) {}
+            fn set_kernel_arg_f32(&mut self, _kh: i32, _n: &str, _v: f32) {}
+            fn run_kernel(&mut self, _h: i32) {}
+            fn display(&mut self) {}
+            fn display_buffer(&mut self, _h: i32) {}
+            fn load_texture(&mut self, n: &str, p: &str) -> i32 {
+                let h = self.next_handle; self.next_handle += 1;
+                self.log.borrow_mut().push(format!("load_texture({n}, {p})")); h
+            }
+            fn set_max_samples(&mut self, _n: i32) {}
+            fn is_converged(&self) -> bool { false }
+            fn accumulate_sample(&mut self) {}
+            fn display_accumulated(&mut self) {}
+            fn reset_accumulation(&mut self) {}
+        }
+
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
+            log: log.clone(), next_handle: 1,
+        });
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+
+        let log = log.borrow();
+        assert_eq!(*log, vec!["load_texture(img, images/lake.jpg)"]);
+    }
+
+    #[test]
+    fn texture_type_mismatch() {
+        // Texture handle should not be assignable to i32
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+
+            var tex: i32 = Texture("img", "images/lake.jpg")
+        "#;
+        let result = compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS);
+        assert!(result.is_err(), "assigning Texture to i32 should fail type check");
+    }
+
     // ---- Event handler registration tests ----
 
     /// Minimal PipelineHost implementation that stores event handler registrations.

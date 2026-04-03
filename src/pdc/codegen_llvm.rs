@@ -532,7 +532,7 @@ fn pdc_type_to_llvm<'ctx>(ty: &PdcType, ctx: &'ctx Context) -> BasicTypeEnum<'ct
         PdcType::I16 | PdcType::U16 => ctx.i16_type().into(),
         PdcType::I32 | PdcType::U32 => ctx.i32_type().into(),
         PdcType::I64 | PdcType::U64 => ctx.i64_type().into(),
-        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => ctx.i32_type().into(),
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => ctx.i32_type().into(),
         PdcType::Str => ctx.i32_type().into(),
         PdcType::Array(_) => ctx.i32_type().into(),
         PdcType::Enum(_) => ctx.i32_type().into(),
@@ -548,7 +548,7 @@ fn pdc_type_byte_size(ty: &PdcType) -> u32 {
     match ty {
         PdcType::I8 | PdcType::U8 | PdcType::Bool => 1,
         PdcType::I16 | PdcType::U16 => 2,
-        PdcType::F32 | PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle
+        PdcType::F32 | PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle
         | PdcType::Str | PdcType::Array(_) | PdcType::Enum(_) => 4,
         PdcType::F64 | PdcType::I64 | PdcType::U64 => 8,
         _ => 8,
@@ -1925,6 +1925,7 @@ impl<'a> LlvmCodegenCtx<'a> {
             // Runtime function call
             let runtime_name = match name {
                 "Path" => "pdc_path".to_string(),
+                "Texture" => "pdc_load_texture".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -1945,7 +1946,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
                 | "display_buffer" | "swap" | "run" | "render"
-                | "display" | "load_texture"
+                | "display" | "Texture"
                 | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
                 | "display_accumulated" | "reset_accumulation"
@@ -1979,7 +1980,7 @@ impl<'a> LlvmCodegenCtx<'a> {
 
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
-            "Path" | "len" | "load_texture"
+            "Path" | "len" | "Texture"
             | "load_scene" | "scene_buffer"
             | "is_converged" | "render" => Some(self.context.i32_type().into()),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(self.context.f64_type().into()),
@@ -2693,7 +2694,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         match ty {
             PdcType::F64 => val.into_float_value(),
             PdcType::F32 => self.builder.build_float_ext(val.into_float_value(), self.context.f64_type(), "fprom").unwrap(),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
                 self.builder.build_signed_int_to_float(val.into_int_value(), self.context.f64_type(), "i2f").unwrap()
             }
             PdcType::Bool => {
@@ -2708,7 +2709,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         match ty {
             PdcType::F64 => val.into(),
             PdcType::F32 => self.builder.build_float_trunc(val, self.context.f32_type(), "fdem").unwrap().into(),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
                 self.builder.build_float_to_signed_int(val, self.context.i32_type(), "f2i").unwrap().into()
             }
             PdcType::Bool => {

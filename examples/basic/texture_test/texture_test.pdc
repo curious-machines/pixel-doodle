@@ -1,10 +1,6 @@
 var pixels = Buffer.U32()
 var kern = Kernel.Pixel("texture_test", "texture_test.wgsl")
-var tex: i32 = 0
-
-fn init() {
-    tex = load_texture("img", "../../images/lake-2.jpg")
-}
+var tex = Texture("img", "images/lake-2.jpg")
 
 fn frame() -> bool {
     return kern.render(pixels, false)

@@ -286,10 +286,11 @@ impl TypeChecker {
             ret: PdcType::Void,
             takes_ctx: true,
         });
-        // load_texture(name: string, path: string) -> i32
-        self.builtins.insert("load_texture".into(), BuiltinFn {
+
+        // Texture(name: string, path: string) -> TextureHandle
+        self.builtins.insert("Texture".into(), BuiltinFn {
             params: vec![PdcType::Str, PdcType::Str],
-            ret: PdcType::I32,
+            ret: PdcType::TextureHandle,
             takes_ctx: true,
         });
 

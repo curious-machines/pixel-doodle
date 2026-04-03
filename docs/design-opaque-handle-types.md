@@ -118,6 +118,29 @@ for _i in 0..40 {
 
 `swap()` exchanges buffer data, not handle IDs, so persistent binds remain correct across ping-pong iterations.
 
+### Texture
+
+Opaque handle for loaded image textures. Created via constructor, accessible in WGSL shaders by the declared name.
+
+```
+var tex = Texture("img", "images/lake.jpg")
+```
+
+- Type: `PdcType::TextureHandle`
+- Codegen: `i32`
+- Constructor: `Texture(name, path)` — loads image, returns handle. Maps to `pdc_load_texture`
+- The `name` parameter determines the WGSL binding name; the shader declares `var img: texture_2d<f32>` to access it
+
+#### Future Texture Operations
+
+These are not yet implemented but would be useful additions:
+
+- **Query dimensions:** `tex.width()`, `tex.height()` — read texture size from PDC for layout/coordinate calculations
+- **Unload/replace at runtime:** `tex.replace("new_image.png")` — swap the underlying image without restarting
+- **Error checking:** `tex.is_valid()` — check if the texture loaded successfully (constructor currently returns -1 on failure)
+- **Dynamic texture selection:** pass texture handles to kernels or use them to choose which texture to bind at runtime
+- **Pixel readback in PDC:** `tex.sample(u, v)` or `tex.pixel(x, y)` — read pixel data from PDC code, not just from WGSL shaders
+
 ## Future
 
 ### Scene
@@ -131,14 +154,6 @@ scene.run()
 scene.buffer("segments")
 scene.tiles_x()
 scene.num_paths()
-```
-
-### Texture
-
-Textures currently use `load_texture()` returning bare `i32`. Could become:
-
-```
-var tex = Texture("photo", "image.png")
 ```
 
 ### Buffer with explicit dimensions

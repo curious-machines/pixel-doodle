@@ -570,7 +570,7 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I16 | PdcType::U16 => I16,
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
-        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => I32,
+        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => I32,
         PdcType::Str => I32, // strings are handles (i32)
         PdcType::Slice(_) => pointer_type, // slices are pointers to (handle, start, len)
         PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
@@ -2409,6 +2409,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let runtime_name = {
             match name {
                 "Path" => "pdc_path".to_string(),
+                "Texture" => "pdc_load_texture".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -2431,7 +2432,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
             | "display_buffer" | "swap" | "run" | "render"
-            | "display" | "load_texture"
+            | "display" | "Texture"
             | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation"
@@ -2489,7 +2490,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
-            "Path" | "len" | "load_texture"
+            "Path" | "len" | "Texture"
             | "load_scene" | "scene_buffer"
             | "is_converged" | "render" => Some(I32),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(F64),
@@ -2530,7 +2531,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fpromote(F64, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
                 self.builder.ins().fcvt_from_sint(F64, val)
             }
             PdcType::Bool => {
@@ -2546,7 +2547,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fdemote(F32, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle => {
                 self.builder.ins().fcvt_to_sint_sat(I32, val)
             }
             PdcType::Bool => {
