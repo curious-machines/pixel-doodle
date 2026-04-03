@@ -8,8 +8,5 @@ fn init() {
 }
 
 fn frame() -> bool {
-    kern.output = Bind.Out(pixels)
-    kern.run()
-    pixels.display_buffer()
-    return false
+    return kern.render(pixels, false)
 }

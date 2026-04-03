@@ -1928,6 +1928,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
+                "render" => "pdc_render_kernel".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -1943,7 +1944,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
-                | "display_buffer" | "swap" | "run"
+                | "display_buffer" | "swap" | "run" | "render"
                 | "display" | "load_texture"
                 | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
@@ -1966,7 +1967,13 @@ impl<'a> LlvmCodegenCtx<'a> {
             }
 
             let ret_type = self.call_return_type(name);
-            self.emit_runtime_call_raw(&runtime_name, &arg_vals.iter().map(|v| (*v).into()).collect::<Vec<_>>(), ret_type)
+            let raw = self.emit_runtime_call_raw(&runtime_name, &arg_vals.iter().map(|v| (*v).into()).collect::<Vec<_>>(), ret_type)?;
+            // Runtime functions return i32 for bools; truncate to i8 for PDC's Bool type.
+            if self.node_type(call_id) == &PdcType::Bool {
+                Ok(self.builder.build_int_truncate(raw.into_int_value(), self.context.i8_type(), "bool_trunc").unwrap().into())
+            } else {
+                Ok(raw)
+            }
         }
     }
 
@@ -1974,7 +1981,7 @@ impl<'a> LlvmCodegenCtx<'a> {
         match name {
             "Path" | "len" | "load_texture"
             | "load_scene" | "scene_buffer"
-            | "is_converged" => Some(self.context.i32_type().into()),
+            | "is_converged" | "render" => Some(self.context.i32_type().into()),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled" | "push" | "set"
@@ -1991,6 +1998,10 @@ impl<'a> LlvmCodegenCtx<'a> {
         let is_stroke_float = func_name == "stroke" && from.is_float();
         if is_stroke_float && *from != PdcType::F32 {
             return self.builder.build_float_trunc(val.into_float_value(), self.context.f32_type(), "fdemote").unwrap().into();
+        }
+        // Runtime functions expect i32 for bool arguments.
+        if *from == PdcType::Bool {
+            return self.builder.build_int_z_extend(val.into_int_value(), self.context.i32_type(), "bool_ext").unwrap().into();
         }
         val
     }

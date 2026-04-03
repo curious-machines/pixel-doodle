@@ -2412,6 +2412,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
+                "render" => "pdc_render_kernel".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),
                 "get" => "pdc_array_get".to_string(),
@@ -2429,7 +2430,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
-            | "display_buffer" | "swap" | "run"
+            | "display_buffer" | "swap" | "run" | "render"
             | "display" | "load_texture"
             | "load_scene" | "run_scene" | "scene_tiles_x" | "scene_num_paths" | "scene_buffer"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
@@ -2474,7 +2475,13 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let call = self.builder.ins().call(func_ref, &arg_vals);
 
         if ret_type.is_some() {
-            Ok(self.builder.inst_results(call)[0])
+            let raw = self.builder.inst_results(call)[0];
+            // Runtime functions return i32 for bools; narrow to i8 for PDC's Bool type.
+            if self.node_type(_call_id) == &PdcType::Bool {
+                Ok(self.builder.ins().ireduce(I8, raw))
+            } else {
+                Ok(raw)
+            }
         } else {
             Ok(self.builder.ins().iconst(I32, 0))
         }
@@ -2484,7 +2491,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match name {
             "Path" | "len" | "load_texture"
             | "load_scene" | "scene_buffer"
-            | "is_converged" => Some(I32),
+            | "is_converged" | "render" => Some(I32),
             "get" | "scene_tiles_x" | "scene_num_paths" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
@@ -2508,6 +2515,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let is_stroke_float = func_name == "stroke" && from.is_float();
         if is_stroke_float && *from != PdcType::F32 {
             return self.builder.ins().fdemote(F32, val);
+        }
+
+        // Runtime functions expect i32 for bool arguments.
+        if *from == PdcType::Bool {
+            return self.builder.ins().uextend(I32, val);
         }
 
         val

@@ -275,6 +275,11 @@ impl TypeChecker {
             ret: PdcType::Void,
             takes_ctx: true,
         });
+        self.builtins.insert("render".into(), BuiltinFn {
+            params: vec![PdcType::KernelHandle, PdcType::BufferHandle, PdcType::Bool],
+            ret: PdcType::Bool,
+            takes_ctx: true,
+        });
         // display()
         self.builtins.insert("display".into(), BuiltinFn {
             params: vec![],

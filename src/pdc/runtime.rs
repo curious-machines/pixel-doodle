@@ -801,6 +801,17 @@ pub extern "C" fn pdc_run_kernel(ctx: *mut PdcContext, kernel_handle: i32) {
     unsafe { get_host(ctx).run_kernel(kernel_handle) }
 }
 
+// Convenience: kern.render(pixels, continue) → bind output + run + display + return continue
+pub extern "C" fn pdc_render_kernel(ctx: *mut PdcContext, kernel_handle: i32, buffer_handle: i32, continue_flag: i32) -> i32 {
+    unsafe {
+        let host = get_host(ctx);
+        host.bind_buffer(kernel_handle, "output", buffer_handle, true);
+        host.run_kernel(kernel_handle);
+        host.display_buffer(buffer_handle);
+    }
+    continue_flag
+}
+
 pub extern "C" fn pdc_display(ctx: *mut PdcContext) {
     unsafe { get_host(ctx).display() }
 }
@@ -983,6 +994,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_set_kernel_arg_f64", pdc_set_kernel_arg_f64 as *const u8),
         ("pdc_set_kernel_arg_f32", pdc_set_kernel_arg_f32 as *const u8),
         ("pdc_run_kernel", pdc_run_kernel as *const u8),
+        ("pdc_render_kernel", pdc_render_kernel as *const u8),
         ("pdc_display", pdc_display as *const u8),
         ("pdc_display_buffer", pdc_display_buffer as *const u8),
         ("pdc_load_texture", pdc_load_texture as *const u8),

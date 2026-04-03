@@ -2,8 +2,5 @@ var pixels = Buffer.U32()
 var kern = Kernel.Pixel("solid_red", "solid_red.wgsl")
 
 fn frame() -> bool {
-    kern.output = Bind.Out(pixels)
-    kern.run()
-    pixels.display_buffer()
-    return false
+    return kern.render(pixels, false)
 }
