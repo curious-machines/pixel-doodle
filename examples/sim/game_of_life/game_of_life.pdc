@@ -1,4 +1,4 @@
-import { register_pause_step } from "../pause_step"
+import { register_pause_step } from "../../shared/pause_step"
 
 builtin var mouse_x: f64
 builtin var mouse_y: f64
