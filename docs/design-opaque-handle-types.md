@@ -43,8 +43,9 @@ swap(field, field_next)         // swap two buffers (free function reads more na
 
 - Type: `PdcType::BufferHandle`
 - Codegen: `i32`
-- Constructor: `Buffer(BufferType, f64) -> Buffer` maps to `pdc_create_buffer`
+- Constructor: `Buffer(BufferType) -> Buffer` maps to `pdc_create_buffer`, always zero-initialized
 - BufferType enum: `F32`, `I32`, `U32`, `Vec2F32`, `Vec3F32`, `Vec4F32`
+- Non-zero initialization: use an init kernel (several examples already do this)
 
 ### Kernel
 
@@ -85,6 +86,23 @@ Textures currently use `load_texture()` returning bare `i32`. Could become:
 ```
 var tex = Texture("photo", "image.png")
 ```
+
+### Generic Buffer constructor syntax
+
+Replace `Buffer(.Vec4F32)` with WGSL type syntax: `Buffer<vec4<f32>>()`. This would:
+- Use the actual WGSL type names directly, reducing the conceptual mapping
+- Eliminate the `BufferType` enum entirely
+- Follow the existing `Array<f64>()` pattern in PDC
+
+```
+var field = Buffer<vec4<f32>>()
+var grid = Buffer<i32>()
+var pixels = Buffer<u32>()
+```
+
+The parser would handle `Buffer<type>()` like it handles `Array<type>()`, encoding the WGSL type in the call name. The codegen maps WGSL type names to type codes.
+
+Parsing challenge: WGSL types like `vec4<f32>` have nested angle brackets. The parser would need to handle the full set: `f32`, `i32`, `u32`, `vec2<f32>`, `vec3<f32>`, `vec4<f32>`.
 
 ## Open Questions
 
