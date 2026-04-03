@@ -10,7 +10,7 @@ fn init() {
 }
 
 fn frame() {
-    pixels.bind("output", 1)
+    pixels.bind("output", .Out)
     kern.run()
     pixels.display_buffer()
 }

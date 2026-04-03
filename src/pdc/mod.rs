@@ -1895,8 +1895,8 @@ mod tests {
             var sim_kernel: Kernel = Kernel("step", "step.wgsl", .Sim)
 
             fn frame() {
-                grid.bind("input", 0)
-                grid_next.bind("output", 1)
+                grid.bind("input", .In)
+                grid_next.bind("output", .Out)
                 sim_kernel.run()
                 grid.swap(grid_next)
                 display()

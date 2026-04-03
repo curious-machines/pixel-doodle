@@ -14,19 +14,19 @@ var init_field_kern = Kernel("init_field", "shallow_water_init.wgsl", .Sim)
 var inject_kern = Kernel("inject", "../../shared/inject_vec.wgsl", .Sim)
 
 fn init() {
-    field.bind("field_out", 1)
+    field.bind("field_out", .Out)
     init_field_kern.run()
 }
 
 fn frame() {
     for _i in 0..4 {
-        field.bind("field_in", 0)
-        field_next.bind("field_out", 1)
+        field.bind("field_in", .In)
+        field_next.bind("field_out", .Out)
         step_kern.run()
         swap(field, field_next)
     }
-    field.bind("field_in", 0)
-    pixels.bind("pixels", 1)
+    field.bind("field_in", .In)
+    pixels.bind("pixels", .Out)
     vis_kern.run()
     pixels.display_buffer()
     request_redraw()
@@ -42,8 +42,8 @@ fn on_mousedown() {
     inject_kern.set_arg("value", 0.3)
     inject_kern.set_arg("falloff_quadratic", 1.0)
     inject_kern.set_arg("component", 0.0)
-    field.bind("buf_in", 0)
-    field_next.bind("buf_out", 1)
+    field.bind("buf_in", .In)
+    field_next.bind("buf_out", .Out)
     inject_kern.run()
     swap(field, field_next)
 }

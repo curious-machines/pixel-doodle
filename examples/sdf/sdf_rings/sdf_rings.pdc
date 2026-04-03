@@ -13,7 +13,7 @@ fn init() {
 
 fn frame() {
     if is_converged() { return }
-    pixels.bind("output", 1)
+    pixels.bind("output", .Out)
     kern.run()
     pixels.display_buffer()
     accumulate_sample()

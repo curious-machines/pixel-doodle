@@ -8,7 +8,7 @@ var pixels = Buffer(.U32, 0.0)
 var kern = Kernel("sdf_flower", "sdf_flower.wgsl", .Pixel)
 
 fn frame() {
-    pixels.bind("output", 1)
+    pixels.bind("output", .Out)
     kern.run()
     pixels.display_buffer()
 }

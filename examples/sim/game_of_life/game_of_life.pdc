@@ -15,19 +15,19 @@ var init_grid_kern = Kernel("init_grid", "game_of_life_init.wgsl", .Sim)
 var inject_kern = Kernel("inject", "../../shared/inject_i32.wgsl", .Sim)
 
 fn init() {
-    grid.bind("grid", 1)
+    grid.bind("grid", .Out)
     init_grid_kern.run()
 }
 
 fn frame() {
     for _i in 0..i32(iterations) {
-        grid.bind("grid_in", 0)
-        grid_next.bind("grid_out", 1)
+        grid.bind("grid_in", .In)
+        grid_next.bind("grid_out", .Out)
         step_kern.run()
         swap(grid, grid_next)
     }
-    grid.bind("grid_in", 0)
-    pixels.bind("pixels", 1)
+    grid.bind("grid_in", .In)
+    pixels.bind("pixels", .Out)
     vis_kern.run()
     pixels.display_buffer()
     request_redraw()
@@ -54,8 +54,8 @@ fn on_mousedown() {
     inject_kern.set_arg("inject_y", mouse_y)
     inject_kern.set_arg("radius", 3.0)
     inject_kern.set_arg("value", 1.0)
-    grid.bind("buf_in", 0)
-    grid_next.bind("buf_out", 1)
+    grid.bind("buf_in", .In)
+    grid_next.bind("buf_out", .Out)
     inject_kern.run()
     swap(grid, grid_next)
 }

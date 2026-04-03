@@ -200,6 +200,14 @@ impl TypeChecker {
         });
         self.define_var("KernelType", PdcType::Enum("KernelType".into()));
 
+        self.enums.insert("BindMode".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "In".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Out".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("BindMode", PdcType::Enum("BindMode".into()));
+
         self.enums.insert("FillRule".into(), EnumInfo {
             variants: vec![
                 EnumVariantInfo { name: "EvenOdd".into(), field_names: vec![], field_types: vec![] },
@@ -256,7 +264,7 @@ impl TypeChecker {
         });
         // Buffer methods
         self.builtins.insert("bind".into(), BuiltinFn {
-            params: vec![PdcType::BufferHandle, PdcType::Str, PdcType::I32],
+            params: vec![PdcType::BufferHandle, PdcType::Str, PdcType::Enum("BindMode".into())],
             ret: PdcType::Void,
             takes_ctx: true,
         });
@@ -1488,15 +1496,21 @@ impl TypeChecker {
                     }
                     self.check_compatible(&obj_ty, &expected_params[0], object.span)?;
                     for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr(arg)?;
+                        let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i + 1]))?;
                         self.check_compatible(&arg_ty, &expected_params[i + 1], arg.span)?;
                     }
                     ret
                 } else if let Some(overloads) = self.user_fns.get(method.as_str()).cloned() {
                     // Build full arg types: [obj_ty, arg0_ty, arg1_ty, ...]
                     let mut arg_types = vec![obj_ty.clone()];
-                    for arg in args.iter() {
-                        arg_types.push(self.check_expr(arg)?);
+                    let hints: Option<Vec<PdcType>> = if overloads.sigs.len() == 1 {
+                        Some(overloads.sigs[0].params.clone())
+                    } else {
+                        None
+                    };
+                    for (i, arg) in args.iter().enumerate() {
+                        let hint = hints.as_ref().and_then(|h| h.get(i + 1));
+                        arg_types.push(self.check_expr_with_hint(arg, hint)?);
                     }
                     let sig = self.resolve_overload(&overloads, &arg_types)
                         .ok_or_else(|| PdcError::Type {

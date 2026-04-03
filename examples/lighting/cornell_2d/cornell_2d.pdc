@@ -8,7 +8,7 @@ var pixels = Buffer(.U32, 0.0)
 var kern = Kernel("cornell_2d", "cornell_2d.wgsl", .Pixel)
 
 fn frame() {
-    pixels.bind("output", 1)
+    pixels.bind("output", .Out)
     kern.run()
     pixels.display_buffer()
 }

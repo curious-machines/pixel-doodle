@@ -9,7 +9,7 @@ var pixels = Buffer(.U32, 0.0)
 var kern = Kernel("circle_wobble", "circle_wobble.wgsl", .Pixel)
 
 fn frame() {
-    pixels.bind("output", 1)
+    pixels.bind("output", .Out)
     kern.run()
     pixels.display_buffer()
     request_redraw()
