@@ -24,9 +24,9 @@ pipeline gpu {
   buffer pixels: gpu(u32) = constant(0.0)
 
   on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1, component: 1) with(buf_in: field, buf_out: out field_next)
+    run inject(x: mouse_x, y: mouse_y, radius: 15.0, value: -3.0, falloff_quadratic: 1, component: 1) with(buf_in: field, buf_out: out field_next)
     swap field, field_next
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1, component: 2) with(buf_in: field, buf_out: out field_next)
+    run inject(x: mouse_x, y: mouse_y, radius: 15.0, value: 0.5, falloff_quadratic: 1, component: 2) with(buf_in: field, buf_out: out field_next)
     swap field, field_next
   }
   run advect with(field_in: field, field_out: out field_next)

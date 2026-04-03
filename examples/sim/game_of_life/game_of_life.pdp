@@ -26,7 +26,7 @@ pipeline gpu {
     run init_grid with(grid: out grid)
   }
   on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 3.0, value: 1.0) with(buf_in: grid, buf_out: out grid_next)
+    run inject(x: mouse_x, y: mouse_y, radius: 3.0, value: 1.0) with(buf_in: grid, buf_out: out grid_next)
     swap grid, grid_next
   }
   loop(iterations: iterations) {

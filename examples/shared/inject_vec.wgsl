@@ -3,7 +3,7 @@
 // Works for vec2<f32> buffers too (just use component 0 or 1).
 //
 // User args:
-//   inject_x, inject_y: center point (mouse position)
+//   x, y: center point (mouse position)
 //   radius: injection radius in pixels
 //   value: value to write (flat) or add (quadratic)
 //   falloff_quadratic: 0 = flat (overwrite), 1 = quadratic (additive falloff)
@@ -15,8 +15,8 @@ struct Params {
     stride: u32,
     _pad: u32,
     // User args
-    inject_x: f32,
-    inject_y: f32,
+    x: f32,
+    y: f32,
     radius: f32,
     value: f32,
     falloff_quadratic: f32,
@@ -41,8 +41,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let fx = f32(x);
     let fy = f32(y);
-    let dx = fx - params.inject_x;
-    let dy = fy - params.inject_y;
+    let dx = fx - params.x;
+    let dy = fy - params.y;
     let d2 = dx * dx + dy * dy;
     let r2 = params.radius * params.radius;
     let i = idx(x, y);

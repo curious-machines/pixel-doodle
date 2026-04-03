@@ -89,8 +89,8 @@ mod tests {
                 run init_state with(out: out state)
               }
               on mousedown {
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
+                run inject(x: 0.0, y: 0.0, radius: 3.0, value: 1.0, falloff_quadratic: 0) with(target: state, target_out: out state)
+                run inject(x: 0.0, y: 0.0, radius: 3.0, value: 0.0, falloff_quadratic: 0) with(target: age, target_out: out age)
               }
               loop(iterations: iterations) {
                 run game_of_life with(state_in: state, age_in: age, state_out: out state_next, age_out: out age_next)
@@ -140,8 +140,8 @@ mod tests {
               buffer divergence = constant(0.0)
 
               on mousedown {
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
-                run inject(inject_x: 0.0, inject_y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
+                run inject(x: 0.0, y: 0.0, radius: 15.0, value: -3.0, falloff_quadratic: 1) with(target: vy, target_out: out vy)
+                run inject(x: 0.0, y: 0.0, radius: 15.0, value: 0.5, falloff_quadratic: 1) with(target: density, target_out: out density)
               }
               swap vx, vx0
               swap vy, vy0
@@ -252,7 +252,7 @@ mod tests {
                 run init_state with(out: out state)
               }
               on mousedown {
-                run inject(inject_x: 0.0, inject_y: 0.0) with(target: state, target_out: out state)
+                run inject(x: 0.0, y: 0.0) with(target: state, target_out: out state)
               }
               loop(iterations: iterations) {
                 run game_of_life with(state_in: state, state_out: out state_next)
@@ -271,7 +271,7 @@ mod tests {
         assert!(pdc.contains("builtin var frame: u64"), "missing builtin var");
         assert!(pdc.contains("var iterations: u32 = 1"), "missing user var");
         assert!(pdc.contains("fn init()"), "missing init function");
-        assert!(pdc.contains("fn frame()"), "missing frame function");
+        assert!(pdc.contains("fn frame() -> bool"), "missing frame function");
         assert!(pdc.contains("create_buffer("), "missing create_buffer");
         assert!(pdc.contains("load_kernel("), "missing load_kernel");
         assert!(pdc.contains("run_kernel("), "missing run_kernel");
@@ -300,7 +300,7 @@ mod tests {
 
         let pdc = to_pdc::config_to_pdc(&config);
         assert!(pdc.contains("fn init()"));
-        assert!(pdc.contains("fn frame()"));
+        assert!(pdc.contains("fn frame() -> bool"));
         assert!(pdc.contains("load_kernel(\"solid_red\""));
         assert!(pdc.contains("run_kernel("));
         assert!(pdc.contains("display()"));

@@ -2218,7 +2218,7 @@ mod tests {
         let total = (width * height) as usize;
 
         // Params: width(4) height(4) stride(4) _pad(4)
-        //         inject_x(4) inject_y(4) radius(4) value(4)
+        //         x(4) y(4) radius(4) value(4)
         //         falloff_quadratic(4) component(4) _pad2(4) _pad3(4)
         // Total: 48 bytes
         let mut params = [0u8; 48];
@@ -2226,8 +2226,8 @@ mod tests {
         params[4..8].copy_from_slice(&height.to_le_bytes());
         params[8..12].copy_from_slice(&stride.to_le_bytes());
         // inject at center (4, 4), radius 2, value 5.0, flat (falloff=0), component 0 (x)
-        params[16..20].copy_from_slice(&4.0f32.to_le_bytes()); // inject_x
-        params[20..24].copy_from_slice(&4.0f32.to_le_bytes()); // inject_y
+        params[16..20].copy_from_slice(&4.0f32.to_le_bytes()); // x
+        params[20..24].copy_from_slice(&4.0f32.to_le_bytes()); // y
         params[24..28].copy_from_slice(&2.0f32.to_le_bytes()); // radius
         params[28..32].copy_from_slice(&5.0f32.to_le_bytes()); // value
         params[32..36].copy_from_slice(&0.0f32.to_le_bytes()); // falloff_quadratic (flat)

@@ -22,7 +22,7 @@ pipeline gpu {
     run init_field with(field_out: out field)
   }
   on mousedown {
-    run inject(inject_x: mouse_x, inject_y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) with(buf_in: field, buf_out: out field_next)
+    run inject(x: mouse_x, y: mouse_y, radius: 5.0, value: 0.5, falloff_quadratic: 0, component: 1) with(buf_in: field, buf_out: out field_next)
     swap field, field_next
   }
   loop(iterations: 8) {

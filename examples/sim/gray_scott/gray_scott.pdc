@@ -38,8 +38,8 @@ fn toggle_pause() { paused = !paused }
 fn step_frame() { frame = frame + 1.0 }
 
 fn inject_at_mouse() {
-    inject.inject_x = mouse_x
-    inject.inject_y = mouse_y
+    inject.x = mouse_x
+    inject.y = mouse_y
     inject.radius = 5.0
     inject.value = 0.5
     inject.falloff_quadratic = 0.0
