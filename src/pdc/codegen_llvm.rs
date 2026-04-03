@@ -1362,6 +1362,21 @@ impl<'a> LlvmCodegenCtx<'a> {
                 if self.is_state_var(name) {
                     return self.load_state_var(name);
                 }
+
+                // Function reference: emit the JIT'd function's address as a pointer
+                if matches!(self.node_type(expr.id), PdcType::FnRef { .. }) {
+                    let resolved = if let Some(qualified) = self.fn_aliases.get(name) {
+                        qualified.clone()
+                    } else {
+                        name.clone()
+                    };
+                    let base = mangle_name(&resolved);
+                    let mangled = format!("pdc_userfn_{base}");
+                    if let Some(fn_val) = self.user_fn_llvm.get(&mangled) {
+                        return Ok(fn_val.as_global_value().as_pointer_value().into());
+                    }
+                }
+
                 self.load_variable(name)
             }
             Expr::BinaryOp { op, left, right } => {
@@ -1934,6 +1949,10 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "request_redraw"
                 | "set_max_samples" | "is_converged" | "accumulate_sample"
                 | "display_accumulated" | "reset_accumulation"
+                | "set_keypress" | "set_keydown" | "set_keyup"
+                | "clear_keypress" | "clear_keydown" | "clear_keyup"
+                | "set_mousedown" | "set_mouseup" | "set_click"
+                | "clear_mousedown" | "clear_mouseup" | "clear_click"
             );
 
             let mut arg_vals: Vec<BasicValueEnum> = Vec::new();

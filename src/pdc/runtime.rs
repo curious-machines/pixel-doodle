@@ -125,6 +125,46 @@ pub trait PipelineHost {
     /// For pixel kernels: dispatches the compute shader headlessly and reads back.
     /// For sim kernels: reads back the display buffer from GpuSimRunner.
     fn readback_gpu_pixels(&mut self) {}
+
+    // ── Event handler registration ──
+
+    /// Register a handler function pointer for a key press event.
+    fn set_keypress_handler(&mut self, _key: i32, _fn_ptr: *const u8) {}
+    /// Clear the handler for a key press event.
+    fn clear_keypress_handler(&mut self, _key: i32) {}
+    /// Register a handler function pointer for a key down (held) event.
+    fn set_keydown_handler(&mut self, _key: i32, _fn_ptr: *const u8) {}
+    /// Clear the handler for a key down event.
+    fn clear_keydown_handler(&mut self, _key: i32) {}
+    /// Register a handler function pointer for a key up event.
+    fn set_keyup_handler(&mut self, _key: i32, _fn_ptr: *const u8) {}
+    /// Clear the handler for a key up event.
+    fn clear_keyup_handler(&mut self, _key: i32) {}
+    /// Register a handler function pointer for mouse down.
+    fn set_mousedown_handler(&mut self, _fn_ptr: *const u8) {}
+    /// Clear the mouse down handler.
+    fn clear_mousedown_handler(&mut self) {}
+    /// Register a handler function pointer for mouse up.
+    fn set_mouseup_handler(&mut self, _fn_ptr: *const u8) {}
+    /// Clear the mouse up handler.
+    fn clear_mouseup_handler(&mut self) {}
+    /// Register a handler function pointer for click.
+    fn set_click_handler(&mut self, _fn_ptr: *const u8) {}
+    /// Clear the click handler.
+    fn clear_click_handler(&mut self) {}
+
+    /// Get the registered handler for a key press event.
+    fn get_keypress_handler(&self, _key: i32) -> Option<*const u8> { None }
+    /// Get the registered handler for a key down event.
+    fn get_keydown_handler(&self, _key: i32) -> Option<*const u8> { None }
+    /// Get the registered handler for a key up event.
+    fn get_keyup_handler(&self, _key: i32) -> Option<*const u8> { None }
+    /// Get the registered mouse down handler.
+    fn get_mousedown_handler(&self) -> Option<*const u8> { None }
+    /// Get the registered mouse up handler.
+    fn get_mouseup_handler(&self) -> Option<*const u8> { None }
+    /// Get the registered click handler.
+    fn get_click_handler(&self) -> Option<*const u8> { None }
 }
 
 /// Fill rule for path filling.
@@ -834,6 +874,45 @@ pub extern "C" fn pdc_load_texture(ctx: *mut PdcContext, name_handle: i32, path_
     }
 }
 
+// ── Event handler registration host calls ──
+
+pub extern "C" fn pdc_set_keypress(ctx: *mut PdcContext, key: i32, handler: *const u8) {
+    unsafe { get_host(ctx).set_keypress_handler(key, handler) }
+}
+pub extern "C" fn pdc_clear_keypress(ctx: *mut PdcContext, key: i32) {
+    unsafe { get_host(ctx).clear_keypress_handler(key) }
+}
+pub extern "C" fn pdc_set_keydown(ctx: *mut PdcContext, key: i32, handler: *const u8) {
+    unsafe { get_host(ctx).set_keydown_handler(key, handler) }
+}
+pub extern "C" fn pdc_clear_keydown(ctx: *mut PdcContext, key: i32) {
+    unsafe { get_host(ctx).clear_keydown_handler(key) }
+}
+pub extern "C" fn pdc_set_keyup(ctx: *mut PdcContext, key: i32, handler: *const u8) {
+    unsafe { get_host(ctx).set_keyup_handler(key, handler) }
+}
+pub extern "C" fn pdc_clear_keyup(ctx: *mut PdcContext, key: i32) {
+    unsafe { get_host(ctx).clear_keyup_handler(key) }
+}
+pub extern "C" fn pdc_set_mousedown(ctx: *mut PdcContext, handler: *const u8) {
+    unsafe { get_host(ctx).set_mousedown_handler(handler) }
+}
+pub extern "C" fn pdc_clear_mousedown(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).clear_mousedown_handler() }
+}
+pub extern "C" fn pdc_set_mouseup(ctx: *mut PdcContext, handler: *const u8) {
+    unsafe { get_host(ctx).set_mouseup_handler(handler) }
+}
+pub extern "C" fn pdc_clear_mouseup(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).clear_mouseup_handler() }
+}
+pub extern "C" fn pdc_set_click(ctx: *mut PdcContext, handler: *const u8) {
+    unsafe { get_host(ctx).set_click_handler(handler) }
+}
+pub extern "C" fn pdc_clear_click(ctx: *mut PdcContext) {
+    unsafe { get_host(ctx).clear_click_handler() }
+}
+
 /// Return all runtime symbols for JIT registration.
 pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
     vec![
@@ -931,5 +1010,18 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_accumulate_sample", pdc_accumulate_sample as *const u8),
         ("pdc_display_accumulated", pdc_display_accumulated as *const u8),
         ("pdc_reset_accumulation", pdc_reset_accumulation as *const u8),
+        // Event handler registration
+        ("pdc_set_keypress", pdc_set_keypress as *const u8),
+        ("pdc_clear_keypress", pdc_clear_keypress as *const u8),
+        ("pdc_set_keydown", pdc_set_keydown as *const u8),
+        ("pdc_clear_keydown", pdc_clear_keydown as *const u8),
+        ("pdc_set_keyup", pdc_set_keyup as *const u8),
+        ("pdc_clear_keyup", pdc_clear_keyup as *const u8),
+        ("pdc_set_mousedown", pdc_set_mousedown as *const u8),
+        ("pdc_clear_mousedown", pdc_clear_mousedown as *const u8),
+        ("pdc_set_mouseup", pdc_set_mouseup as *const u8),
+        ("pdc_clear_mouseup", pdc_clear_mouseup as *const u8),
+        ("pdc_set_click", pdc_set_click as *const u8),
+        ("pdc_clear_click", pdc_clear_click as *const u8),
     ]
 }

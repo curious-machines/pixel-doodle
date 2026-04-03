@@ -6,15 +6,23 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
+
 var grid = Buffer.I32()
 var grid_next = Buffer.I32()
 var pixels = Buffer.U32()
+
 var step_kern = Kernel.Sim("step", "game_of_life_step.wgsl")
 var vis_kern = Kernel.Sim("vis", "game_of_life_vis.wgsl")
 var init_grid_kern = Kernel.Sim("init_grid", "game_of_life_init.wgsl")
 var inject_kern = Kernel.Sim("inject", "../../shared/inject_i32.wgsl")
 
 fn init() {
+    set_keypress(Key.Space, toggle_pause)
+    set_keypress(Key.Period, step_frame)
+    set_keypress(Key.BracketRight, speed_up)
+    set_keypress(Key.BracketLeft, speed_down)
+    set_mousedown(inject_at_mouse)
+
     init_grid_kern.grid = Bind.Out(grid)
     init_grid_kern.run()
 }
@@ -22,34 +30,27 @@ fn init() {
 fn frame() {
     step_kern.grid_in = Bind.In(grid)
     step_kern.grid_out = Bind.Out(grid_next)
+
     for _i in 0..i32(iterations) {
         step_kern.run()
         swap(grid, grid_next)
     }
+
     vis_kern.grid_in = Bind.In(grid)
     vis_kern.pixels = Bind.Out(pixels)
     vis_kern.run()
+
     pixels.display_buffer()
+
     request_redraw()
 }
 
-fn on_keypress_space() {
-    paused = !paused
-}
+fn toggle_pause() { paused = !paused }
+fn step_frame() { frame = frame + 1.0 }
+fn speed_up() { iterations = min(8.0, iterations + 1.0) }
+fn speed_down() { iterations = max(iterations - 1.0, 1.0) }
 
-fn on_keypress_period() {
-    frame = frame + 1.0
-}
-
-fn on_keypress_bracket_right() {
-    iterations = min(8.0, iterations + 1.0)
-}
-
-fn on_keypress_bracket_left() {
-    iterations = max(iterations - 1.0, 1.0)
-}
-
-fn on_mousedown() {
+fn inject_at_mouse() {
     inject_kern.inject_x = mouse_x
     inject_kern.inject_y = mouse_y
     inject_kern.radius = 3.0

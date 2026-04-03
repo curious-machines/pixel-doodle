@@ -15,13 +15,23 @@ fn frame() {
     request_redraw()
 }
 
-fn on_keydown_left() { center_x = center_x - 0.02 / zoom }
-fn on_keydown_right() { center_x = center_x + 0.02 / zoom }
-fn on_keydown_up() { center_y = center_y - 0.02 / zoom }
-fn on_keydown_down() { center_y = center_y + 0.02 / zoom }
-fn on_keydown_plus() { zoom = zoom * 1.03 }
-fn on_keydown_minus() { zoom = zoom / 1.03 }
-fn on_keypress_0() {
+fn init() {
+    set_keydown(Key.Left, pan_left)
+    set_keydown(Key.Right, pan_right)
+    set_keydown(Key.Up, pan_up)
+    set_keydown(Key.Down, pan_down)
+    set_keydown(Key.Plus, zoom_in)
+    set_keydown(Key.Minus, zoom_out)
+    set_keypress(Key.Digit0, reset_view)
+}
+
+fn pan_left() { center_x = center_x - 0.02 / zoom }
+fn pan_right() { center_x = center_x + 0.02 / zoom }
+fn pan_up() { center_y = center_y - 0.02 / zoom }
+fn pan_down() { center_y = center_y + 0.02 / zoom }
+fn zoom_in() { zoom = zoom * 1.03 }
+fn zoom_out() { zoom = zoom / 1.03 }
+fn reset_view() {
     center_x = 0.0
     center_y = 0.0
     zoom = 1.0

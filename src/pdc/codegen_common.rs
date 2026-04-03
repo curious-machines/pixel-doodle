@@ -185,61 +185,6 @@ impl CompiledProgram {
         Ok(())
     }
 
-    /// Call an event handler by event kind and key name, if one exists.
-    ///
-    /// Looks for functions named `on_{kind}_{key}` (e.g., `on_keypress_space`)
-    /// or `on_{kind}` for mouse events (e.g., `on_mousedown`).
-    ///
-    /// # Safety
-    /// The `ctx` must have valid state and host pointers.
-    #[allow(unsafe_op_in_unsafe_fn)]
-    pub unsafe fn call_event(
-        &self,
-        event_name: &str,
-        ctx: &mut runtime::PdcContext,
-    ) -> Result<bool, PdcError> {
-        if self.has_fn(event_name) {
-            self.call_fn(event_name, ctx, &[])?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Get all event handler names defined in this program.
-    ///
-    /// Returns function names matching the patterns:
-    /// - `on_keypress_{key}`, `on_keydown_{key}`, `on_keyup_{key}`
-    /// - `on_mousedown`, `on_mouseup`, `on_click`
-    pub fn event_handlers(&self) -> Vec<&str> {
-        self.user_fns.keys()
-            .filter(|name| {
-                name.starts_with("on_keypress_")
-                    || name.starts_with("on_keydown_")
-                    || name.starts_with("on_keyup_")
-                    || *name == "on_mousedown"
-                    || *name == "on_mouseup"
-                    || *name == "on_click"
-            })
-            .map(|s| s.as_str())
-            .collect()
-    }
-
-    /// Get keyboard event handler names grouped by event kind.
-    ///
-    /// Returns (kind_prefix, key_name) pairs, e.g., ("on_keypress", "space").
-    pub fn keyboard_handlers(&self) -> Vec<(&str, &str)> {
-        let mut handlers = Vec::new();
-        for name in self.user_fns.keys() {
-            for prefix in &["on_keypress_", "on_keydown_", "on_keyup_"] {
-                if let Some(key) = name.strip_prefix(prefix) {
-                    handlers.push((&prefix[..prefix.len() - 1], key));
-                }
-            }
-        }
-        handlers
-    }
-
     /// Call a user-defined function by qualified name with typed arguments.
     ///
     /// Supports functions with 0-3 parameters using common type combinations.

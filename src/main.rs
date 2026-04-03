@@ -668,8 +668,8 @@ impl ApplicationHandler for PdcPipelineApp {
                         }
                         if !self.keys_down.contains(&code) {
                             self.keys_down.push(code);
-                            if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(code) {
-                                if self.runtime.handle_keypress(name) {
+                            if let Some(tag) = pixel_doodle::pdc::pipeline_runtime::key_code_to_tag(code) {
+                                if self.runtime.handle_keypress(tag) {
                                     event_loop.exit();
                                     return;
                                 }
@@ -680,8 +680,8 @@ impl ApplicationHandler for PdcPipelineApp {
                         }
                     } else {
                         self.keys_down.retain(|k| *k != code);
-                        if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(code) {
-                            if self.runtime.handle_keyup(name) {
+                        if let Some(tag) = pixel_doodle::pdc::pipeline_runtime::key_code_to_tag(code) {
+                            if self.runtime.handle_keyup(tag) {
                                 event_loop.exit();
                                 return;
                             }
@@ -708,8 +708,8 @@ impl ApplicationHandler for PdcPipelineApp {
             }
             WindowEvent::RedrawRequested => {
                 for code in &self.keys_down.clone() {
-                    if let Some(name) = pixel_doodle::pdp::runtime::key_code_to_name(*code) {
-                        if self.runtime.handle_keydown(name) {
+                    if let Some(tag) = pixel_doodle::pdc::pipeline_runtime::key_code_to_tag(*code) {
+                        if self.runtime.handle_keydown(tag) {
                             event_loop.exit();
                             return;
                         }

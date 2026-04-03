@@ -16,6 +16,9 @@ var inject_kern = Kernel.Sim("inject", "../../shared/inject_vec.wgsl")
 fn init() {
     init_field_kern.field_out = Bind.Out(field)
     init_field_kern.run()
+    set_keypress(Key.Space, toggle_pause)
+    set_keypress(Key.Period, step_frame)
+    set_mousedown(inject_at_mouse)
 }
 
 fn frame() {
@@ -32,10 +35,10 @@ fn frame() {
     request_redraw()
 }
 
-fn on_keypress_space() { paused = !paused }
-fn on_keypress_period() { frame = frame + 1.0 }
+fn toggle_pause() { paused = !paused }
+fn step_frame() { frame = frame + 1.0 }
 
-fn on_mousedown() {
+fn inject_at_mouse() {
     inject_kern.inject_x = mouse_x
     inject_kern.inject_y = mouse_y
     inject_kern.radius = 10.0

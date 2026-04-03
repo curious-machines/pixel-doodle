@@ -1828,6 +1828,21 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     return self.load_state_var(name);
                 }
 
+                // Function reference: emit the JIT'd function's address as a pointer
+                if matches!(self.node_type(expr.id), PdcType::FnRef { .. }) {
+                    let resolved = if let Some(qualified) = self.fn_aliases.get(name) {
+                        qualified.clone()
+                    } else {
+                        name.clone()
+                    };
+                    let base = mangle_name(&resolved);
+                    let mangled = format!("pdc_userfn_{base}");
+                    if let Some(&func_id) = self.user_fn_ids.get(&mangled) {
+                        let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
+                        return Ok(self.builder.ins().func_addr(self.pointer_type, func_ref));
+                    }
+                }
+
                 let (var, _) = self.variables.get(name).cloned().ok_or_else(|| {
                     PdcError::Codegen {
                         message: format!("undefined variable '{name}'"),
@@ -2420,6 +2435,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "request_redraw"
             | "set_max_samples" | "is_converged" | "accumulate_sample"
             | "display_accumulated" | "reset_accumulation"
+            | "set_keypress" | "set_keydown" | "set_keyup"
+            | "clear_keypress" | "clear_keydown" | "clear_keyup"
+            | "set_mousedown" | "set_mouseup" | "set_click"
+            | "clear_mousedown" | "clear_mouseup" | "clear_click"
         );
 
         let mut arg_vals = Vec::new();

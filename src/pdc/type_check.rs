@@ -218,6 +218,30 @@ impl TypeChecker {
         });
         self.define_var("LineJoin", PdcType::Enum("LineJoin".into()));
 
+        self.enums.insert("Key".into(), EnumInfo {
+            variants: vec![
+                EnumVariantInfo { name: "Space".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Left".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Right".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Up".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Down".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Plus".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Minus".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "BracketLeft".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "BracketRight".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Digit0".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Digit1".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Digit2".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Digit3".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "R".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Q".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Escape".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Period".into(), field_names: vec![], field_types: vec![] },
+                EnumVariantInfo { name: "Comma".into(), field_names: vec![], field_types: vec![] },
+            ],
+        });
+        self.define_var("Key", PdcType::Enum("Key".into()));
+
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract", "exp2"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
                 params: vec![PdcType::F64],
@@ -324,6 +348,39 @@ impl TypeChecker {
             ret: PdcType::Void,
             takes_ctx: true,
         });
+
+        // Event handler registration
+        let handler_ty = PdcType::FnRef { params: vec![], ret: Box::new(PdcType::Void) };
+        let key_ty = PdcType::Enum("Key".into());
+
+        for name in &["set_keypress", "set_keydown", "set_keyup"] {
+            self.builtins.insert(name.to_string(), BuiltinFn {
+                params: vec![key_ty.clone(), handler_ty.clone()],
+                ret: PdcType::Void,
+                takes_ctx: true,
+            });
+        }
+        for name in &["clear_keypress", "clear_keydown", "clear_keyup"] {
+            self.builtins.insert(name.to_string(), BuiltinFn {
+                params: vec![key_ty.clone()],
+                ret: PdcType::Void,
+                takes_ctx: true,
+            });
+        }
+        for name in &["set_mousedown", "set_mouseup", "set_click"] {
+            self.builtins.insert(name.to_string(), BuiltinFn {
+                params: vec![handler_ty.clone()],
+                ret: PdcType::Void,
+                takes_ctx: true,
+            });
+        }
+        for name in &["clear_mousedown", "clear_mouseup", "clear_click"] {
+            self.builtins.insert(name.to_string(), BuiltinFn {
+                params: vec![],
+                ret: PdcType::Void,
+                takes_ctx: true,
+            });
+        }
     }
 
     fn push_scope(&mut self) {

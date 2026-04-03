@@ -4,6 +4,7 @@
 //! replacing the declarative PDP config. It implements the same public interface
 //! as `pdp::runtime::Runtime` so that `main.rs` can use either.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::display::Display;
@@ -94,6 +95,18 @@ struct HostState {
     gpu_kernel_names: Vec<String>,
     /// Thread pool for parallel CPU kernel dispatch.
     thread_pool: Option<rayon::ThreadPool>,
+    /// Registered keypress handlers: Key tag → JIT'd function pointer.
+    keypress_handlers: HashMap<i32, *const u8>,
+    /// Registered keydown handlers: Key tag → JIT'd function pointer.
+    keydown_handlers: HashMap<i32, *const u8>,
+    /// Registered keyup handlers: Key tag → JIT'd function pointer.
+    keyup_handlers: HashMap<i32, *const u8>,
+    /// Registered mouse down handler.
+    mousedown_handler: Option<*const u8>,
+    /// Registered mouse up handler.
+    mouseup_handler: Option<*const u8>,
+    /// Registered click handler.
+    click_handler: Option<*const u8>,
 }
 
 #[allow(dead_code)]
@@ -901,6 +914,63 @@ impl PipelineHost for HostState {
             }
         }
     }
+
+    // ── Event handler registration ──
+
+    fn set_keypress_handler(&mut self, key: i32, fn_ptr: *const u8) {
+        self.keypress_handlers.insert(key, fn_ptr);
+    }
+    fn clear_keypress_handler(&mut self, key: i32) {
+        self.keypress_handlers.remove(&key);
+    }
+    fn set_keydown_handler(&mut self, key: i32, fn_ptr: *const u8) {
+        self.keydown_handlers.insert(key, fn_ptr);
+    }
+    fn clear_keydown_handler(&mut self, key: i32) {
+        self.keydown_handlers.remove(&key);
+    }
+    fn set_keyup_handler(&mut self, key: i32, fn_ptr: *const u8) {
+        self.keyup_handlers.insert(key, fn_ptr);
+    }
+    fn clear_keyup_handler(&mut self, key: i32) {
+        self.keyup_handlers.remove(&key);
+    }
+    fn set_mousedown_handler(&mut self, fn_ptr: *const u8) {
+        self.mousedown_handler = Some(fn_ptr);
+    }
+    fn clear_mousedown_handler(&mut self) {
+        self.mousedown_handler = None;
+    }
+    fn set_mouseup_handler(&mut self, fn_ptr: *const u8) {
+        self.mouseup_handler = Some(fn_ptr);
+    }
+    fn clear_mouseup_handler(&mut self) {
+        self.mouseup_handler = None;
+    }
+    fn set_click_handler(&mut self, fn_ptr: *const u8) {
+        self.click_handler = Some(fn_ptr);
+    }
+    fn clear_click_handler(&mut self) {
+        self.click_handler = None;
+    }
+    fn get_keypress_handler(&self, key: i32) -> Option<*const u8> {
+        self.keypress_handlers.get(&key).copied()
+    }
+    fn get_keydown_handler(&self, key: i32) -> Option<*const u8> {
+        self.keydown_handlers.get(&key).copied()
+    }
+    fn get_keyup_handler(&self, key: i32) -> Option<*const u8> {
+        self.keyup_handlers.get(&key).copied()
+    }
+    fn get_mousedown_handler(&self) -> Option<*const u8> {
+        self.mousedown_handler
+    }
+    fn get_mouseup_handler(&self) -> Option<*const u8> {
+        self.mouseup_handler
+    }
+    fn get_click_handler(&self) -> Option<*const u8> {
+        self.click_handler
+    }
 }
 
 /// Map PDC type name strings to GpuElementType.
@@ -1014,6 +1084,12 @@ impl PdcRuntime {
             gpu_queue: None,
             gpu_kernel_names: Vec::new(),
             thread_pool: None,
+            keypress_handlers: HashMap::new(),
+            keydown_handlers: HashMap::new(),
+            keyup_handlers: HashMap::new(),
+            mousedown_handler: None,
+            mouseup_handler: None,
+            click_handler: None,
         });
 
         let title = source_path
@@ -1209,13 +1285,19 @@ impl PdcRuntime {
         let mut ctx = self.make_ctx();
 
         if mouse_down_edge {
-            unsafe { let _ = self.compiled.call_event("on_click", &mut ctx); }
+            if let Some(fn_ptr) = self.host.get_click_handler() {
+                unsafe { call_handler(fn_ptr, &mut ctx); }
+            }
         }
         if self.mouse_down {
-            unsafe { let _ = self.compiled.call_event("on_mousedown", &mut ctx); }
+            if let Some(fn_ptr) = self.host.get_mousedown_handler() {
+                unsafe { call_handler(fn_ptr, &mut ctx); }
+            }
         }
         if mouse_up_edge {
-            unsafe { let _ = self.compiled.call_event("on_mouseup", &mut ctx); }
+            if let Some(fn_ptr) = self.host.get_mouseup_handler() {
+                unsafe { call_handler(fn_ptr, &mut ctx); }
+            }
         }
 
         unsafe { self.compiled.call_frame(&mut ctx).unwrap(); }
@@ -1236,27 +1318,30 @@ impl PdcRuntime {
         }
     }
 
-    pub fn handle_keypress(&mut self, key_name: &str) -> bool {
-        let event_name = format!("on_keypress_{key_name}");
-        let mut ctx = self.make_ctx();
-        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
-        self.read_back_builtins();
-        false // never quit via keypress for now
-    }
-
-    pub fn handle_keydown(&mut self, key_name: &str) -> bool {
-        let event_name = format!("on_keydown_{key_name}");
-        let mut ctx = self.make_ctx();
-        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
-        self.read_back_builtins();
+    pub fn handle_keypress(&mut self, key_tag: i32) -> bool {
+        if let Some(fn_ptr) = self.host.get_keypress_handler(key_tag) {
+            let mut ctx = self.make_ctx();
+            unsafe { call_handler(fn_ptr, &mut ctx); }
+            self.read_back_builtins();
+        }
         false
     }
 
-    pub fn handle_keyup(&mut self, key_name: &str) -> bool {
-        let event_name = format!("on_keyup_{key_name}");
-        let mut ctx = self.make_ctx();
-        let _handled = unsafe { self.compiled.call_event(&event_name, &mut ctx).unwrap_or(false) };
-        self.read_back_builtins();
+    pub fn handle_keydown(&mut self, key_tag: i32) -> bool {
+        if let Some(fn_ptr) = self.host.get_keydown_handler(key_tag) {
+            let mut ctx = self.make_ctx();
+            unsafe { call_handler(fn_ptr, &mut ctx); }
+            self.read_back_builtins();
+        }
+        false
+    }
+
+    pub fn handle_keyup(&mut self, key_tag: i32) -> bool {
+        if let Some(fn_ptr) = self.host.get_keyup_handler(key_tag) {
+            let mut ctx = self.make_ctx();
+            unsafe { call_handler(fn_ptr, &mut ctx); }
+            self.read_back_builtins();
+        }
         false
     }
 
@@ -1313,4 +1398,41 @@ impl PdcRuntime {
         let src = self.host.pixel_buffer();
         self.pixel_buffer.copy_from_slice(src);
     }
+}
+
+/// Call a registered event handler function pointer with the given PdcContext.
+///
+/// # Safety
+/// The `fn_ptr` must be a valid JIT'd function with signature `extern "C" fn(*mut PdcContext)`.
+unsafe fn call_handler(fn_ptr: *const u8, ctx: &mut PdcContext) {
+    unsafe {
+        let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+        f(ctx);
+    }
+}
+
+/// Map winit KeyCode to Key enum tag (must match variant order in type_check.rs).
+pub fn key_code_to_tag(code: winit::keyboard::KeyCode) -> Option<i32> {
+    use winit::keyboard::KeyCode;
+    Some(match code {
+        KeyCode::Space => 0,           // Key.Space
+        KeyCode::ArrowLeft => 1,       // Key.Left
+        KeyCode::ArrowRight => 2,      // Key.Right
+        KeyCode::ArrowUp => 3,         // Key.Up
+        KeyCode::ArrowDown => 4,       // Key.Down
+        KeyCode::Equal | KeyCode::NumpadAdd => 5,      // Key.Plus
+        KeyCode::Minus | KeyCode::NumpadSubtract => 6,  // Key.Minus
+        KeyCode::BracketLeft => 7,     // Key.BracketLeft
+        KeyCode::BracketRight => 8,    // Key.BracketRight
+        KeyCode::Digit0 | KeyCode::Numpad0 => 9,   // Key.Digit0
+        KeyCode::Digit1 | KeyCode::Numpad1 => 10,  // Key.Digit1
+        KeyCode::Digit2 | KeyCode::Numpad2 => 11,  // Key.Digit2
+        KeyCode::Digit3 | KeyCode::Numpad3 => 12,  // Key.Digit3
+        KeyCode::KeyR => 13,           // Key.R
+        KeyCode::KeyQ => 14,           // Key.Q
+        KeyCode::Escape => 15,         // Key.Escape
+        KeyCode::Period => 16,         // Key.Period
+        KeyCode::Comma => 17,          // Key.Comma
+        _ => return None,
+    })
 }

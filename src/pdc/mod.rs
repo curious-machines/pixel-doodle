@@ -2030,87 +2030,317 @@ mod tests {
         assert_eq!(*log, vec!["create_buffer(gpu_vec4_f32, 0)"]);
     }
 
-    // ---- Event handler tests (Phase 5) ----
+    // ---- Event handler registration tests ----
 
-    #[test]
-    fn event_handler_discovery() {
-        let (compiled, _, _) = compile_with_state(r#"
-            var paused: bool = false
-            var zoom: f64 = 1.0
+    /// Minimal PipelineHost implementation that stores event handler registrations.
+    struct EventTestHost {
+        keypress_handlers: std::collections::HashMap<i32, *const u8>,
+        keydown_handlers: std::collections::HashMap<i32, *const u8>,
+        keyup_handlers: std::collections::HashMap<i32, *const u8>,
+        mousedown_handler: Option<*const u8>,
+        mouseup_handler: Option<*const u8>,
+        click_handler: Option<*const u8>,
+    }
 
-            fn on_keypress_space() { paused = !paused }
-            fn on_keydown_left() { zoom = zoom - 0.1 }
-            fn on_keydown_right() { zoom = zoom + 0.1 }
-            fn on_mousedown() { paused = false }
-            fn on_click() { zoom = 1.0 }
-            fn frame() {}
-            fn helper() {}
-        "#);
+    impl EventTestHost {
+        fn new() -> Self {
+            EventTestHost {
+                keypress_handlers: std::collections::HashMap::new(),
+                keydown_handlers: std::collections::HashMap::new(),
+                keyup_handlers: std::collections::HashMap::new(),
+                mousedown_handler: None,
+                mouseup_handler: None,
+                click_handler: None,
+            }
+        }
+    }
 
-        let mut handlers = compiled.event_handlers();
-        handlers.sort();
-        assert_eq!(handlers, vec![
-            "on_click",
-            "on_keydown_left",
-            "on_keydown_right",
-            "on_keypress_space",
-            "on_mousedown",
-        ]);
+    impl runtime::PipelineHost for EventTestHost {
+        fn create_buffer(&mut self, _: &str, _: f64) -> i32 { 0 }
+        fn swap_buffers(&mut self, _: i32, _: i32) {}
+        fn load_kernel(&mut self, _: &str, _: &str, _: i32) -> i32 { 0 }
+        fn bind_buffer(&mut self, _: i32, _: &str, _: i32, _: bool) {}
+        fn set_kernel_arg_f64(&mut self, _: i32, _: &str, _: f64) {}
+        fn set_kernel_arg_f32(&mut self, _: i32, _: &str, _: f32) {}
+        fn run_kernel(&mut self, _: i32) {}
+        fn display(&mut self) {}
+        fn display_buffer(&mut self, _: i32) {}
+        fn load_texture(&mut self, _: &str, _: &str) -> i32 { 0 }
+        fn set_max_samples(&mut self, _: i32) {}
+        fn is_converged(&self) -> bool { false }
+        fn accumulate_sample(&mut self) {}
+        fn display_accumulated(&mut self) {}
+        fn reset_accumulation(&mut self) {}
 
-        let mut kb = compiled.keyboard_handlers();
-        kb.sort();
-        assert_eq!(kb, vec![
-            ("on_keydown", "left"),
-            ("on_keydown", "right"),
-            ("on_keypress", "space"),
-        ]);
+        fn set_keypress_handler(&mut self, key: i32, fn_ptr: *const u8) {
+            self.keypress_handlers.insert(key, fn_ptr);
+        }
+        fn clear_keypress_handler(&mut self, key: i32) {
+            self.keypress_handlers.remove(&key);
+        }
+        fn set_keydown_handler(&mut self, key: i32, fn_ptr: *const u8) {
+            self.keydown_handlers.insert(key, fn_ptr);
+        }
+        fn clear_keydown_handler(&mut self, key: i32) {
+            self.keydown_handlers.remove(&key);
+        }
+        fn set_keyup_handler(&mut self, key: i32, fn_ptr: *const u8) {
+            self.keyup_handlers.insert(key, fn_ptr);
+        }
+        fn clear_keyup_handler(&mut self, key: i32) {
+            self.keyup_handlers.remove(&key);
+        }
+        fn set_mousedown_handler(&mut self, fn_ptr: *const u8) {
+            self.mousedown_handler = Some(fn_ptr);
+        }
+        fn clear_mousedown_handler(&mut self) {
+            self.mousedown_handler = None;
+        }
+        fn set_mouseup_handler(&mut self, fn_ptr: *const u8) {
+            self.mouseup_handler = Some(fn_ptr);
+        }
+        fn clear_mouseup_handler(&mut self) {
+            self.mouseup_handler = None;
+        }
+        fn set_click_handler(&mut self, fn_ptr: *const u8) {
+            self.click_handler = Some(fn_ptr);
+        }
+        fn clear_click_handler(&mut self) {
+            self.click_handler = None;
+        }
+        fn get_keypress_handler(&self, key: i32) -> Option<*const u8> {
+            self.keypress_handlers.get(&key).copied()
+        }
+        fn get_keydown_handler(&self, key: i32) -> Option<*const u8> {
+            self.keydown_handlers.get(&key).copied()
+        }
+        fn get_keyup_handler(&self, key: i32) -> Option<*const u8> {
+            self.keyup_handlers.get(&key).copied()
+        }
+        fn get_mousedown_handler(&self) -> Option<*const u8> {
+            self.mousedown_handler
+        }
+        fn get_mouseup_handler(&self) -> Option<*const u8> {
+            self.mouseup_handler
+        }
+        fn get_click_handler(&self) -> Option<*const u8> {
+            self.click_handler
+        }
     }
 
     #[test]
-    fn event_handler_modifies_state() {
-        let (compiled, _layout, mut state_block) = compile_with_state(r#"
-            var paused: bool = false
-            var zoom: f64 = 1.0
+    fn event_handler_registration() {
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin const time: f64
+            builtin const mouse_x: f64
+            builtin const mouse_y: f64
+            builtin var center_x: f64
+            builtin var center_y: f64
+            builtin var zoom: f64
+            builtin var paused: bool
+            builtin var frame: u64
+            builtin const mouse_down: bool
+            builtin const sample_index: u32
 
-            fn on_keypress_space() { paused = !paused }
-            fn on_keydown_plus() { zoom = zoom * 1.1 }
-            fn on_mousedown() { zoom = 1.0 }
+            fn toggle_pause() { paused = !paused }
+            fn zoom_in() { zoom = zoom * 1.1 }
+            fn reset_zoom() { zoom = 1.0 }
+
+            fn init() {
+                set_keypress(Key.Space, toggle_pause)
+                set_keydown(Key.Plus, zoom_in)
+                set_mousedown(reset_zoom)
+            }
+
             fn get_paused() -> bool { return paused }
             fn get_zoom() -> f64 { return zoom }
-        "#);
-        let mut builtins = [200.0f64, 200.0f64];
+        "#;
+        let (compiled, state_layout) = compile_only_with_builtins(
+            source, None, codegen::PIPELINE_BUILTINS,
+        ).expect("compile failed");
+        let mut builtins = [200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
         let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(EventTestHost::new());
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
         let mut ctx = PdcContext {
             builtins: builtins.as_mut_ptr(),
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
-            host: std::ptr::null_mut(),
+            host: host_ptr as *mut u8,
         };
 
-        // Init state
+        // Initialize state + run init() to register handlers
         unsafe { (compiled.fn_ptr)(&mut ctx); }
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
 
-        // Toggle pause
-        let handled = unsafe { compiled.call_event("on_keypress_space", &mut ctx).unwrap() };
-        assert!(handled);
-        assert_eq!(unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() }, PdcValue::Bool(true));
+        // Verify handlers were registered
+        let host = unsafe { &*host_ptr };
+        assert!(host.get_keypress_handler(0).is_some(), "Space handler should be registered"); // Key.Space = 0
+        assert!(host.get_keydown_handler(5).is_some(), "Plus handler should be registered");  // Key.Plus = 5
+        assert!(host.get_mousedown_handler().is_some(), "Mousedown handler should be registered");
 
-        // Toggle again
-        unsafe { compiled.call_event("on_keypress_space", &mut ctx).unwrap(); }
-        assert_eq!(unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() }, PdcValue::Bool(false));
+        // Call the keypress handler and verify state change
+        let fn_ptr = host.get_keypress_handler(0).unwrap();
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
+        assert_eq!(
+            unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() },
+            PdcValue::Bool(true),
+        );
 
-        // Zoom in
-        unsafe { compiled.call_event("on_keydown_plus", &mut ctx).unwrap(); }
+        // Toggle back
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
+        assert_eq!(
+            unsafe { compiled.call_fn("get_paused", &mut ctx, &[]).unwrap() },
+            PdcValue::Bool(false),
+        );
+
+        // Call keydown handler (zoom in)
+        let fn_ptr = host.get_keydown_handler(5).unwrap();
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
         let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
         assert_eq!(zoom, PdcValue::F64(1.1));
 
-        // Mouse resets zoom
-        unsafe { compiled.call_event("on_mousedown", &mut ctx).unwrap(); }
+        // Call mousedown handler (reset zoom)
+        let fn_ptr = host.get_mousedown_handler().unwrap();
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
         let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
         assert_eq!(zoom, PdcValue::F64(1.0));
 
-        // Non-existent handler returns false
-        let handled = unsafe { compiled.call_event("on_keypress_q", &mut ctx).unwrap() };
-        assert!(!handled);
+        // Unregistered key returns None
+        assert!(host.get_keypress_handler(14).is_none()); // Key.Q = 14
+    }
+
+    #[test]
+    fn event_handler_clear() {
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin const time: f64
+            builtin const mouse_x: f64
+            builtin const mouse_y: f64
+            builtin var center_x: f64
+            builtin var center_y: f64
+            builtin var zoom: f64
+            builtin var paused: bool
+            builtin var frame: u64
+            builtin const mouse_down: bool
+            builtin const sample_index: u32
+
+            fn zoom_in() { zoom = zoom * 2.0 }
+
+            fn init() {
+                set_keypress(Key.Space, zoom_in)
+                clear_keypress(Key.Space)
+            }
+
+            fn get_zoom() -> f64 { return zoom }
+        "#;
+        let (compiled, state_layout) = compile_only_with_builtins(
+            source, None, codegen::PIPELINE_BUILTINS,
+        ).expect("compile failed");
+        let mut builtins = [200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(EventTestHost::new());
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        // Handler was registered then cleared
+        let host = unsafe { &*host_ptr };
+        assert!(host.get_keypress_handler(0).is_none(), "Space handler should be cleared");
+    }
+
+    #[test]
+    fn event_handler_swap() {
+        let source = r#"
+            builtin const width: f32
+            builtin const height: f32
+            builtin const time: f64
+            builtin const mouse_x: f64
+            builtin const mouse_y: f64
+            builtin var center_x: f64
+            builtin var center_y: f64
+            builtin var zoom: f64
+            builtin var paused: bool
+            builtin var frame: u64
+            builtin const mouse_down: bool
+            builtin const sample_index: u32
+
+            fn zoom_double() { zoom = zoom * 2.0 }
+            fn zoom_triple() { zoom = zoom * 3.0 }
+
+            fn init() {
+                set_keypress(Key.Space, zoom_double)
+            }
+
+            fn swap_handler() {
+                set_keypress(Key.Space, zoom_triple)
+            }
+
+            fn get_zoom() -> f64 { return zoom }
+        "#;
+        let (compiled, state_layout) = compile_only_with_builtins(
+            source, None, codegen::PIPELINE_BUILTINS,
+        ).expect("compile failed");
+        let mut builtins = [200.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let mut scene = SceneBuilder::new();
+        let mut state_block = state_layout.alloc();
+        let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(EventTestHost::new());
+        let host_ptr: *mut Box<dyn runtime::PipelineHost> = &mut host_box;
+        let mut ctx = PdcContext {
+            builtins: builtins.as_mut_ptr(),
+            scene: &mut scene as *mut _,
+            state: state_block.as_mut_ptr(),
+            host: host_ptr as *mut u8,
+        };
+
+        unsafe { (compiled.fn_ptr)(&mut ctx); }
+        unsafe { compiled.call_init(&mut ctx).unwrap(); }
+
+        // First handler: zoom_double
+        let host = unsafe { &*host_ptr };
+        let fn_ptr = host.get_keypress_handler(0).unwrap();
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(2.0));
+
+        // Swap handler to zoom_triple
+        unsafe { compiled.call_fn("swap_handler", &mut ctx, &[]).unwrap(); }
+
+        // Now the handler should be zoom_triple
+        let host = unsafe { &*host_ptr };
+        let fn_ptr = host.get_keypress_handler(0).unwrap();
+        unsafe {
+            let f: extern "C" fn(*mut PdcContext) = std::mem::transmute(fn_ptr);
+            f(&mut ctx);
+        }
+        let zoom = unsafe { compiled.call_fn("get_zoom", &mut ctx, &[]).unwrap() };
+        assert_eq!(zoom, PdcValue::F64(6.0)); // 2.0 * 3.0
     }
 }
