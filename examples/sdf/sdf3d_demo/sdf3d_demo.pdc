@@ -8,5 +8,5 @@ fn init() {
 }
 
 fn frame() -> bool {
-    return kern.render(pixels, false)
+    return kern.render(pixels, true)
 }
