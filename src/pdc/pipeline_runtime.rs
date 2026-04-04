@@ -36,6 +36,15 @@ use builtins_idx as B;
 
 /// Pipeline host that manages buffers, kernels, and display for PDC scripts.
 #[allow(dead_code)]
+/// Per-kernel configuration: bindings and args. Separated from HostState
+/// so run_kernel can borrow this immutably while mutating buffer data.
+struct KernelConfig {
+    /// Per-kernel buffer bindings, indexed by kernel handle. Persist until overwritten.
+    bindings: Vec<Vec<BufferBinding>>,
+    /// Per-kernel args, indexed by kernel handle. Persist until overwritten.
+    args: Vec<Vec<KernelArg>>,
+}
+
 struct HostState {
     width: u32,
     height: u32,
@@ -46,10 +55,8 @@ struct HostState {
     cpu_kernels: Vec<CpuKernel>,
     /// Named buffer storage (raw bytes).
     buffers: Vec<NamedBuffer>,
-    /// Per-kernel buffer bindings, indexed by kernel handle. Persist until overwritten.
-    kernel_bindings: Vec<Vec<BufferBinding>>,
-    /// Per-kernel args, indexed by kernel handle. Persist until overwritten.
-    kernel_args: Vec<Vec<KernelArg>>,
+    /// Per-kernel bindings and args, in a separate struct for split borrows.
+    kernel_config: KernelConfig,
     /// Whether display() was called this frame.
     display_requested: bool,
     /// Loaded textures, indexed by handle.
@@ -277,11 +284,11 @@ impl PipelineHost for HostState {
     fn bind_buffer(&mut self, kernel_handle: i32, param_name: &str, buffer_handle: i32, is_output: bool) {
         let kh = kernel_handle as usize;
         // Grow per-kernel state if needed
-        while self.kernel_bindings.len() <= kh {
-            self.kernel_bindings.push(Vec::new());
+        while self.kernel_config.bindings.len() <= kh {
+            self.kernel_config.bindings.push(Vec::new());
         }
         // Upsert: overwrite if param_name exists, otherwise insert
-        let bindings = &mut self.kernel_bindings[kh];
+        let bindings = &mut self.kernel_config.bindings[kh];
         if let Some(existing) = bindings.iter_mut().find(|b| b.param_name == param_name) {
             existing.buffer_handle = buffer_handle;
             existing.is_output = is_output;
@@ -296,11 +303,11 @@ impl PipelineHost for HostState {
 
     fn set_kernel_arg_f64(&mut self, kernel_handle: i32, name: &str, value: f64) {
         let kh = kernel_handle as usize;
-        while self.kernel_args.len() <= kh {
-            self.kernel_args.push(Vec::new());
+        while self.kernel_config.args.len() <= kh {
+            self.kernel_config.args.push(Vec::new());
         }
         // Upsert: overwrite if name exists, otherwise insert
-        let args = &mut self.kernel_args[kh];
+        let args = &mut self.kernel_config.args[kh];
         if let Some(existing) = args.iter_mut().find(|a| a.name == name) {
             existing.value = value;
         } else {
@@ -314,16 +321,19 @@ impl PipelineHost for HostState {
 
     fn run_kernel(&mut self, kernel_handle: i32) {
         let kh = kernel_handle as usize;
-        // Clone per-kernel state to avoid borrow conflicts with self
-        let bindings: Vec<BufferBinding> = if kh < self.kernel_bindings.len() {
-            self.kernel_bindings[kh].clone()
+        // Borrow kernel config (bindings/args) and mutable state separately.
+        // This works because kernel_config is a separate field from buffers, etc.
+        let empty_bindings = Vec::new();
+        let empty_args = Vec::new();
+        let bindings = if kh < self.kernel_config.bindings.len() {
+            &self.kernel_config.bindings[kh]
         } else {
-            Vec::new()
+            &empty_bindings
         };
-        let args: Vec<KernelArg> = if kh < self.kernel_args.len() {
-            self.kernel_args[kh].clone()
+        let args = if kh < self.kernel_config.args.len() {
+            &self.kernel_config.args[kh]
         } else {
-            Vec::new()
+            &empty_args
         };
 
         // GPU path — when GPU resources are available
@@ -1001,8 +1011,10 @@ impl PdcRuntime {
             #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
             cpu_kernels: Vec::new(),
             buffers: Vec::new(),
-            kernel_bindings: Vec::new(),
-            kernel_args: Vec::new(),
+            kernel_config: KernelConfig {
+                bindings: Vec::new(),
+                args: Vec::new(),
+            },
             display_requested: false,
             textures: Vec::new(),
             scenes: Vec::new(),
