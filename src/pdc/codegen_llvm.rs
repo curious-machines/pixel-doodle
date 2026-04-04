@@ -864,9 +864,12 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let val_ty = self.node_type(value.id).clone();
                     let converted = self.convert_value(val, &val_ty, elem_ty);
                     let elem_size = pdc_type_byte_size(elem_ty);
-                    let store_val = self.float_to_int_if_needed(converted, elem_ty);
-                    let set_name = format!("pdc_array_set_{elem_size}");
-                    self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr.into(), arr_handle, idx, store_val], None)?;
+                    // Inline store via data pointer
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_array_data_ptr", &[self.ctx_ptr.into(), arr_handle],
+                        Some(ptr_ty.into()))?.into_pointer_value();
+                    self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_ty);
                 }
             }
             Stmt::FieldAssign { object, field, value } => {
@@ -1149,9 +1152,14 @@ impl<'a> LlvmCodegenCtx<'a> {
         };
 
         let arr_handle = self.emit_expr(collection)?;
+        // Get array length and data pointer once before the loop.
         let len_val = self.emit_runtime_call_raw(
             "pdc_array_len", &[self.ctx_ptr.into(), arr_handle], Some(self.context.i32_type().into()),
         )?.into_int_value();
+        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+        let data_ptr = self.emit_runtime_call_raw(
+            "pdc_array_data_ptr", &[self.ctx_ptr.into(), arr_handle], Some(ptr_ty.into()),
+        )?.into_pointer_value();
 
         // Index variable
         let idx_name = "__foreach_idx";
@@ -1172,13 +1180,10 @@ impl<'a> LlvmCodegenCtx<'a> {
         self.builder.position_at_end(body_bb);
         self.block_terminated = false;
 
-        // Load element
+        // Load element via inline pointer arithmetic (no boundary crossing)
         let elem_size = pdc_type_byte_size(&elem_ty);
-        let get_name = format!("pdc_array_get_{elem_size}");
-        let int_type = match elem_size { 1 => self.context.i8_type().into(), 2 => self.context.i16_type().into(), 4 => self.context.i32_type().into(), _ => self.context.i64_type().into() };
-        let idx_for_get = self.load_variable(idx_name)?;
-        let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr.into(), arr_handle, idx_for_get], Some(int_type))?;
-        let elem_val = self.int_to_float_if_needed(raw, &elem_ty);
+        let idx_for_load = self.load_variable(idx_name)?;
+        let elem_val = self.emit_inline_array_load(data_ptr, idx_for_load, elem_size, &elem_ty);
 
         if !destructure_names.is_empty() {
             if let PdcType::Tuple(ref tuple_elems) = elem_ty {
@@ -1577,10 +1582,12 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let arr_handle = self.emit_expr(object)?;
                     let idx = self.emit_expr(index)?;
                     let elem_size = pdc_type_byte_size(elem_ty);
-                    let get_name = format!("pdc_array_get_{elem_size}");
-                    let int_type: BasicTypeEnum = match elem_size { 1 => self.context.i8_type().into(), 2 => self.context.i16_type().into(), 4 => self.context.i32_type().into(), _ => self.context.i64_type().into() };
-                    let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr.into(), arr_handle, idx], Some(int_type))?;
-                    Ok(self.int_to_float_if_needed(raw, elem_ty))
+                    // Inline load via data pointer
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_array_data_ptr", &[self.ctx_ptr.into(), arr_handle],
+                        Some(ptr_ty.into()))?.into_pointer_value();
+                    Ok(self.emit_inline_array_load(data_ptr, idx, elem_size, elem_ty))
                 } else if let PdcType::Slice(ref elem_ty) = obj_ty {
                     let slice_ptr = self.emit_expr(object)?.into_pointer_value();
                     let idx = self.emit_expr(index)?;
@@ -2842,6 +2849,52 @@ impl<'a> LlvmCodegenCtx<'a> {
             .basic()
             .unwrap()
             .into_float_value()
+    }
+
+    /// Emit an inline array element load via pointer arithmetic.
+    fn emit_inline_array_load(
+        &self,
+        data_ptr: inkwell::values::PointerValue<'static>,
+        index: BasicValueEnum<'static>,
+        elem_size: u32,
+        elem_ty: &PdcType,
+    ) -> BasicValueEnum<'static> {
+        let i8_ty = self.context.i8_type();
+        let i64_ty = self.context.i64_type();
+        // offset = index * elem_size
+        let idx_ext = self.builder.build_int_s_extend(index.into_int_value(), i64_ty, "idx_ext").unwrap();
+        let size_val = i64_ty.const_int(elem_size as u64, false);
+        let offset = self.builder.build_int_mul(idx_ext, size_val, "offset").unwrap();
+        let elem_ptr = unsafe {
+            self.builder.build_gep(i8_ty, data_ptr, &[offset.into()], "elem_ptr").unwrap()
+        };
+        let int_type: inkwell::types::IntType = match elem_size {
+            1 => self.context.i8_type(), 2 => self.context.i16_type(),
+            4 => self.context.i32_type(), _ => self.context.i64_type(),
+        };
+        let raw = self.builder.build_load(int_type, elem_ptr, "elem_raw").unwrap();
+        self.int_to_float_if_needed(raw, elem_ty)
+    }
+
+    /// Emit an inline array element store via pointer arithmetic.
+    fn emit_inline_array_store(
+        &self,
+        data_ptr: inkwell::values::PointerValue<'static>,
+        index: BasicValueEnum<'static>,
+        elem_size: u32,
+        value: BasicValueEnum<'static>,
+        elem_ty: &PdcType,
+    ) {
+        let i8_ty = self.context.i8_type();
+        let i64_ty = self.context.i64_type();
+        let idx_ext = self.builder.build_int_s_extend(index.into_int_value(), i64_ty, "idx_ext").unwrap();
+        let size_val = i64_ty.const_int(elem_size as u64, false);
+        let offset = self.builder.build_int_mul(idx_ext, size_val, "offset").unwrap();
+        let elem_ptr = unsafe {
+            self.builder.build_gep(i8_ty, data_ptr, &[offset.into()], "elem_ptr").unwrap()
+        };
+        let store_val = self.float_to_int_if_needed(value, elem_ty);
+        self.builder.build_store(elem_ptr, store_val).unwrap();
     }
 
     /// Emit inline string data as an LLVM global constant, returning (ptr, len) values.

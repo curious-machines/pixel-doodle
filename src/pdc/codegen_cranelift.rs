@@ -824,9 +824,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let converted = self.convert_value(val, &val_ty, elem_ty);
                     let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
                     let elem_size = elem_cl.bytes() as u32;
-                    let store_val = self.float_to_int_if_needed(converted, elem_cl);
-                    let set_name = format!("pdc_array_set_{elem_size}");
-                    self.emit_runtime_call_raw(&set_name, &[self.ctx_ptr, arr_handle, idx, store_val], None)?;
+                    // Inline store via data pointer
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_array_data_ptr", &[self.ctx_ptr, arr_handle], Some(self.pointer_type))?;
+                    self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_cl);
                 }
             }
             Stmt::FieldAssign { object, field, value } => {
@@ -940,11 +941,17 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
                 let arr_handle = self.emit_expr(collection)?;
 
-                // Get array length
+                // Get array length and data pointer once before the loop.
+                // Inline loads avoid per-element boundary crossings.
                 let len_val = self.emit_runtime_call_raw(
                     "pdc_array_len",
                     &[self.ctx_ptr, arr_handle],
                     Some(I32),
+                )?;
+                let data_ptr = self.emit_runtime_call_raw(
+                    "pdc_array_data_ptr",
+                    &[self.ctx_ptr, arr_handle],
+                    Some(self.pointer_type),
                 )?;
 
                 // Index variable
@@ -965,24 +972,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let cond = self.builder.ins().icmp(IntCC::SignedLessThan, idx_val, len_val);
                 self.builder.ins().brif(cond, body_block, &[], exit_block, &[]);
 
-                // Body: load element, bind variable
+                // Body: load element via inline pointer arithmetic
                 self.builder.switch_to_block(body_block);
                 self.builder.seal_block(body_block);
                 self.block_terminated = false;
 
                 let elem_cl = pdc_type_to_cl(&elem_ty, self.pointer_type);
                 let elem_size = elem_cl.bytes() as u32;
-                let get_name = format!("pdc_array_get_{elem_size}");
-                let int_type = match elem_size {
-                    1 => I8, 2 => I16, 4 => I32, _ => I64,
-                };
-                let idx_for_get = self.builder.use_var(idx_var);
-                let raw = self.emit_runtime_call_raw(
-                    &get_name,
-                    &[self.ctx_ptr, arr_handle, idx_for_get],
-                    Some(int_type),
-                )?;
-                let elem_val = self.int_to_float_if_needed(raw, elem_cl);
+                let idx_for_load = self.builder.use_var(idx_var);
+                let elem_val = self.emit_inline_array_load(data_ptr, idx_for_load, elem_size, elem_cl);
 
                 if !destructure_names.is_empty() {
                     // Destructuring: elem_val is a pointer to a tuple
@@ -1513,6 +1511,50 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             F64 => self.builder.ins().bitcast(F64, MemFlags::new(), val),
             _ => val,
         }
+    }
+
+    /// Emit an inline array element load via pointer arithmetic.
+    /// `data_ptr` is the base pointer, `index` is the element index (i32),
+    /// `elem_size` is bytes per element, `elem_cl` is the Cranelift type to load.
+    fn emit_inline_array_load(
+        &mut self,
+        data_ptr: cranelift_codegen::ir::Value,
+        index: cranelift_codegen::ir::Value,
+        elem_size: u32,
+        elem_cl: cranelift_codegen::ir::Type,
+    ) -> cranelift_codegen::ir::Value {
+        // offset = index * elem_size (as pointer-width)
+        let idx_ext = self.builder.ins().sextend(self.pointer_type, index);
+        let size_val = self.builder.ins().iconst(self.pointer_type, elem_size as i64);
+        let offset = self.builder.ins().imul(idx_ext, size_val);
+        let elem_ptr = self.builder.ins().iadd(data_ptr, offset);
+        // Load the raw integer value
+        let int_type = match elem_size {
+            1 => I8, 2 => I16, 4 => I32, _ => I64,
+        };
+        let raw = self.builder.ins().load(int_type, MemFlags::trusted(), elem_ptr, 0);
+        // Bitcast to float if needed
+        self.int_to_float_if_needed(raw, elem_cl)
+    }
+
+    /// Emit an inline array element store via pointer arithmetic.
+    fn emit_inline_array_store(
+        &mut self,
+        data_ptr: cranelift_codegen::ir::Value,
+        index: cranelift_codegen::ir::Value,
+        elem_size: u32,
+        value: cranelift_codegen::ir::Value,
+        elem_cl: cranelift_codegen::ir::Type,
+    ) {
+        let idx_ext = self.builder.ins().sextend(self.pointer_type, index);
+        let size_val = self.builder.ins().iconst(self.pointer_type, elem_size as i64);
+        let offset = self.builder.ins().imul(idx_ext, size_val);
+        let elem_ptr = self.builder.ins().iadd(data_ptr, offset);
+        let int_type = match elem_size {
+            1 => I8, 2 => I16, 4 => I32, _ => I64,
+        };
+        let store_val = self.float_to_int_if_needed(value, int_type);
+        self.builder.ins().store(MemFlags::trusted(), store_val, elem_ptr, 0);
     }
 
     /// Extract a string literal from an expression and emit it as inline (ptr, len).
@@ -2098,12 +2140,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let idx = self.emit_expr(index)?;
                     let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
                     let elem_size = elem_cl.bytes() as u32;
-                    let get_name = format!("pdc_array_get_{elem_size}");
-                    let int_type = match elem_size {
-                        1 => I8, 2 => I16, 4 => I32, _ => I64,
-                    };
-                    let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, idx], Some(int_type))?;
-                    Ok(self.int_to_float_if_needed(raw, elem_cl))
+                    // Inline load via data pointer
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_array_data_ptr", &[self.ctx_ptr, arr_handle], Some(self.pointer_type))?;
+                    Ok(self.emit_inline_array_load(data_ptr, idx, elem_size, elem_cl))
                 } else if let PdcType::Slice(ref elem_ty) = obj_ty {
                     let slice_ptr = self.emit_expr(object)?;
                     let idx = self.emit_expr(index)?;

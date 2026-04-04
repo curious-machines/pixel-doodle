@@ -456,6 +456,15 @@ pub extern "C" fn pdc_array_len(ctx: *mut PdcContext, handle: u32) -> i32 {
     scene.arrays[handle as usize].len() as i32
 }
 
+/// Return a raw pointer to the array's backing byte buffer.
+/// Used by JIT'd code for inline element access via pointer arithmetic.
+/// The pointer is valid until the next push that causes reallocation.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdc_array_data_ptr(ctx: *mut PdcContext, handle: u32) -> *mut u8 {
+    let scene = unsafe { &mut *(*ctx).scene };
+    scene.arrays[handle as usize].bytes.as_mut_ptr()
+}
+
 // Push/get/set by element size — JIT picks the right one.
 
 #[unsafe(no_mangle)]
@@ -919,6 +928,7 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         // Arrays
         ("pdc_array_new", pdc_array_new as *const u8),
         ("pdc_array_len", pdc_array_len as *const u8),
+        ("pdc_array_data_ptr", pdc_array_data_ptr as *const u8),
         ("pdc_array_push_1", pdc_array_push_1 as *const u8),
         ("pdc_array_push_2", pdc_array_push_2 as *const u8),
         ("pdc_array_push_4", pdc_array_push_4 as *const u8),
