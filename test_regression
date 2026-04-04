@@ -107,13 +107,34 @@ ALL_CONFIGS=(
 )
 
 # Discover all test cases: (example_path, config)
+# Finds one .pdc per example directory using the convention: dir_name.pdc.
+# Skips directories that only contain non-convention .pdc files (e.g. scene files).
 discover_cases() {
+    local seen_dirs=""
     local pdc_files
     pdc_files=$(find "$SCRIPT_DIR/examples" -name '*.pdc' -not -path '*/shared/*' | sort)
 
     for pdc in $pdc_files; do
         local dir
         dir="$(dirname "$pdc")"
+
+        # Deduplicate: only emit one entry per directory
+        if printf '%s\n' $seen_dirs | grep -qxF "$dir"; then
+            continue
+        fi
+
+        local dir_name
+        dir_name="$(basename "$dir")"
+        local convention="$dir/${dir_name}.pdc"
+
+        # Only discover directories with the convention-named .pdc
+        if [[ ! -f "$convention" ]]; then
+            continue
+        fi
+
+        seen_dirs="$seen_dirs
+$dir"
+
         local example_name
         example_name="${dir#"$SCRIPT_DIR/examples/"}"
 
