@@ -1,5 +1,7 @@
 import { register_pause_step } from "../../shared/pause_step"
 
+builtin var width: f32
+builtin var height: f32
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
@@ -20,6 +22,7 @@ var inject = Kernel.Sim("inject", "../shared/inject_vec.wgsl")
 fn init() {
     register_pause_step()
     set_mousedown(inject_at_mouse)
+    inject_smoke(f64(width) / 2.0, f64(height) * 0.8, 30.0, -5.0, 1.0)
 }
 
 fn frame() -> bool {
@@ -54,22 +57,23 @@ fn frame() -> bool {
 }
 
 fn inject_at_mouse() {
-    inject.x = mouse_x
-    inject.y = mouse_y
-    inject.radius = 15.0
-    inject.value = -3.0
+    inject_smoke(mouse_x, mouse_y, 15.0, -3.0, 0.5)
+}
+
+fn inject_smoke(x: f64, y: f64, radius: f64, velocity: f64, density: f64) {
+    inject.x = x
+    inject.y = y
+    inject.radius = radius
     inject.falloff_quadratic = 1.0
+
+    inject.value = velocity
     inject.component = 1.0
     inject.buf_in = Bind.In(field)
     inject.buf_out = Bind.Out(field_next)
     inject.run()
     swap(field, field_next)
 
-    inject.x = mouse_x
-    inject.y = mouse_y
-    inject.radius = 15.0
-    inject.value = 0.5
-    inject.falloff_quadratic = 1.0
+    inject.value = density
     inject.component = 2.0
     inject.buf_in = Bind.In(field)
     inject.buf_out = Bind.Out(field_next)
