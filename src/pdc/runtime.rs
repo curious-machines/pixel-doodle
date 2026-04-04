@@ -28,6 +28,12 @@ pub trait PipelineHost {
     fn create_buffer(&mut self, type_name: &str, init_value: f64) -> i32;
     /// Swap two buffers by handle.
     fn swap_buffers(&mut self, handle_a: i32, handle_b: i32);
+    /// Return a raw pointer to the buffer's backing data (CPU only, null for GPU).
+    fn buffer_data_ptr(&self, _handle: i32) -> *mut u8 { std::ptr::null_mut() }
+    /// Return the number of elements in a buffer.
+    fn buffer_len(&self, _handle: i32) -> i32 { 0 }
+    /// Return the element size in bytes for a buffer.
+    fn buffer_elem_size(&self, _handle: i32) -> i32 { 0 }
     /// Load and compile a WGSL kernel. Returns a handle ID.
     /// `kind` is 0=pixel, 1=standard, 2=scene.
     fn load_kernel(&mut self, name: &str, path: &str, kind: i32) -> i32;
@@ -738,6 +744,23 @@ unsafe fn get_host(ctx: *mut PdcContext) -> &'static mut dyn PipelineHost {
 }
 
 
+/// Return a raw pointer to the buffer's backing data.
+/// For CPU buffers, this is the actual byte buffer.
+/// For GPU buffers, this returns null (GPU data is device-local).
+pub extern "C" fn pdc_buffer_data_ptr(ctx: *mut PdcContext, handle: i32) -> *mut u8 {
+    unsafe { get_host(ctx).buffer_data_ptr(handle) }
+}
+
+/// Return the number of elements in a buffer.
+pub extern "C" fn pdc_buffer_len(ctx: *mut PdcContext, handle: i32) -> i32 {
+    unsafe { get_host(ctx).buffer_len(handle) }
+}
+
+/// Return the element size in bytes for a buffer.
+pub extern "C" fn pdc_buffer_elem_size(ctx: *mut PdcContext, handle: i32) -> i32 {
+    unsafe { get_host(ctx).buffer_elem_size(handle) }
+}
+
 pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32) -> i32 {
     let type_name = match type_code {
         0 => "gpu_f32",
@@ -960,6 +983,9 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_assert_near", pdc_assert_near as *const u8),
         ("pdc_assert_true", pdc_assert_true as *const u8),
         // Pipeline host functions
+        ("pdc_buffer_data_ptr", pdc_buffer_data_ptr as *const u8),
+        ("pdc_buffer_len", pdc_buffer_len as *const u8),
+        ("pdc_buffer_elem_size", pdc_buffer_elem_size as *const u8),
         ("pdc_create_buffer", pdc_create_buffer as *const u8),
         ("pdc_swap_buffers", pdc_swap_buffers as *const u8),
         ("pdc_load_kernel", pdc_load_kernel as *const u8),

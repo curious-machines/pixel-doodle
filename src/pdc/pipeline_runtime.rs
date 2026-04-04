@@ -211,6 +211,33 @@ impl PipelineHost for HostState {
         handle
     }
 
+    fn buffer_data_ptr(&self, handle: i32) -> *mut u8 {
+        let idx = handle as usize;
+        if idx < self.buffers.len() && !self.buffers[idx].data.is_empty() {
+            self.buffers[idx].data.as_ptr() as *mut u8
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+
+    fn buffer_len(&self, handle: i32) -> i32 {
+        let idx = handle as usize;
+        if idx < self.buffers.len() && self.buffers[idx].elem_size > 0 {
+            (self.buffers[idx].data.len() / self.buffers[idx].elem_size) as i32
+        } else {
+            0
+        }
+    }
+
+    fn buffer_elem_size(&self, handle: i32) -> i32 {
+        let idx = handle as usize;
+        if idx < self.buffers.len() {
+            self.buffers[idx].elem_size as i32
+        } else {
+            0
+        }
+    }
+
     fn swap_buffers(&mut self, a: i32, b: i32) {
         let (ai, bi) = (a as usize, b as usize);
         if ai < self.buffers.len() && bi < self.buffers.len() && ai != bi {
