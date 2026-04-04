@@ -833,21 +833,9 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 let kernel_handle = self.emit_expr(object)?;
                 let val_ty = self.node_type(value.id).clone();
 
-                // Create string handle for the field name
+                // Emit field name as inline string data (ptr, len) — no allocation.
                 let field_bytes = field.as_bytes();
-                let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
-                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
-                    field_bytes.len() as u32,
-                    0,
-                ));
-                for (i, &byte) in field_bytes.iter().enumerate() {
-                    let val = self.builder.ins().iconst(I8, byte as i64);
-                    self.builder.ins().stack_store(val, slot, i as i32);
-                }
-                let field_ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
-                let field_len = self.builder.ins().iconst(I32, field_bytes.len() as i64);
-                let field_handle = self.emit_runtime_call_raw("pdc_string_new",
-                    &[self.ctx_ptr, field_ptr, field_len], Some(I32))?;
+                let (field_ptr, field_len) = self.emit_inline_str(field_bytes);
 
                 if let PdcType::Enum(ref ename) = val_ty {
                     if ename == "Bind" {
@@ -857,7 +845,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                             let buffer_handle = self.emit_expr(&args[0])?;
                             let dir_val = self.builder.ins().iconst(I32, direction);
                             self.emit_runtime_call_raw("pdc_bind_buffer",
-                                &[self.ctx_ptr, kernel_handle, buffer_handle, field_handle, dir_val],
+                                &[self.ctx_ptr, kernel_handle, buffer_handle, field_ptr, field_len, dir_val],
                                 None)?;
                         }
                     }
@@ -866,7 +854,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let val = self.emit_expr(value)?;
                     let converted = self.convert_value(val, &val_ty, &PdcType::F64);
                     self.emit_runtime_call_raw("pdc_set_kernel_arg_f64",
-                        &[self.ctx_ptr, kernel_handle, field_handle, converted],
+                        &[self.ctx_ptr, kernel_handle, field_ptr, field_len, converted],
                         None)?;
                 }
             }
@@ -1527,6 +1515,34 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
     }
 
+    /// Extract a string literal from an expression and emit it as inline (ptr, len).
+    /// Panics if the expression is not a string literal.
+    fn emit_str_arg(&mut self, expr: &Spanned<Expr>) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+        if let Expr::Literal(Literal::String(ref s)) = expr.node {
+            self.emit_inline_str(s.as_bytes())
+        } else {
+            panic!("expected string literal argument");
+        }
+    }
+
+    /// Emit inline string data as a stack slot, returning (ptr, len) values.
+    /// Used for passing compile-time-known strings directly to runtime functions
+    /// without allocating through pdc_string_new.
+    fn emit_inline_str(&mut self, bytes: &[u8]) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
+        let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+            bytes.len() as u32,
+            0,
+        ));
+        for (i, &byte) in bytes.iter().enumerate() {
+            let val = self.builder.ins().iconst(I8, byte as i64);
+            self.builder.ins().stack_store(val, slot, i as i32);
+        }
+        let ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
+        let len = self.builder.ins().iconst(I32, bytes.len() as i64);
+        (ptr, len)
+    }
+
     /// Emit a direct runtime function call with explicit return type.
     fn emit_runtime_call_raw(
         &mut self,
@@ -1954,16 +1970,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                         return self.emit_runtime_call_raw("pdc_create_buffer",
                             &[self.ctx_ptr, code_val], Some(I32));
                     }
-                    // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name, path, kind)
+                    // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name_ptr, name_len, path_ptr, path_len, kind)
                     if mod_name == "Kernel" {
                         let kind: i64 = match method.as_str() {
                             "Pixel" => 0, "Sim" => 1, _ => 0,
                         };
-                        let name_val = self.emit_expr(&args[0])?;
-                        let path_val = self.emit_expr(&args[1])?;
+                        let (name_ptr, name_len) = self.emit_str_arg(&args[0]);
+                        let (path_ptr, path_len) = self.emit_str_arg(&args[1]);
                         let kind_val = self.builder.ins().iconst(I32, kind);
                         return self.emit_runtime_call_raw("pdc_load_kernel",
-                            &[self.ctx_ptr, name_val, path_val, kind_val], Some(I32));
+                            &[self.ctx_ptr, name_ptr, name_len, path_ptr, path_len, kind_val], Some(I32));
                     }
                     let qualified = format!("{mod_name}::{method}");
                     return self.emit_call(&qualified, args, expr.id);
@@ -2211,23 +2227,10 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                                 &[self.ctx_ptr, handle], Some(F64))
                         }
                         _ => {
-                            // Buffer property: scene.<name> → pdc_scene_buffer(ctx, handle, name)
-                            let field_bytes = field.as_bytes();
-                            let slot = self.builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
-                                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
-                                field_bytes.len() as u32,
-                                0,
-                            ));
-                            for (i, &byte) in field_bytes.iter().enumerate() {
-                                let val = self.builder.ins().iconst(I8, byte as i64);
-                                self.builder.ins().stack_store(val, slot, i as i32);
-                            }
-                            let name_ptr = self.builder.ins().stack_addr(self.pointer_type, slot, 0);
-                            let name_len = self.builder.ins().iconst(I32, field_bytes.len() as i64);
-                            let name_handle = self.emit_runtime_call_raw("pdc_string_new",
-                                &[self.ctx_ptr, name_ptr, name_len], Some(I32))?;
+                            // Buffer property: scene.<name> → pdc_scene_buffer(ctx, handle, name_ptr, name_len)
+                            let (name_ptr, name_len) = self.emit_inline_str(field.as_bytes());
                             self.emit_runtime_call_raw("pdc_scene_buffer",
-                                &[self.ctx_ptr, handle, name_handle], Some(I32))
+                                &[self.ctx_ptr, handle, name_ptr, name_len], Some(I32))
                         }
                     };
                 }
@@ -2491,12 +2494,19 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             }
         }
 
+        // Texture("name", "path") and Scene("name", "path") take inline string args
+        if (name == "Texture" || name == "Scene") && args.len() == 2 {
+            let runtime_name = if name == "Texture" { "pdc_load_texture" } else { "pdc_load_scene" };
+            let (name_ptr, name_len) = self.emit_str_arg(&args[0]);
+            let (path_ptr, path_len) = self.emit_str_arg(&args[1]);
+            return self.emit_runtime_call_raw(runtime_name,
+                &[self.ctx_ptr, name_ptr, name_len, path_ptr, path_len], Some(I32));
+        }
+
         // Runtime function call
         let runtime_name = {
             match name {
                 "Path" => "pdc_path".to_string(),
-                "Texture" => "pdc_load_texture".to_string(),
-                "Scene" => "pdc_load_scene".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -2519,7 +2529,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
             | "display_buffer" | "swap" | "run" | "render"
-            | "display" | "Texture" | "Scene"
+            | "display"
             | "set_keypress" | "set_keydown" | "set_keyup"
             | "clear_keypress" | "clear_keydown" | "clear_keyup"
             | "set_mousedown" | "set_mouseup" | "set_click"

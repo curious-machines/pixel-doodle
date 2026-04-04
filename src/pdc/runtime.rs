@@ -728,13 +728,6 @@ unsafe fn get_host(ctx: *mut PdcContext) -> &'static mut dyn PipelineHost {
     }
 }
 
-/// Get a string from a SceneBuilder handle.
-unsafe fn get_string(ctx: *mut PdcContext, handle: i32) -> &'static str {
-    unsafe {
-        let scene = &*(*ctx).scene;
-        &scene.strings[handle as usize]
-    }
-}
 
 pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32) -> i32 {
     let type_name = match type_code {
@@ -753,35 +746,35 @@ pub extern "C" fn pdc_swap_buffers(ctx: *mut PdcContext, handle_a: i32, handle_b
     unsafe { get_host(ctx).swap_buffers(handle_a, handle_b) }
 }
 
-pub extern "C" fn pdc_load_kernel(ctx: *mut PdcContext, name_handle: i32, path_handle: i32, kind: i32) -> i32 {
+pub extern "C" fn pdc_load_kernel(ctx: *mut PdcContext, name_ptr: *const u8, name_len: i32, path_ptr: *const u8, path_len: i32, kind: i32) -> i32 {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        let path = get_string(ctx, path_handle).to_string();
-        get_host(ctx).load_kernel(&name, &path, kind)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        let path = std::str::from_utf8(std::slice::from_raw_parts(path_ptr, path_len as usize)).unwrap_or("");
+        get_host(ctx).load_kernel(name, path, kind)
     }
 }
 
 // Virtual property: kern.param = Bind.In(buffer)
-pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, kernel_handle: i32, buffer_handle: i32, param_handle: i32, is_output: i32) {
+pub extern "C" fn pdc_bind_buffer(ctx: *mut PdcContext, kernel_handle: i32, buffer_handle: i32, param_ptr: *const u8, param_len: i32, is_output: i32) {
     unsafe {
-        let param_name = get_string(ctx, param_handle).to_string();
-        get_host(ctx).bind_buffer(kernel_handle, &param_name, buffer_handle, is_output != 0)
+        let param_name = std::str::from_utf8(std::slice::from_raw_parts(param_ptr, param_len as usize)).unwrap_or("");
+        get_host(ctx).bind_buffer(kernel_handle, param_name, buffer_handle, is_output != 0)
     }
 }
 
 // Virtual property: kern.arg_name = value
-pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, kernel_handle: i32, name_handle: i32, value: f64) {
+pub extern "C" fn pdc_set_kernel_arg_f64(ctx: *mut PdcContext, kernel_handle: i32, name_ptr: *const u8, name_len: i32, value: f64) {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        get_host(ctx).set_kernel_arg_f64(kernel_handle, &name, value)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        get_host(ctx).set_kernel_arg_f64(kernel_handle, name, value)
     }
 }
 
 // Virtual property: kern.arg_name = value (f32)
-pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, kernel_handle: i32, name_handle: i32, value: f32) {
+pub extern "C" fn pdc_set_kernel_arg_f32(ctx: *mut PdcContext, kernel_handle: i32, name_ptr: *const u8, name_len: i32, value: f32) {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        get_host(ctx).set_kernel_arg_f32(kernel_handle, &name, value)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        get_host(ctx).set_kernel_arg_f32(kernel_handle, name, value)
     }
 }
 
@@ -809,11 +802,11 @@ pub extern "C" fn pdc_display_buffer(ctx: *mut PdcContext, buffer_handle: i32) {
     unsafe { get_host(ctx).display_buffer(buffer_handle) }
 }
 
-pub extern "C" fn pdc_load_scene(ctx: *mut PdcContext, name_handle: i32, path_handle: i32) -> i32 {
+pub extern "C" fn pdc_load_scene(ctx: *mut PdcContext, name_ptr: *const u8, name_len: i32, path_ptr: *const u8, path_len: i32) -> i32 {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        let path = get_string(ctx, path_handle).to_string();
-        get_host(ctx).load_scene(&name, &path)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        let path = std::str::from_utf8(std::slice::from_raw_parts(path_ptr, path_len as usize)).unwrap_or("");
+        get_host(ctx).load_scene(name, path)
     }
 }
 
@@ -829,19 +822,19 @@ pub extern "C" fn pdc_scene_num_paths(ctx: *mut PdcContext, handle: i32) -> f64 
     unsafe { get_host(ctx).scene_num_paths(handle) }
 }
 
-pub extern "C" fn pdc_scene_buffer(ctx: *mut PdcContext, scene_handle: i32, name_handle: i32) -> i32 {
+pub extern "C" fn pdc_scene_buffer(ctx: *mut PdcContext, scene_handle: i32, name_ptr: *const u8, name_len: i32) -> i32 {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        get_host(ctx).scene_buffer(scene_handle, &name)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        get_host(ctx).scene_buffer(scene_handle, name)
     }
 }
 
 
-pub extern "C" fn pdc_load_texture(ctx: *mut PdcContext, name_handle: i32, path_handle: i32) -> i32 {
+pub extern "C" fn pdc_load_texture(ctx: *mut PdcContext, name_ptr: *const u8, name_len: i32, path_ptr: *const u8, path_len: i32) -> i32 {
     unsafe {
-        let name = get_string(ctx, name_handle).to_string();
-        let path = get_string(ctx, path_handle).to_string();
-        get_host(ctx).load_texture(&name, &path)
+        let name = std::str::from_utf8(std::slice::from_raw_parts(name_ptr, name_len as usize)).unwrap_or("");
+        let path = std::str::from_utf8(std::slice::from_raw_parts(path_ptr, path_len as usize)).unwrap_or("");
+        get_host(ctx).load_texture(name, path)
     }
 }
 

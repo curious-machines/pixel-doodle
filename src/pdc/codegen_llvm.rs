@@ -873,21 +873,8 @@ impl<'a> LlvmCodegenCtx<'a> {
                 let kernel_handle = self.emit_expr(object)?;
                 let val_ty = self.node_type(value.id).clone();
 
-                // Create string handle for the field name
-                let field_bytes = field.as_bytes();
-                let i8_ty = self.context.i8_type();
-                let arr_ty = i8_ty.array_type(field_bytes.len() as u32);
-                let arr_val = i8_ty.const_array(
-                    &field_bytes.iter().map(|&b| i8_ty.const_int(b as u64, false)).collect::<Vec<_>>(),
-                );
-                let global = self.module.add_global(arr_ty, None, "field_name");
-                global.set_initializer(&arr_val);
-                global.set_constant(true);
-                let field_ptr = global.as_pointer_value();
-                let field_len = self.i32_const(field_bytes.len() as i64);
-                let field_handle = self.emit_runtime_call_raw("pdc_string_new",
-                    &[self.ctx_ptr.into(), field_ptr.into(), field_len.into()],
-                    Some(self.context.i32_type().into()))?;
+                // Emit field name as inline string data (ptr, len) — no allocation.
+                let (field_ptr, field_len) = self.emit_inline_str(field.as_bytes());
 
                 if let PdcType::Enum(ref ename) = val_ty {
                     if ename == "Bind" {
@@ -897,7 +884,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                             let buffer_handle = self.emit_expr(&args[0])?;
                             let dir_val = self.i32_const(direction);
                             self.emit_runtime_call_raw("pdc_bind_buffer",
-                                &[self.ctx_ptr.into(), kernel_handle, buffer_handle, field_handle, dir_val.into()],
+                                &[self.ctx_ptr.into(), kernel_handle, buffer_handle, field_ptr.into(), field_len.into(), dir_val.into()],
                                 None)?;
                         }
                     }
@@ -906,7 +893,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let val = self.emit_expr(value)?;
                     let converted = self.convert_value(val, &val_ty, &PdcType::F64);
                     self.emit_runtime_call_raw("pdc_set_kernel_arg_f64",
-                        &[self.ctx_ptr.into(), kernel_handle, field_handle, converted],
+                        &[self.ctx_ptr.into(), kernel_handle, field_ptr.into(), field_len.into(), converted],
                         None)?;
                 }
             }
@@ -1463,16 +1450,16 @@ impl<'a> LlvmCodegenCtx<'a> {
                             &[self.ctx_ptr.into(), code_val.into()],
                             Some(self.context.i32_type().into()));
                     }
-                    // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name, path, kind)
+                    // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name_ptr, name_len, path_ptr, path_len, kind)
                     if mod_name == "Kernel" {
                         let kind = match method.as_str() {
                             "Pixel" => 0, "Sim" => 1, _ => 0,
                         };
-                        let name_val = self.emit_expr(&args[0])?;
-                        let path_val = self.emit_expr(&args[1])?;
+                        let (name_ptr, name_len) = self.emit_str_arg(&args[0]);
+                        let (path_ptr, path_len) = self.emit_str_arg(&args[1]);
                         let kind_val = self.i32_const(kind);
                         return self.emit_runtime_call_raw("pdc_load_kernel",
-                            &[self.ctx_ptr.into(), name_val, path_val, kind_val.into()],
+                            &[self.ctx_ptr.into(), name_ptr.into(), name_len.into(), path_ptr.into(), path_len.into(), kind_val.into()],
                             Some(self.context.i32_type().into()));
                     }
                     let qualified = format!("{mod_name}::{method}");
@@ -1713,23 +1700,10 @@ impl<'a> LlvmCodegenCtx<'a> {
                                 Some(self.context.f64_type().into()))
                         }
                         _ => {
-                            // Buffer property: scene.<name> → pdc_scene_buffer(ctx, handle, name)
-                            let i8_ty = self.context.i8_type();
-                            let field_bytes = field.as_bytes();
-                            let arr_ty = i8_ty.array_type(field_bytes.len() as u32);
-                            let arr_val = i8_ty.const_array(
-                                &field_bytes.iter().map(|&b| i8_ty.const_int(b as u64, false)).collect::<Vec<_>>(),
-                            );
-                            let global = self.module.add_global(arr_ty, None, "scene_buf_name");
-                            global.set_initializer(&arr_val);
-                            global.set_constant(true);
-                            let name_ptr = global.as_pointer_value();
-                            let name_len = self.i32_const(field_bytes.len() as i64);
-                            let name_handle = self.emit_runtime_call_raw("pdc_string_new",
-                                &[self.ctx_ptr.into(), name_ptr.into(), name_len.into()],
-                                Some(self.context.i32_type().into()))?;
+                            // Buffer property: scene.<name> → pdc_scene_buffer(ctx, handle, name_ptr, name_len)
+                            let (name_ptr, name_len) = self.emit_inline_str(field.as_bytes());
                             self.emit_runtime_call_raw("pdc_scene_buffer",
-                                &[self.ctx_ptr.into(), handle.into(), name_handle.into()],
+                                &[self.ctx_ptr.into(), handle.into(), name_ptr.into(), name_len.into()],
                                 Some(self.context.i32_type().into()))
                         }
                     };
@@ -1990,12 +1964,18 @@ impl<'a> LlvmCodegenCtx<'a> {
             // Integer min/max/pow: fall through to runtime
             let runtime_name = format!("pdc_{}", name);
             self.emit_runtime_call_raw(&runtime_name, &[a, b], Some(self.context.f64_type().as_basic_type_enum()))
+        } else if (name == "Texture" || name == "Scene") && args.len() == 2 {
+            // Texture("name", "path") and Scene("name", "path") take inline string args
+            let runtime_name = if name == "Texture" { "pdc_load_texture" } else { "pdc_load_scene" };
+            let (name_ptr, name_len) = self.emit_str_arg(&args[0]);
+            let (path_ptr, path_len) = self.emit_str_arg(&args[1]);
+            self.emit_runtime_call_raw(runtime_name,
+                &[self.ctx_ptr.into(), name_ptr.into(), name_len.into(), path_ptr.into(), path_len.into()],
+                Some(self.context.i32_type().into()))
         } else {
             // Runtime function call
             let runtime_name = match name {
                 "Path" => "pdc_path".to_string(),
-                "Texture" => "pdc_load_texture".to_string(),
-                "Scene" => "pdc_load_scene".to_string(),
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
@@ -2016,7 +1996,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "fill_styled" | "stroke_styled"
                 | "push" | "len" | "get" | "set"
                 | "display_buffer" | "swap" | "run" | "render"
-                | "display" | "Texture" | "Scene"
+                | "display"
                 | "set_keypress" | "set_keydown" | "set_keyup"
                 | "clear_keypress" | "clear_keydown" | "clear_keyup"
                 | "set_mousedown" | "set_mouseup" | "set_click"
@@ -2862,6 +2842,28 @@ impl<'a> LlvmCodegenCtx<'a> {
             .basic()
             .unwrap()
             .into_float_value()
+    }
+
+    /// Emit inline string data as an LLVM global constant, returning (ptr, len) values.
+    fn emit_inline_str(&self, bytes: &[u8]) -> (inkwell::values::PointerValue<'static>, inkwell::values::IntValue<'static>) {
+        let i8_ty = self.context.i8_type();
+        let arr_ty = i8_ty.array_type(bytes.len() as u32);
+        let arr_val = i8_ty.const_array(
+            &bytes.iter().map(|&b| i8_ty.const_int(b as u64, false)).collect::<Vec<_>>(),
+        );
+        let global = self.module.add_global(arr_ty, None, "str_data");
+        global.set_initializer(&arr_val);
+        global.set_constant(true);
+        (global.as_pointer_value(), self.i32_const(bytes.len() as i64))
+    }
+
+    /// Extract a string literal from an expression and emit it as inline (ptr, len).
+    fn emit_str_arg(&self, expr: &Spanned<Expr>) -> (inkwell::values::PointerValue<'static>, inkwell::values::IntValue<'static>) {
+        if let Expr::Literal(Literal::String(ref s)) = expr.node {
+            self.emit_inline_str(s.as_bytes())
+        } else {
+            panic!("expected string literal argument");
+        }
     }
 
     fn call_f64_intrinsic2(&self, name: &str, a: FloatValue<'static>, b: FloatValue<'static>) -> FloatValue<'static> {
