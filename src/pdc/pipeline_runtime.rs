@@ -363,21 +363,24 @@ impl PipelineHost for HostState {
                     .map(|(a, b)| (a.as_str(), b.as_str()))
                     .collect();
 
-                // Resolve user args with correct types from WGSL Params struct
-                let arg_types = runner.user_arg_types(&kernel_name);
+                // Resolve user args in WGSL Params struct field order (not PDC insertion order).
+                // Each arg is matched by name to the struct field, ensuring correct byte layout.
+                let user_args_spec = runner.user_args(&kernel_name);
                 let mut arg_bytes: Vec<u8> = Vec::new();
-                for (i, a) in args.iter().enumerate() {
-                    let arg_type = arg_types.get(i).copied()
-                        .unwrap_or(gpu::sim_runner::WgslArgType::F32);
-                    match arg_type {
+                for spec in user_args_spec {
+                    let value = args.iter()
+                        .find(|a| a.name == spec.name)
+                        .map(|a| a.value)
+                        .unwrap_or(0.0);
+                    match spec.arg_type {
                         gpu::sim_runner::WgslArgType::U32 => {
-                            arg_bytes.extend_from_slice(&(a.value as u32).to_le_bytes());
+                            arg_bytes.extend_from_slice(&(value as u32).to_le_bytes());
                         }
                         gpu::sim_runner::WgslArgType::I32 => {
-                            arg_bytes.extend_from_slice(&(a.value as i32).to_le_bytes());
+                            arg_bytes.extend_from_slice(&(value as i32).to_le_bytes());
                         }
                         gpu::sim_runner::WgslArgType::F32 => {
-                            arg_bytes.extend_from_slice(&(a.value as f32).to_le_bytes());
+                            arg_bytes.extend_from_slice(&(value as f32).to_le_bytes());
                         }
                     }
                 }
