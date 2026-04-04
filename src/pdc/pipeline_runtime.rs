@@ -36,13 +36,19 @@ use builtins_idx as B;
 
 /// Pipeline host that manages buffers, kernels, and display for PDC scripts.
 #[allow(dead_code)]
-/// Per-kernel configuration: bindings and args. Separated from HostState
+/// Per-kernel resolved configuration. Separated from HostState
 /// so run_kernel can borrow this immutably while mutating buffer data.
+///
+/// Bindings and args are stored in indexed slots resolved on first use,
+/// eliminating per-frame string lookups.
 struct KernelConfig {
     /// Per-kernel buffer bindings, indexed by kernel handle. Persist until overwritten.
     bindings: Vec<Vec<BufferBinding>>,
     /// Per-kernel args, indexed by kernel handle. Persist until overwritten.
     args: Vec<Vec<KernelArg>>,
+    /// Per-kernel name→index caches for O(1) repeated lookups.
+    binding_name_cache: Vec<HashMap<String, usize>>,
+    arg_name_cache: Vec<HashMap<String, usize>>,
 }
 
 struct HostState {
@@ -123,6 +129,10 @@ struct BufferBinding {
     param_name: String,
     buffer_handle: i32,
     is_output: bool,
+    /// Resolved CPU buffer slot (from CompiledWgslKernel::binding_map). -1 = unresolved.
+    cpu_slot: i32,
+    /// Resolved GPU binding index (from GpuPipeline::binding_map). -1 = unresolved.
+    gpu_binding: i32,
 }
 
 #[derive(Clone)]
@@ -287,16 +297,42 @@ impl PipelineHost for HostState {
         while self.kernel_config.bindings.len() <= kh {
             self.kernel_config.bindings.push(Vec::new());
         }
-        // Upsert: overwrite if param_name exists, otherwise insert
+        while self.kernel_config.binding_name_cache.len() <= kh {
+            self.kernel_config.binding_name_cache.push(HashMap::new());
+        }
+        // Look up cached index, or insert and cache
+        let cache = &mut self.kernel_config.binding_name_cache[kh];
         let bindings = &mut self.kernel_config.bindings[kh];
-        if let Some(existing) = bindings.iter_mut().find(|b| b.param_name == param_name) {
-            existing.buffer_handle = buffer_handle;
-            existing.is_output = is_output;
+        if let Some(&idx) = cache.get(param_name) {
+            bindings[idx].buffer_handle = buffer_handle;
+            bindings[idx].is_output = is_output;
         } else {
+            // Resolve CPU slot from compiled kernel binding_map
+            #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
+            let cpu_slot = if kh < self.cpu_kernels.len() {
+                self.cpu_kernels[kh].compiled.binding_map.get(param_name)
+                    .map(|&s| s as i32).unwrap_or(-1)
+            } else { -1 };
+            #[cfg(not(any(feature = "cranelift-backend", feature = "llvm-backend")))]
+            let cpu_slot = -1i32;
+
+            // Resolve GPU binding index from GpuSimRunner pipeline
+            let gpu_binding = if let Some(ref runner) = self.gpu_sim_runner {
+                let kernel_name = if kh < self.gpu_kernel_names.len() {
+                    Some(self.gpu_kernel_names[kh].as_str())
+                } else { None };
+                kernel_name.and_then(|name| runner.binding_index(name, param_name))
+                    .map(|b| b as i32).unwrap_or(-1)
+            } else { -1 };
+
+            let idx = bindings.len();
+            cache.insert(param_name.to_string(), idx);
             bindings.push(BufferBinding {
                 param_name: param_name.to_string(),
                 buffer_handle,
                 is_output,
+                cpu_slot,
+                gpu_binding,
             });
         }
     }
@@ -306,11 +342,17 @@ impl PipelineHost for HostState {
         while self.kernel_config.args.len() <= kh {
             self.kernel_config.args.push(Vec::new());
         }
-        // Upsert: overwrite if name exists, otherwise insert
+        while self.kernel_config.arg_name_cache.len() <= kh {
+            self.kernel_config.arg_name_cache.push(HashMap::new());
+        }
+        // Look up cached index, or insert and cache
+        let cache = &mut self.kernel_config.arg_name_cache[kh];
         let args = &mut self.kernel_config.args[kh];
-        if let Some(existing) = args.iter_mut().find(|a| a.name == name) {
-            existing.value = value;
+        if let Some(&idx) = cache.get(name) {
+            args[idx].value = value;
         } else {
+            let idx = args.len();
+            cache.insert(name.to_string(), idx);
             args.push(KernelArg { name: name.to_string(), value });
         }
     }
@@ -409,7 +451,8 @@ impl PipelineHost for HostState {
                 return;
             }
 
-            // Build buffer pointer array based on bindings
+            // Build buffer pointer array based on bindings.
+            // Uses pre-resolved cpu_slot indices (cached at bind time).
             let kernel = &self.cpu_kernels[handle];
             let num_buffers = kernel.compiled.num_storage_buffers;
             let mut buffer_ptrs: Vec<*mut u8> = vec![std::ptr::null_mut(); num_buffers];
@@ -417,7 +460,14 @@ impl PipelineHost for HostState {
             for binding in bindings {
                 let buf_idx = binding.buffer_handle as usize;
                 if buf_idx >= self.buffers.len() { continue; }
-                if let Some(&slot) = kernel.compiled.binding_map.get(&binding.param_name) {
+                let slot = if binding.cpu_slot >= 0 {
+                    binding.cpu_slot as usize
+                } else if let Some(&s) = kernel.compiled.binding_map.get(&binding.param_name) {
+                    s
+                } else {
+                    continue;
+                };
+                if slot < num_buffers {
                     buffer_ptrs[slot] = self.buffers[buf_idx].data.as_mut_ptr();
                 }
             }
@@ -1014,6 +1064,8 @@ impl PdcRuntime {
             kernel_config: KernelConfig {
                 bindings: Vec::new(),
                 args: Vec::new(),
+                binding_name_cache: Vec::new(),
+                arg_name_cache: Vec::new(),
             },
             display_requested: false,
             textures: Vec::new(),

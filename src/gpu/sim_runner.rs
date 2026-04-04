@@ -447,6 +447,12 @@ impl GpuSimRunner {
             .unwrap_or(&[])
     }
 
+    /// Return the wgpu binding index for a named buffer parameter in a pipeline.
+    pub fn binding_index(&self, pipeline_name: &str, param_name: &str) -> Option<u32> {
+        self.pipelines.get(pipeline_name)
+            .and_then(|p| p.binding_map.get(param_name).copied())
+    }
+
     /// Swap two named buffer entries (O(1) pointer swap).
     pub fn swap_buffers(&mut self, a: &str, b: &str) {
         if let (Some(buf_a), Some(buf_b)) = (self.buffers.remove(a), self.buffers.remove(b)) {
