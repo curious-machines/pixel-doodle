@@ -19,7 +19,7 @@ use crate::pdc::runtime::{PdcContext, PipelineHost, SceneBuilder};
 
 /// Builtins array indices (must match PIPELINE_BUILTINS order).
 #[allow(dead_code)]
-mod builtins_idx {
+pub(crate) mod builtins_idx {
     pub const WIDTH: usize = 0;
     pub const HEIGHT: usize = 1;
     pub const TIME: usize = 2;
@@ -52,14 +52,12 @@ struct HostState {
     kernel_bindings: Vec<Vec<BufferBinding>>,
     /// Per-kernel args, indexed by kernel handle. Persist until overwritten.
     kernel_args: Vec<Vec<KernelArg>>,
-    /// Whether display() or display_accumulated() was called this frame.
+    /// Whether display() was called this frame.
     display_requested: bool,
     /// Loaded textures, indexed by handle.
     textures: Vec<TextureData>,
     /// Compiled scene programs, indexed by handle.
     scenes: Vec<SceneEntry>,
-    /// Accumulation buffer for progressive rendering.
-    accum: Option<crate::progressive::AccumulationBuffer>,
     /// Snapshot of builtins for kernel param population.
     /// Updated before each frame by PdcRuntime.
     builtins_snapshot: [f64; B::COUNT],
@@ -413,26 +411,6 @@ impl PipelineHost for HostState {
                 }
             }
 
-            // Auto-allocate any unbound buffer slots (e.g., accum buffers for
-            // pixel kernels that expect them). Uses buffer_elem_bytes from the
-            // compiled kernel to determine per-element size.
-            let pixel_count = (self.width as usize) * (self.height as usize);
-            for slot in 0..num_buffers {
-                if buffer_ptrs[slot].is_null() {
-                    let elem_bytes = kernel.compiled.buffer_elem_bytes
-                        .get(slot)
-                        .copied()
-                        .unwrap_or(4) as usize;
-                    let auto_buf = self.buffers.len();
-                    self.buffers.push(NamedBuffer {
-                        name: format!("__auto_{handle}_{slot}"),
-                        data: vec![0u8; pixel_count * elem_bytes],
-                        elem_size: elem_bytes,
-                    });
-                    buffer_ptrs[slot] = self.buffers[auto_buf].data.as_mut_ptr();
-                }
-            }
-
             // Build params buffer (256 bytes), populating built-in members
             // from the builtins snapshot and user args from pending_args.
             let mut params = [0u8; 256];
@@ -463,7 +441,7 @@ impl PipelineHost for HostState {
                     "x_step" => params[off..off + 4].copy_from_slice(&((view_w / w as f64) as f32).to_le_bytes()),
                     "y_step" => params[off..off + 4].copy_from_slice(&((view_h / h as f64) as f32).to_le_bytes()),
                     "sample_index" => params[off..off + 4].copy_from_slice(&sample_index.to_le_bytes()),
-                    "sample_count" => params[off..off + 4].copy_from_slice(&(sample_index + 1).to_le_bytes()),
+                    "sample_count" => params[off..off + 4].copy_from_slice(&sample_index.wrapping_add(1).to_le_bytes()),
                     "time" => params[off..off + 4].copy_from_slice(&(time as f32).to_le_bytes()),
                     name if name.starts_with('_') => {} // padding
                     _ => {
@@ -695,41 +673,9 @@ impl PipelineHost for HostState {
         }
     }
 
-    fn set_max_samples(&mut self, n: i32) {
-        let w = self.width as usize;
-        let h = self.height as usize;
-        self.accum = Some(crate::progressive::AccumulationBuffer::new(w, h, n as u32));
-    }
-
-    fn is_converged(&self) -> bool {
-        self.accum.as_ref().map_or(false, |a| a.is_converged())
-    }
-
-    fn accumulate_sample(&mut self) {
-        if let Some(ref mut accum) = self.accum {
-            accum.accumulate(&self.pixel_buffer);
-        }
-    }
-
-    fn display_accumulated(&mut self) {
-        if let Some(ref accum) = self.accum {
-            accum.resolve(&mut self.pixel_buffer);
-        }
-        self.display_requested = true;
-    }
-
-    fn reset_accumulation(&mut self) {
-        if let Some(ref mut accum) = self.accum {
-            accum.reset();
-        }
-    }
-
     fn was_display_requested(&self) -> bool { self.display_requested }
     fn clear_display_requested(&mut self) { self.display_requested = false; }
     fn pixel_buffer(&self) -> &[u32] { &self.pixel_buffer }
-    fn is_accumulating(&self) -> bool {
-        self.accum.as_ref().map_or(false, |a| !a.is_converged())
-    }
     fn has_buffers(&self) -> bool {
         !self.buffers.is_empty()
     }
@@ -788,7 +734,7 @@ impl PipelineHost for HostState {
             gpu.render(
                 display,
                 center_x, center_y, zoom,
-                sample_index, sample_index + 1,
+                sample_index, sample_index.wrapping_add(1),
                 time,
                 &self.gpu_user_args,
             );
@@ -821,7 +767,7 @@ impl PipelineHost for HostState {
             gpu.render(
                 display,
                 center_x, center_y, zoom,
-                sample_index, sample_index + 1,
+                sample_index, sample_index.wrapping_add(1),
                 time,
                 &self.gpu_user_args,
             );
@@ -893,7 +839,7 @@ impl PipelineHost for HostState {
                 gpu.dispatch_compute(
                     device, queue,
                     center_x, center_y, zoom,
-                    sample_index, sample_index + 1,
+                    sample_index, sample_index.wrapping_add(1),
                     time,
                     &self.gpu_user_args,
                 );
@@ -1018,8 +964,6 @@ pub struct PdcRuntime {
     paused: bool,
     frame: u64,
     frames_executed: u64,
-    /// Whether this pipeline needs continuous redraws (e.g., uses time or animation).
-    animated: bool,
     /// Whether the last frame() call returned true (requesting another frame).
     frame_requested_redraw: bool,
     /// Previous mouse_down state for edge detection.
@@ -1059,7 +1003,6 @@ impl PdcRuntime {
             display_requested: false,
             textures: Vec::new(),
             scenes: Vec::new(),
-            accum: None,
             builtins_snapshot: [0.0; B::COUNT],
             base_dir: base_dir.to_path_buf(),
             render: "gpu".to_string(),
@@ -1096,6 +1039,10 @@ impl PdcRuntime {
         builtins[B::WIDTH] = width as f64;
         builtins[B::HEIGHT] = height as f64;
         builtins[B::ZOOM] = 1.0;
+        // Default to "no accumulation" sentinel — shaders check sample_index
+        // != 0xFFFFFFFF before jittering, and sample_count > 0 before
+        // accumulating.  Scripts set sample_index = 0 to enable accumulation.
+        builtins[B::SAMPLE_INDEX] = 0xFFFFFFFFu32 as f64;
 
         Ok(PdcRuntime {
             compiled,
@@ -1116,7 +1063,6 @@ impl PdcRuntime {
             paused: false,
             frame: 0,
             frames_executed: 0,
-            animated: false,
             frame_requested_redraw: false,
             mouse_was_down: false,
         })
@@ -1259,8 +1205,9 @@ impl PdcRuntime {
             return false;
         }
 
-        // Skip if this frame was already executed (static scene, no animation/accumulation)
-        if self.frame <= self.frames_executed && !self.animated && !self.host.is_accumulating() {
+        // Skip if this frame was already executed and the script didn't
+        // request another redraw (static scene, no animation/accumulation).
+        if self.frame <= self.frames_executed && !self.frame_requested_redraw {
             return false;
         }
 
@@ -1363,12 +1310,6 @@ impl PdcRuntime {
 
     pub fn title(&self) -> String {
         self.title.clone()
-    }
-
-    pub fn accumulation_info(&self) -> Option<(u32, u32)> {
-        // Access via the concrete type since we need accum field
-        // The trait object doesn't expose this directly
-        None // TODO: expose via PipelineHost trait if needed for window title
     }
 
     pub fn execute_gpu_headless(&mut self) {

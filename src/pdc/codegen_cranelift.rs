@@ -2480,8 +2480,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "push" | "len" | "get" | "set"
             | "display_buffer" | "swap" | "run" | "render"
             | "display" | "Texture" | "Scene"
-            | "set_max_samples" | "is_converged" | "accumulate_sample"
-            | "display_accumulated" | "reset_accumulation"
             | "set_keypress" | "set_keydown" | "set_keyup"
             | "clear_keypress" | "clear_keydown" | "clear_keyup"
             | "set_mousedown" | "set_mouseup" | "set_click"
@@ -2537,15 +2535,13 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
     fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
         match name {
             "Path" | "len" | "Texture" | "Scene"
-            | "is_converged" | "render" => Some(I32),
+            | "render" => Some(I32),
             "get" => Some(F64),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
             | "display_buffer" | "swap" | "run"
-            | "display"
-            | "set_max_samples" | "accumulate_sample"
-            | "display_accumulated" | "reset_accumulation" => None,
+            | "display" => None,
             _ => Some(F64),
         }
     }

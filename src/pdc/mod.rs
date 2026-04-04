@@ -1924,7 +1924,7 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
             builtin const mouse_down: bool
-            builtin const sample_index: u32
+            builtin var sample_index: u32
 
             fn get_zoom() -> f64 { return zoom }
         "#;
@@ -2007,11 +2007,6 @@ mod tests {
                 let h = self.next_handle; self.next_handle += 1;
                 self.log.borrow_mut().push(format!("load_texture({n}, {p})")); h
             }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LoggingHost {
@@ -2091,11 +2086,6 @@ mod tests {
                 self.log.borrow_mut().push(format!("display_buffer({h})"));
             }
             fn load_texture(&mut self, _n: &str, _p: &str) -> i32 { 0 }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
@@ -2159,11 +2149,6 @@ mod tests {
             fn display(&mut self) {}
             fn display_buffer(&mut self, _h: i32) {}
             fn load_texture(&mut self, _n: &str, _p: &str) -> i32 { 0 }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
@@ -2218,11 +2203,6 @@ mod tests {
                 let h = self.next_handle; self.next_handle += 1;
                 self.log.borrow_mut().push(format!("load_texture({n}, {p})")); h
             }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
@@ -2290,11 +2270,6 @@ mod tests {
                 let h = self.next_handle; self.next_handle += 1;
                 self.log.borrow_mut().push(format!("load_scene({n}, {p})")); h
             }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
@@ -2356,11 +2331,6 @@ mod tests {
             fn run_scene(&mut self, h: i32) {
                 self.log.borrow_mut().push(format!("run_scene({h})"));
             }
-            fn set_max_samples(&mut self, _n: i32) {}
-            fn is_converged(&self) -> bool { false }
-            fn accumulate_sample(&mut self) {}
-            fn display_accumulated(&mut self) {}
-            fn reset_accumulation(&mut self) {}
         }
 
         let mut host_box: Box<dyn runtime::PipelineHost> = Box::new(LogHost {
@@ -2468,11 +2438,6 @@ mod tests {
         fn display(&mut self) {}
         fn display_buffer(&mut self, _: i32) {}
         fn load_texture(&mut self, _: &str, _: &str) -> i32 { 0 }
-        fn set_max_samples(&mut self, _: i32) {}
-        fn is_converged(&self) -> bool { false }
-        fn accumulate_sample(&mut self) {}
-        fn display_accumulated(&mut self) {}
-        fn reset_accumulation(&mut self) {}
 
         fn set_keypress_handler(&mut self, key: i32, fn_ptr: *const u8) {
             self.keypress_handlers.insert(key, fn_ptr);
@@ -2544,7 +2509,7 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
             builtin const mouse_down: bool
-            builtin const sample_index: u32
+            builtin var sample_index: u32
 
             fn toggle_pause() { paused = !paused }
             fn zoom_in() { zoom = zoom * 1.1 }
@@ -2641,7 +2606,7 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
             builtin const mouse_down: bool
-            builtin const sample_index: u32
+            builtin var sample_index: u32
 
             fn zoom_in() { zoom = zoom * 2.0 }
 
@@ -2689,7 +2654,7 @@ mod tests {
             builtin var paused: bool
             builtin var frame: u64
             builtin const mouse_down: bool
-            builtin const sample_index: u32
+            builtin var sample_index: u32
 
             fn zoom_double() { zoom = zoom * 2.0 }
             fn zoom_triple() { zoom = zoom * 3.0 }

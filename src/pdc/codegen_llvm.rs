@@ -1997,8 +1997,6 @@ impl<'a> LlvmCodegenCtx<'a> {
                 | "push" | "len" | "get" | "set"
                 | "display_buffer" | "swap" | "run" | "render"
                 | "display" | "Texture" | "Scene"
-                | "set_max_samples" | "is_converged" | "accumulate_sample"
-                | "display_accumulated" | "reset_accumulation"
                 | "set_keypress" | "set_keydown" | "set_keyup"
                 | "clear_keypress" | "clear_keydown" | "clear_keyup"
                 | "set_mousedown" | "set_mouseup" | "set_click"
@@ -2030,14 +2028,12 @@ impl<'a> LlvmCodegenCtx<'a> {
     fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
         match name {
             "Path" | "len" | "Texture" | "Scene"
-            | "is_converged" | "render" => Some(self.context.i32_type().into()),
+            | "render" => Some(self.context.i32_type().into()),
             "get" => Some(self.context.f64_type().into()),
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled" | "push" | "set"
             | "bind" | "display_buffer" | "swap" | "run" | "set_arg"
-            | "display"
-            | "set_max_samples" | "accumulate_sample"
-            | "display_accumulated" | "reset_accumulation" => None,
+            | "display" => None,
             _ => Some(self.context.f64_type().into()),
         }
     }

@@ -301,33 +301,6 @@ impl TypeChecker {
             takes_ctx: true,
         });
 
-        // Progressive rendering
-        self.builtins.insert("set_max_samples".into(), BuiltinFn {
-            params: vec![PdcType::I32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("is_converged".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::Bool,
-            takes_ctx: true,
-        });
-        self.builtins.insert("accumulate_sample".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("display_accumulated".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("reset_accumulation".into(), BuiltinFn {
-            params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
         // Event handler registration
         let handler_ty = PdcType::FnRef { params: vec![], ret: Box::new(PdcType::Void) };
         let key_ty = PdcType::Enum("Key".into());
