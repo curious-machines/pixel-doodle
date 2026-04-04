@@ -1488,6 +1488,17 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             return Ok(results[0]);
         }
 
+        // Emit native Cranelift instructions for math functions where possible.
+        // These avoid the overhead of an extern function call.
+        match fn_name {
+            "abs" => return Ok(self.builder.ins().fabs(arg)),
+            "sqrt" => return Ok(self.builder.ins().sqrt(arg)),
+            "floor" => return Ok(self.builder.ins().floor(arg)),
+            "ceil" => return Ok(self.builder.ins().ceil(arg)),
+            "round" => return Ok(self.builder.ins().nearest(arg)),
+            _ => {}
+        }
+
         // Builtin runtime function
         let runtime_name = format!("pdc_{fn_name}");
         let ret_cl = if *ret_ty != PdcType::Void {
@@ -2449,6 +2460,35 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             };
             let size_val = self.builder.ins().iconst(I32, elem_size as i64);
             return self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32));
+        }
+
+        // Emit native Cranelift instructions for 2-arg math functions.
+        if args.len() == 2 {
+            match name {
+                "min" => {
+                    let a = self.emit_expr(&args[0])?;
+                    let b = self.emit_expr(&args[1])?;
+                    let a_ty = self.node_type(args[0].id).clone();
+                    let b_ty = self.node_type(args[1].id).clone();
+                    if a_ty.is_float() || b_ty.is_float() {
+                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
+                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
+                        return Ok(self.builder.ins().fmin(a, b));
+                    }
+                }
+                "max" => {
+                    let a = self.emit_expr(&args[0])?;
+                    let b = self.emit_expr(&args[1])?;
+                    let a_ty = self.node_type(args[0].id).clone();
+                    let b_ty = self.node_type(args[1].id).clone();
+                    if a_ty.is_float() || b_ty.is_float() {
+                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
+                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
+                        return Ok(self.builder.ins().fmax(a, b));
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Runtime function call

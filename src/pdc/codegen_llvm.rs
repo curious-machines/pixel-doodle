@@ -1970,6 +1970,26 @@ impl<'a> LlvmCodegenCtx<'a> {
             } else { 8 };
             let size_val = self.i32_const(elem_size as i64);
             self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr.into(), size_val.into()], Some(self.context.i32_type().into()))
+        } else if args.len() == 2 && matches!(name, "min" | "max" | "pow") {
+            // Emit LLVM intrinsics for 2-arg math functions.
+            let a = self.emit_expr(&args[0])?;
+            let b = self.emit_expr(&args[1])?;
+            let a_ty = self.node_type(args[0].id).clone();
+            let b_ty = self.node_type(args[1].id).clone();
+            if a_ty.is_float() || b_ty.is_float() {
+                let a_f = self.convert_value(a, &a_ty, &PdcType::F64).into_float_value();
+                let b_f = self.convert_value(b, &b_ty, &PdcType::F64).into_float_value();
+                let intrinsic_name = match name {
+                    "min" => "llvm.minnum.f64",
+                    "max" => "llvm.maxnum.f64",
+                    "pow" => "llvm.pow.f64",
+                    _ => unreachable!(),
+                };
+                return Ok(self.call_f64_intrinsic2(intrinsic_name, a_f, b_f).into());
+            }
+            // Integer min/max/pow: fall through to runtime
+            let runtime_name = format!("pdc_{}", name);
+            self.emit_runtime_call_raw(&runtime_name, &[a, b], Some(self.context.f64_type().as_basic_type_enum()))
         } else {
             // Runtime function call
             let runtime_name = match name {
@@ -2361,6 +2381,25 @@ impl<'a> LlvmCodegenCtx<'a> {
                 Some(val) => Ok(val),
                 None => Ok(self.i32_const(0).into()),
             };
+        }
+
+        // Emit LLVM intrinsics for math functions where possible.
+        if let Some(intrinsic_name) = match fn_name {
+            "sin" => Some("llvm.sin.f64"),
+            "cos" => Some("llvm.cos.f64"),
+            "abs" => Some("llvm.fabs.f64"),
+            "sqrt" => Some("llvm.sqrt.f64"),
+            "floor" => Some("llvm.floor.f64"),
+            "ceil" => Some("llvm.ceil.f64"),
+            "round" => Some("llvm.round.f64"),
+            "exp" => Some("llvm.exp.f64"),
+            "exp2" => Some("llvm.exp2.f64"),
+            "ln" => Some("llvm.log.f64"),
+            "log2" => Some("llvm.log2.f64"),
+            "log10" => Some("llvm.log10.f64"),
+            _ => None,
+        } {
+            return Ok(self.call_f64_intrinsic(intrinsic_name, arg.into_float_value()).into());
         }
 
         let runtime_name = format!("pdc_{fn_name}");
@@ -2818,6 +2857,19 @@ impl<'a> LlvmCodegenCtx<'a> {
             .unwrap_or_else(|| panic!("intrinsic {name} not found"));
         let decl = intrinsic.get_declaration(self.module, &[f64_ty.into()]).unwrap();
         self.builder.build_call(decl, &[val.into()], "intrinsic")
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .unwrap()
+            .into_float_value()
+    }
+
+    fn call_f64_intrinsic2(&self, name: &str, a: FloatValue<'static>, b: FloatValue<'static>) -> FloatValue<'static> {
+        let f64_ty = self.context.f64_type();
+        let intrinsic = inkwell::intrinsics::Intrinsic::find(name)
+            .unwrap_or_else(|| panic!("intrinsic {name} not found"));
+        let decl = intrinsic.get_declaration(self.module, &[f64_ty.into()]).unwrap();
+        self.builder.build_call(decl, &[a.into(), b.into()], "intrinsic")
             .unwrap()
             .try_as_basic_value()
             .basic()
