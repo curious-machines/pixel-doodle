@@ -1,7 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "checkerboard.wgsl"
-  run checkerboard
-  display
-}

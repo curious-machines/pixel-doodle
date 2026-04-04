@@ -1,8 +1,6 @@
 //! PDC-driven pipeline runtime.
 //!
-//! `PdcRuntime` executes a compiled PDC program as the pipeline orchestrator,
-//! replacing the declarative PDP config. It implements the same public interface
-//! as `pdp::runtime::Runtime` so that `main.rs` can use either.
+//! `PdcRuntime` executes a compiled PDC program as the pipeline orchestrator.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,7 +9,7 @@ use crate::display::Display;
 use crate::gpu::{self, GpuBackend, sim_runner::GpuSimRunner};
 use crate::jit;
 use crate::pdc;
-use crate::pdp::ast::GpuElementType;
+use crate::gpu::GpuElementType;
 use crate::texture::TextureData;
 use crate::vector::VectorScene;
 use crate::pdc::codegen::{CompiledProgram, StateLayout, PIPELINE_BUILTINS};
@@ -469,7 +467,7 @@ impl PipelineHost for HostState {
                 }
             }).collect();
 
-            // Parallel tiled dispatch via rayon (matches PDP behavior).
+            // Parallel tiled dispatch via rayon.
             let fn_ptr = kernel.compiled.fn_ptr;
             let tile_h = 16usize;
             let params_ref = &params;
@@ -940,7 +938,7 @@ fn bytemuck_cast_slice(data: &[[f32; 4]]) -> Vec<u8> {
 /// PDC-driven pipeline runtime.
 ///
 /// Executes a compiled PDC program as the pipeline orchestrator.
-/// Implements the same public interface as `pdp::runtime::Runtime`.
+/// Implements the public interface expected by `main.rs`.
 pub struct PdcRuntime {
     compiled: CompiledProgram,
     #[allow(dead_code)]
@@ -950,7 +948,7 @@ pub struct PdcRuntime {
     scene_builder: SceneBuilder,
     host: Box<dyn PipelineHost>,
 
-    // Public fields matching PDP Runtime interface
+    // Public fields used by main.rs
     pub width: u32,
     pub height: u32,
     pub mouse_x: f64,
@@ -1093,7 +1091,7 @@ impl PdcRuntime {
         self.frame = self.builtins[B::FRAME] as u64;
     }
 
-    // ── Public interface matching PDP Runtime ──
+    // ── Public interface ──
 
     pub fn set_config_path(&mut self, _path: &str) {
         // Title already set from source_path

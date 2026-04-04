@@ -3,7 +3,6 @@ pub mod gpu;
 pub mod jit;
 #[cfg(any(feature = "cranelift-backend", feature = "llvm-backend"))]
 pub mod pdc;
-pub mod pdp;
 pub mod progressive;
 pub mod texture;
 pub mod vector;

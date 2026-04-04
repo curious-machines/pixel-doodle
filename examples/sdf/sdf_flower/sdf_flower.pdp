@@ -1,7 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "sdf_flower.wgsl"
-  run sdf_flower
-  display
-}

@@ -569,7 +569,7 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
     unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
 }
 
-/// Compile a PDC source for use in a PDP pipeline.
+/// Compile a PDC source for pipeline execution.
 ///
 /// Performs dead code elimination and test stripping (unlike `compile_only`),
 /// but does not execute the program. Returns a `CompiledProgram` ready for
@@ -603,7 +603,7 @@ pub fn compile_for_pipeline(
     )
 }
 
-/// Compile a PDC source for use in a PDP pipeline, selecting the codegen
+/// Compile a PDC source for pipeline execution, selecting the codegen
 /// backend at runtime by name ("cranelift" or "llvm").
 pub fn compile_for_pipeline_with_codegen(
     source: &str,

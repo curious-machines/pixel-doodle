@@ -1,7 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "animated_circle.wgsl"
-  run animated_circle
-  display
-}

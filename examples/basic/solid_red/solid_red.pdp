@@ -1,5 +1,0 @@
-pipeline gpu {
-  pixel kernel "solid_red.wgsl"
-  run solid_red
-  display
-}

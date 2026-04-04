@@ -1,7 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "ray_march_ao.wgsl"
-  run ray_march_ao
-  display
-}

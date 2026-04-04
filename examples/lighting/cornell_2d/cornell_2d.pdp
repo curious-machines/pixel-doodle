@@ -1,7 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "cornell_2d.wgsl"
-  run cornell_2d
-  display
-}

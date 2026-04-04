@@ -27,9 +27,9 @@ Exploratory project for executing WGSL compute shaders that generate pixel data,
 
 Kernels are WGSL compute shaders. The runtime dispatches them either on the GPU (native wgpu) or on the CPU (compiled via naga → Cranelift/LLVM JIT).
 
-### Pipeline Config (.pdp)
+### Pipeline Scripts (.pdc)
 
-`.pdp` files describe how to orchestrate kernels:
+`.pdc` scripts orchestrate kernels via a JIT-compiled scripting language:
 - Declare buffers, textures, variables
 - Reference `.wgsl` kernel files
 - Define execution order, loops, swaps, mouse/keyboard handlers
@@ -41,7 +41,7 @@ Two orthogonal settings control execution:
 - **render**: `"gpu"` (default) — native GPU via wgpu; `"cpu"` — JIT-compiled CPU fallback
 - **codegen**: `"cranelift"` (default) or `"llvm"` — which JIT backend for CPU render and PDC
 
-Set via `--set render=cpu,codegen=llvm`, `.pds` files, or PDP `settings {}` blocks.
+Set via `--set render=cpu,codegen=llvm` or `.pds` files.
 
 ## Implementation Strategy
 

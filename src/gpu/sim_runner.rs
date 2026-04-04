@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::display::Display;
-use crate::pdp::ast::GpuElementType;
+use super::GpuElementType;
 
 use super::aligned_bytes_per_row;
 
@@ -43,9 +43,7 @@ struct GpuPipeline {
     user_arg_types: Vec<WgslArgType>,
 }
 
-/// Generic GPU simulation runner driven by PDP pipeline steps.
-///
-/// Holds named GPU storage buffers and compiled compute pipelines.
+/// Generic GPU simulation runner for named storage buffers and compute pipelines.
 /// Dispatches compute shaders with buffer bindings resolved by name.
 pub struct GpuSimRunner {
     device: wgpu::Device,
@@ -331,7 +329,7 @@ impl GpuSimRunner {
 
     /// Dispatch a compute shader with named buffer bindings and optional user args.
     ///
-    /// `bindings` maps WGSL variable names to PDP buffer names.
+    /// `bindings` maps WGSL variable names to buffer names.
     /// `user_arg_bytes` are raw bytes written to the uniform buffer after SimParams
     /// (offset 16). The caller is responsible for encoding each arg with the correct
     /// type (f32 or u32) to match the WGSL kernel's Params struct layout.

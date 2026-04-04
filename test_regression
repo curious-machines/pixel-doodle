@@ -51,7 +51,7 @@ Usage: ./test_regression [options] [example-filter]
 Options:
   --update [filter]    Regenerate golden images (all or filtered)
   --compile-only       Just verify compilation succeeds (no golden compare)
-  --list               List all valid (example, pipeline, config) combos
+  --list               List all valid (example, config) combos
   --threshold N        Per-channel pixel tolerance (default: 0 = exact)
   --no-build           Skip cargo build step
   --help               Show this help
@@ -98,28 +98,22 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Render/codegen combos for each pipeline type.
-# Each combo is "render:codegen" — expanded to --set args in run_case.
-configs_for_pipeline() {
-    local pipeline="$1"
-    case "$pipeline" in
-        gpu)
-            echo "gpu:cranelift"
-            echo "gpu:llvm"
-            echo "cpu:cranelift"
-            echo "cpu:llvm"
-            ;;
-    esac
-}
+# Render/codegen combos — each example is tested with all of these.
+ALL_CONFIGS=(
+    "gpu:cranelift"
+    "gpu:llvm"
+    "cpu:cranelift"
+    "cpu:llvm"
+)
 
-# Discover all test cases: (example_path, pipeline, config)
+# Discover all test cases: (example_path, config)
 discover_cases() {
-    local pdp_files
-    pdp_files=$(find "$SCRIPT_DIR/examples" -name '*.pdp' -not -path '*/shared/*' | sort)
+    local pdc_files
+    pdc_files=$(find "$SCRIPT_DIR/examples" -name '*.pdc' -not -path '*/shared/*' | sort)
 
-    for pdp in $pdp_files; do
+    for pdc in $pdc_files; do
         local dir
-        dir="$(dirname "$pdp")"
+        dir="$(dirname "$pdc")"
         local example_name
         example_name="${dir#"$SCRIPT_DIR/examples/"}"
 
@@ -128,26 +122,18 @@ discover_cases() {
             continue
         fi
 
-        # Extract pipeline names
-        local pipelines
-        pipelines=$(grep -oP '^pipeline\s+\K\w+' "$pdp" || true)
-
-        for pipeline in $pipelines; do
-            local configs
-            configs=$(configs_for_pipeline "$pipeline")
-            for config in $configs; do
-                echo "$example_name|$pipeline|$config"
-            done
+        for config in "${ALL_CONFIGS[@]}"; do
+            echo "$example_name|$config"
         done
     done
 }
 
 # Golden image path for a test case
 golden_path() {
-    local example="$1" pipeline="$2" config="$3"
+    local example="$1" config="$2"
     # config is "render:codegen" — replace colon with hyphen for cross-platform filenames
     local safe_config="${config//:/-}"
-    echo "$GOLDEN_DIR/$example/$pipeline-$safe_config.ppm"
+    echo "$GOLDEN_DIR/$example/$safe_config.ppm"
 }
 
 # Compare two PPM files, returns 0 if within threshold
@@ -263,22 +249,22 @@ print(f'  max_channel_diff={max_diff} differing_channels={diff_count}/{total} ({
 
 # Run a single test case
 run_case() {
-    local example="$1" pipeline="$2" config="$3"
-    local label="$example [$pipeline/$config]"
+    local example="$1" config="$2"
+    local label="$example [$config]"
     # Split config into render:codegen
     local render="${config%%:*}"
     local codegen="${config##*:}"
-    local set_args="pipeline=$pipeline,render=$render,codegen=$codegen,width=$WIDTH,height=$HEIGHT"
+    local set_args="render=$render,codegen=$codegen,width=$WIDTH,height=$HEIGHT"
     local out_dir="$TMP_DIR/$example"
     local safe_config="${config//:/-}"
-    local out_file="$out_dir/$pipeline-$safe_config.ppm"
+    local out_file="$out_dir/$safe_config.ppm"
     local gold
-    gold=$(golden_path "$example" "$pipeline" "$config")
+    gold=$(golden_path "$example" "$config")
 
     mkdir -p "$out_dir"
 
     # Render headlessly
-    local stderr_file="$out_dir/$pipeline-$config.stderr"
+    local stderr_file="$out_dir/$safe_config.stderr"
     local exit_code=0
     timeout "$TIMEOUT" "$BINARY" "examples/$example" \
         --set "$set_args" --output "$out_file" \
@@ -360,10 +346,10 @@ fi
 
 # List mode
 if [[ "$MODE" == "list" ]]; then
-    printf "${BOLD}%-40s %-8s %s${RESET}\n" "Example" "Pipeline" "Config"
+    printf "${BOLD}%-40s %s${RESET}\n" "Example" "Config"
     echo "────────────────────────────────────────────────────────────────"
-    echo "$cases" | while IFS='|' read -r example pipeline config; do
-        printf "%-40s %-8s %s\n" "$example" "$pipeline" "$config"
+    echo "$cases" | while IFS='|' read -r example config; do
+        printf "%-40s %s\n" "$example" "$config"
     done
     echo ""
     echo "Total: $total test cases"
@@ -381,8 +367,8 @@ printf "${BOLD}Running %d regression tests (${WIDTH}x${HEIGHT}, threshold=%d)${R
 echo "════════════════════════════════════════════════════════════════"
 
 # Run all cases (use process substitution to avoid subshell)
-while IFS='|' read -r example pipeline config; do
-    run_case "$example" "$pipeline" "$config"
+while IFS='|' read -r example config; do
+    run_case "$example" "$config"
 done <<< "$cases"
 
 # Read final counters

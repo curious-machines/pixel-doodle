@@ -1,9 +1,0 @@
-# Mandelbrot with pan/zoom
-
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "mandelbrot.wgsl"
-  run mandelbrot
-  display
-}

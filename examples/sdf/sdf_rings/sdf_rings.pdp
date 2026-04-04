@@ -1,9 +1,0 @@
-include "../../shared/pan_zoom.pdp"
-
-pipeline gpu {
-  pixel kernel "sdf_rings.wgsl"
-  accumulate(samples: 256) {
-    run sdf_rings
-    display
-  }
-}

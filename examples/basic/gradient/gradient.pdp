@@ -1,7 +1,0 @@
-# Gradient — simplest pixel kernel
-
-pipeline gpu {
-  pixel kernel "gradient.wgsl"
-  run gradient
-  display
-}
