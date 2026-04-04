@@ -96,6 +96,10 @@ pub trait PipelineHost {
     fn re_present_gpu_frame(&self, _display: &Display) -> bool { false }
     /// Whether the host is in GPU render mode.
     fn is_gpu_render(&self) -> bool { false }
+    /// Return the render mode string ("gpu" or "cpu").
+    fn render_mode(&self) -> &str { "cpu" }
+    /// Return the codegen backend string ("cranelift" or "llvm").
+    fn codegen_backend(&self) -> &str { "cranelift" }
     /// Finalize GPU pixel kernel setup after init block has loaded kernels.
     fn finalize_gpu_pixel_kernel(&mut self) {}
     /// Initialize GPU resources headlessly (no display/window).

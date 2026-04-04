@@ -258,18 +258,30 @@ fn run_pdc(source: &ConfigSource, args: &CliArgs) {
 
     // Benchmark mode
     if args.bench {
+        // Initialize GPU resources headlessly if in GPU render mode
+        if runtime.has_gpu_kernels {
+            runtime.init_gpu_headless();
+        }
+
         runtime.execute_init_block(&None);
+
+        let render = runtime.render_mode();
+        let codegen = runtime.codegen_backend();
+        eprintln!("[bench] render={render} codegen={codegen}");
+
         let warmup = 5;
         let frames = args.bench_frames;
         eprintln!("[bench] warmup {} frames...", warmup);
         for i in 0..warmup {
             runtime.execute_frame(i as f64 * 0.016, &None);
+            runtime.flush_gpu_frame();
         }
         eprintln!("[bench] timing {} frames...", frames);
         let mut times = Vec::with_capacity(frames as usize);
         for i in 0..frames {
             let t0 = Instant::now();
             runtime.execute_frame((warmup + i) as f64 * 0.016, &None);
+            runtime.flush_gpu_frame();
             times.push(t0.elapsed().as_secs_f64() * 1000.0);
         }
         if let Some(ref output_path) = args.output {

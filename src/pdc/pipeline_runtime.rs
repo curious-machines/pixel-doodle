@@ -787,6 +787,8 @@ impl PipelineHost for HostState {
     }
 
     fn is_gpu_render(&self) -> bool { self.render == "gpu" }
+    fn render_mode(&self) -> &str { &self.render }
+    fn codegen_backend(&self) -> &str { &self.codegen }
 
     fn init_gpu_headless(&mut self) {
         if self.render != "gpu" {
@@ -1262,6 +1264,21 @@ impl PdcRuntime {
         }
     }
 
+    /// Initialize GPU resources headlessly (no display/window).
+    /// Used for benchmarking and output-only modes.
+    pub fn init_gpu_headless(&mut self) {
+        self.host.init_gpu_headless();
+    }
+
+    /// Dispatch and read back GPU pixel data if GPU rendered this frame.
+    /// Used in headless/benchmark modes where there is no display surface.
+    pub fn flush_gpu_frame(&mut self) {
+        if self.host.gpu_rendered_this_frame() {
+            self.host.readback_gpu_pixels();
+            self.sync_pixels();
+        }
+    }
+
     pub fn handle_keypress(&mut self, key_tag: i32) -> bool {
         if let Some(fn_ptr) = self.host.get_keypress_handler(key_tag) {
             let mut ctx = self.make_ctx();
@@ -1311,6 +1328,16 @@ impl PdcRuntime {
 
     pub fn title(&self) -> String {
         self.title.clone()
+    }
+
+    /// Return the render mode ("gpu" or "cpu").
+    pub fn render_mode(&self) -> &str {
+        self.host.render_mode()
+    }
+
+    /// Return the codegen backend ("cranelift" or "llvm").
+    pub fn codegen_backend(&self) -> &str {
+        self.host.codegen_backend()
     }
 
     pub fn execute_gpu_headless(&mut self) {
