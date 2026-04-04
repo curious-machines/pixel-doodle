@@ -1,12 +1,22 @@
 import { register_pan_zoom } from "../../shared/pan_zoom"
 
+builtin var sample_index: u32
+
 var pixels = Buffer.U32()
+var accum = Buffer.Vec4F32()
 var kern = Kernel.Pixel("ray_march_ao", "ray_march_ao.wgsl")
+var max_samples: u32 = 256
 
 fn init() {
+    sample_index = 0
     register_pan_zoom()
 }
 
 fn frame() -> bool {
-    return kern.render(pixels, false)
+    kern.output = Bind.Out(pixels)
+    kern.accum = Bind.Out(accum)
+    kern.run()
+    pixels.display_buffer()
+    sample_index = sample_index + 1
+    return sample_index < max_samples
 }
