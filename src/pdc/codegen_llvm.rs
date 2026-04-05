@@ -31,6 +31,20 @@ struct SendSyncEngine(#[allow(dead_code)] inkwell::execution_engine::ExecutionEn
 unsafe impl Send for SendSyncEngine {}
 unsafe impl Sync for SendSyncEngine {}
 
+/// Resolve a type through the type alias map.
+fn resolve_type(ty: &PdcType, type_aliases: &HashMap<String, PdcType>) -> PdcType {
+    match ty {
+        PdcType::Struct(name) => {
+            if let Some(aliased) = type_aliases.get(name) {
+                resolve_type(aliased, type_aliases)
+            } else {
+                ty.clone()
+            }
+        }
+        _ => ty.clone(),
+    }
+}
+
 pub fn compile(
     program: &Program,
     types: &[PdcType],
@@ -40,6 +54,7 @@ pub fn compile(
     enums: &HashMap<String, EnumInfo>,
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
+    type_aliases: &HashMap<String, PdcType>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     // Create LLVM context, module, target machine.
     let context: &'static Context = Box::leak(Box::new(Context::create()));
@@ -95,6 +110,8 @@ pub fn compile(
             Expr::BinaryOp { left, right, .. } => {
                 is_pure_literal(&left.node) && is_pure_literal(&right.node)
             }
+            // Type cast calls like real(0.0), f32(4.0) with pure literal args
+            Expr::Call { args, .. } => args.iter().all(|a| is_pure_literal(&a.node)),
             _ => false,
         }
     }
@@ -165,18 +182,20 @@ pub fn compile(
         *idx += 1;
 
         let mut param_types: Vec<BasicMetadataTypeEnum<'static>> = vec![ptr_type.into()]; // ctx
-        let sret = is_compound_return(&fndef.return_type);
+        let resolved_ret = resolve_type(&fndef.return_type, type_aliases);
+        let sret = is_compound_return(&resolved_ret);
         if sret {
             param_types.push(ptr_type.into()); // output pointer for struct/tuple return
         }
         for param in &fndef.params {
-            param_types.push(pdc_type_to_llvm(&param.ty, context).into());
+            let resolved_param = resolve_type(&param.ty, type_aliases);
+            param_types.push(pdc_type_to_llvm(&resolved_param, context).into());
         }
 
-        let fn_type = if fndef.return_type == PdcType::Void || sret {
+        let fn_type = if resolved_ret == PdcType::Void || sret {
             context.void_type().fn_type(&param_types, false)
         } else {
-            pdc_type_to_llvm(&fndef.return_type, context).fn_type(&param_types, false)
+            pdc_type_to_llvm(&resolved_ret, context).fn_type(&param_types, false)
         };
 
         let func = llvm_module.add_function(&mangled, fn_type, None);
@@ -245,7 +264,8 @@ pub fn compile(
         let entry = context.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        let is_sret = is_compound_return(&fndef.return_type);
+        let resolved_ret = resolve_type(&fndef.return_type, type_aliases);
+        let is_sret = is_compound_return(&resolved_ret);
         let ctx_ptr = function.get_nth_param(0).unwrap().into_pointer_value();
         let sret_ptr = if is_sret {
             Some(function.get_nth_param(1).unwrap().into_pointer_value())
@@ -285,12 +305,13 @@ pub fn compile(
             structs,
             enums,
             fn_aliases: effective_aliases,
+            type_aliases,
             op_overloads,
             op_fn_map: &op_fn_map,
             block_terminated: false,
             loop_stack: Vec::new(),
             sret_ptr,
-            fn_return_type: fndef.return_type.clone(),
+            fn_return_type: resolved_ret.clone(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
         };
@@ -298,7 +319,8 @@ pub fn compile(
         // Define parameters as allocas
         for (i, param) in fndef.params.iter().enumerate() {
             let val = function.get_nth_param(i as u32 + param_offset).unwrap();
-            cg.define_variable(&param.name, &param.ty, val);
+            let resolved_param = resolve_type(&param.ty, type_aliases);
+            cg.define_variable(&param.name, &resolved_param, val);
         }
 
         // Emit top-level constants and immutable builtins
@@ -314,10 +336,10 @@ pub fn compile(
         // Implicit return
         let body_returns = fndef.body.stmts.last().is_some_and(|s| matches!(s.node, Stmt::Return(_)));
         if !body_returns && !cg.block_terminated {
-            if fndef.return_type == PdcType::Void || is_sret {
+            if resolved_ret == PdcType::Void || is_sret {
                 cg.builder.build_return(None).unwrap();
             } else {
-                let zero = cg.default_value(&fndef.return_type);
+                let zero = cg.default_value(&resolved_ret);
                 cg.builder.build_return(Some(&zero)).unwrap();
             }
         }
@@ -347,6 +369,7 @@ pub fn compile(
             structs,
             enums,
             fn_aliases,
+            type_aliases,
             op_overloads,
             op_fn_map: &op_fn_map,
             block_terminated: false,
@@ -420,6 +443,7 @@ pub fn compile(
             structs,
             enums,
             fn_aliases,
+            type_aliases,
             op_overloads,
             op_fn_map: &op_fn_map,
             block_terminated: false,
@@ -501,8 +525,8 @@ pub fn compile(
         *idx += 1;
         let fn_code_ptr = engine.get_function_address(&mangled)
             .map_err(|e| PdcError::Codegen { message: format!("get user fn: {e}") })?;
-        let param_types: Vec<PdcType> = fndef.params.iter().map(|p| p.ty.clone()).collect();
-        user_fn_ptrs.insert(key, (fn_code_ptr as *const u8, param_types, fndef.return_type.clone()));
+        let param_types: Vec<PdcType> = fndef.params.iter().map(|p| resolve_type(&p.ty, type_aliases)).collect();
+        user_fn_ptrs.insert(key, (fn_code_ptr as *const u8, param_types, resolve_type(&fndef.return_type, type_aliases)));
     }
 
     Ok((
@@ -575,6 +599,7 @@ struct LlvmCodegenCtx<'a> {
     structs: &'a HashMap<String, StructInfo>,
     enums: &'a HashMap<String, EnumInfo>,
     fn_aliases: &'a HashMap<String, String>,
+    type_aliases: &'a HashMap<String, PdcType>,
     op_overloads: &'a HashMap<String, OverloadSet>,
     op_fn_map: &'a HashMap<(String, usize), FunctionValue<'static>>,
     block_terminated: bool,
@@ -878,11 +903,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let val_ty = self.node_type(value.id).clone();
                     let converted = self.convert_value(val, &val_ty, elem_ty);
                     let elem_size = pdc_type_byte_size(elem_ty);
-                    // Inline store via buffer data pointer
-                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
-                    let data_ptr = self.emit_runtime_call_raw(
-                        "pdc_buffer_data_ptr", &[self.ctx_ptr.into(), buf_handle],
-                        Some(ptr_ty.into()))?.into_pointer_value();
+                    let data_ptr = self.emit_buffer_data_ptr(buf_handle);
                     self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_ty);
                 }
             }
@@ -1631,11 +1652,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let buf_handle = self.emit_expr(object)?;
                     let idx = self.emit_expr(index)?;
                     let elem_size = pdc_type_byte_size(elem_ty);
-                    // Inline load via buffer data pointer
-                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
-                    let data_ptr = self.emit_runtime_call_raw(
-                        "pdc_buffer_data_ptr", &[self.ctx_ptr.into(), buf_handle],
-                        Some(ptr_ty.into()))?.into_pointer_value();
+                    let data_ptr = self.emit_buffer_data_ptr(buf_handle);
                     Ok(self.emit_inline_array_load(data_ptr, idx, elem_size, elem_ty))
                 } else {
                     Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
@@ -1899,7 +1916,14 @@ impl<'a> LlvmCodegenCtx<'a> {
             "f64" => Some(PdcType::F64),
             "i32" => Some(PdcType::I32),
             "u32" => Some(PdcType::U32),
-            _ => None,
+            _ => {
+                let resolved = resolve_type(&PdcType::Struct(name.to_string()), self.type_aliases);
+                if resolved != PdcType::Struct(name.to_string()) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }
         };
         if let Some(target) = cast_ty {
             let val = self.emit_expr(&args[0])?;
@@ -2930,6 +2954,43 @@ impl<'a> LlvmCodegenCtx<'a> {
             .basic()
             .unwrap()
             .into_float_value()
+    }
+
+    /// Resolve a buffer's data pointer by inlining the lookup from PdcContext.buffer_ptrs.
+    /// Two loads, no function call: ctx->buffer_ptrs[handle].
+    fn emit_buffer_data_ptr(
+        &self,
+        buf_handle: inkwell::values::BasicValueEnum<'static>,
+    ) -> inkwell::values::PointerValue<'static> {
+        let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+        let i64_ty = self.context.i64_type();
+
+        // Load ctx->buffer_ptrs (offset 32 in PdcContext)
+        let buffer_ptrs_field = unsafe {
+            self.builder.build_gep(
+                self.context.i8_type(), self.ctx_ptr.into(),
+                &[self.context.i64_type().const_int(32, false).into()],
+                "buffer_ptrs_field",
+            ).unwrap()
+        };
+        let buffer_ptrs = self.builder.build_load(
+            ptr_ty, buffer_ptrs_field, "buffer_ptrs",
+        ).unwrap().into_pointer_value();
+
+        // buffer_ptrs[handle]: GEP by handle, then load the pointer
+        let handle_i64 = self.builder.build_int_s_extend(
+            buf_handle.into_int_value(), i64_ty, "handle_ext",
+        ).unwrap();
+        let slot_ptr = unsafe {
+            self.builder.build_gep(
+                ptr_ty, buffer_ptrs,
+                &[handle_i64.into()],
+                "buf_slot_ptr",
+            ).unwrap()
+        };
+        self.builder.build_load(ptr_ty, slot_ptr, "buf_data_ptr")
+            .unwrap()
+            .into_pointer_value()
     }
 
     /// Emit an inline array element load via pointer arithmetic.

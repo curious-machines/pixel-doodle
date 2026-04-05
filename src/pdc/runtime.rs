@@ -16,6 +16,11 @@ pub struct PdcContext {
     /// This is `*mut Box<dyn PipelineHost>` cast to `*mut u8` to keep
     /// PdcContext repr(C) with fixed-size fields.
     pub host: *mut u8,
+    /// Pre-resolved buffer data pointers for fast lookup during pixel kernel dispatch.
+    /// Null outside render dispatch (falls back to trait dispatch via host).
+    pub buffer_ptrs: *const *mut u8,
+    /// Number of entries in the buffer_ptrs array.
+    pub buffer_count: i32,
 }
 
 /// Trait for pipeline host operations callable from JIT'd PDC code.
@@ -755,7 +760,15 @@ unsafe fn get_host(ctx: *mut PdcContext) -> &'static mut dyn PipelineHost {
 /// For CPU buffers, this is the actual byte buffer.
 /// For GPU buffers, this returns null (GPU data is device-local).
 pub extern "C" fn pdc_buffer_data_ptr(ctx: *mut PdcContext, handle: i32) -> *mut u8 {
-    unsafe { get_host(ctx).buffer_data_ptr(handle) }
+    unsafe {
+        // Fast path: use pre-cached pointer array (set during render dispatch)
+        let ctx_ref = &*ctx;
+        if !ctx_ref.buffer_ptrs.is_null() && handle >= 0 && handle < ctx_ref.buffer_count {
+            return *ctx_ref.buffer_ptrs.add(handle as usize);
+        }
+        // Slow path: trait dispatch
+        get_host(ctx).buffer_data_ptr(handle)
+    }
 }
 
 /// Return the number of elements in a buffer.

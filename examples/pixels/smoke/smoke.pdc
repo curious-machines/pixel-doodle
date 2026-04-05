@@ -11,21 +11,28 @@ builtin const height: f32
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
-// Simulation state: separate f64 buffers for each field component
-var vx = Buffer<f64>()
-var vx_next = Buffer<f64>()
-var vy = Buffer<f64>()
-var vy_next = Buffer<f64>()
-var density = Buffer<f64>()
-var density_next = Buffer<f64>()
-var div_buf = Buffer<f64>()
-var press_a = Buffer<f64>()
-var press_b = Buffer<f64>()
+// Change to f32 to compare performance (halves memory bandwidth)
+type real = f64
 
-// Physics constants
-const DT = 4.0
-const DISSIPATION = 0.998
-const BUOYANCY = 0.08
+// Simulation state: separate buffers for each field component
+var vx = Buffer<real>()
+var vx_next = Buffer<real>()
+var vy = Buffer<real>()
+var vy_next = Buffer<real>()
+var density = Buffer<real>()
+var density_next = Buffer<real>()
+var div_buf = Buffer<real>()
+var press_a = Buffer<real>()
+var press_b = Buffer<real>()
+
+// Physics constants (cast to real so all simulation arithmetic stays in real)
+const DT = real(4.0)
+const DISSIPATION = real(0.998)
+const BUOYANCY = real(0.08)
+const HALF = real(0.5)
+const QUARTER = real(0.25)
+const ZERO = real(0.0)
+const ONE = real(1.0)
 
 // ── Helpers ──
 
@@ -38,17 +45,19 @@ fn is_boundary(x: i32, y: i32, w: i32, h: i32) -> bool {
 }
 
 // Bilinear interpolation from a buffer at continuous position (cx, cy)
-fn bilerp_vx(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
-    var fx = clamp(cx, 0.0, f64(w) - 1.001)
-    var fy = clamp(cy, 0.0, f64(h) - 1.001)
+fn bilerp_vx(cx: real, cy: real, w: i32, h: i32) -> real {
+    var fw = real(w)
+    var fh = real(h)
+    var fx = clamp(cx, ZERO, fw - ONE)
+    var fy = clamp(cy, ZERO, fh - ONE)
     var x0 = i32(fx)
     var y0 = i32(fy)
     var x1 = x0 + 1
     var y1 = y0 + 1
     if x1 >= w { x1 = w - 1 }
     if y1 >= h { y1 = h - 1 }
-    var sx = fx - f64(x0)
-    var sy = fy - f64(y0)
+    var sx = fx - real(x0)
+    var sy = fy - real(y0)
     var v00 = vx[idx(x0, y0, w)]
     var v10 = vx[idx(x1, y0, w)]
     var v01 = vx[idx(x0, y1, w)]
@@ -58,17 +67,19 @@ fn bilerp_vx(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
     return top + (bot - top) * sy
 }
 
-fn bilerp_vy(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
-    var fx = clamp(cx, 0.0, f64(w) - 1.001)
-    var fy = clamp(cy, 0.0, f64(h) - 1.001)
+fn bilerp_vy(cx: real, cy: real, w: i32, h: i32) -> real {
+    var fw = real(w)
+    var fh = real(h)
+    var fx = clamp(cx, ZERO, fw - ONE)
+    var fy = clamp(cy, ZERO, fh - ONE)
     var x0 = i32(fx)
     var y0 = i32(fy)
     var x1 = x0 + 1
     var y1 = y0 + 1
     if x1 >= w { x1 = w - 1 }
     if y1 >= h { y1 = h - 1 }
-    var sx = fx - f64(x0)
-    var sy = fy - f64(y0)
+    var sx = fx - real(x0)
+    var sy = fy - real(y0)
     var v00 = vy[idx(x0, y0, w)]
     var v10 = vy[idx(x1, y0, w)]
     var v01 = vy[idx(x0, y1, w)]
@@ -78,17 +89,19 @@ fn bilerp_vy(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
     return top + (bot - top) * sy
 }
 
-fn bilerp_density(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
-    var fx = clamp(cx, 0.0, f64(w) - 1.001)
-    var fy = clamp(cy, 0.0, f64(h) - 1.001)
+fn bilerp_density(cx: real, cy: real, w: i32, h: i32) -> real {
+    var fw = real(w)
+    var fh = real(h)
+    var fx = clamp(cx, ZERO, fw - ONE)
+    var fy = clamp(cy, ZERO, fh - ONE)
     var x0 = i32(fx)
     var y0 = i32(fy)
     var x1 = x0 + 1
     var y1 = y0 + 1
     if x1 >= w { x1 = w - 1 }
     if y1 >= h { y1 = h - 1 }
-    var sx = fx - f64(x0)
-    var sy = fy - f64(y0)
+    var sx = fx - real(x0)
+    var sy = fy - real(y0)
     var v00 = density[idx(x0, y0, w)]
     var v10 = density[idx(x1, y0, w)]
     var v01 = density[idx(x0, y1, w)]
@@ -100,19 +113,19 @@ fn bilerp_density(cx: f64, cy: f64, w: i32, h: i32) -> f64 {
 
 // ── Advection kernels (semi-Lagrangian) ──
 
-fn advect_vx(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn advect_vx(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var i = idx(x, y, w)
-    var src_x = f64(x) - DT * vx[i]
-    var src_y = f64(y) - DT * vy[i]
+    var src_x = real(x) - DT * vx[i]
+    var src_y = real(y) - DT * vy[i]
     return bilerp_vx(src_x, src_y, w, h)
 }
 
-fn advect_vy(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn advect_vy(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var i = idx(x, y, w)
-    var src_x = f64(x) - DT * vx[i]
-    var src_y = f64(y) - DT * vy[i]
+    var src_x = real(x) - DT * vx[i]
+    var src_y = real(y) - DT * vy[i]
     var result = bilerp_vy(src_x, src_y, w, h)
     // Buoyancy: density pushes upward (negative y in screen coords)
     var d = bilerp_density(src_x, src_y, w, h)
@@ -120,57 +133,57 @@ fn advect_vy(x: i32, y: i32, w: i32, h: i32) -> f64 {
     return result
 }
 
-fn advect_density_kernel(x: i32, y: i32, w: i32, h: i32) -> f64 {
+fn advect_density_kernel(x: i32, y: i32, w: i32, h: i32) -> real {
     var i = idx(x, y, w)
-    var src_x = f64(x) - DT * vx[i]
-    var src_y = f64(y) - DT * vy[i]
+    var src_x = real(x) - DT * vx[i]
+    var src_y = real(y) - DT * vy[i]
     return bilerp_density(src_x, src_y, w, h) * DISSIPATION
 }
 
 // ── Divergence ──
 
-fn calc_divergence(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn calc_divergence(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var vx_r = vx[idx(x + 1, y, w)]
     var vx_l = vx[idx(x - 1, y, w)]
     var vy_d = vy[idx(x, y + 1, w)]
     var vy_u = vy[idx(x, y - 1, w)]
-    return (vx_r - vx_l + vy_d - vy_u) * 0.5
+    return (vx_r - vx_l + vy_d - vy_u) * HALF
 }
 
 // ── Pressure solver (Jacobi iteration) ──
 
-fn jacobi_step(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn jacobi_step(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var p_l = press_a[idx(x - 1, y, w)]
     var p_r = press_a[idx(x + 1, y, w)]
     var p_u = press_a[idx(x, y - 1, w)]
     var p_d = press_a[idx(x, y + 1, w)]
     var d = div_buf[idx(x, y, w)]
-    return (p_l + p_r + p_u + p_d - d) * 0.25
+    return (p_l + p_r + p_u + p_d - d) * QUARTER
 }
 
 // ── Projection (subtract pressure gradient) ──
 
-fn project_vx(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn project_vx(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var p_r = press_a[idx(x + 1, y, w)]
     var p_l = press_a[idx(x - 1, y, w)]
-    return vx[idx(x, y, w)] - 0.5 * (p_r - p_l)
+    return vx[idx(x, y, w)] - HALF * (p_r - p_l)
 }
 
-fn project_vy(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    if is_boundary(x, y, w, h) { return 0.0 }
+fn project_vy(x: i32, y: i32, w: i32, h: i32) -> real {
+    if is_boundary(x, y, w, h) { return ZERO }
     var p_d = press_a[idx(x, y + 1, w)]
     var p_u = press_a[idx(x, y - 1, w)]
-    return vy[idx(x, y, w)] - 0.5 * (p_d - p_u)
+    return vy[idx(x, y, w)] - HALF * (p_d - p_u)
 }
 
 // ── Visualization ──
 
 fn vis(x: i32, y: i32, w: i32, h: i32) -> i32 {
     var d = density[idx(x, y, w)]
-    var intensity = clamp(d, 0.0, 1.0)
+    var intensity = clamp(d, ZERO, ONE)
     return pack_rgb(intensity, intensity, intensity)
 }
 
@@ -182,7 +195,7 @@ var inject_radius: f64 = 30.0
 var inject_vel: f64 = 0.0
 var inject_dens: f64 = 0.0
 
-fn inject_vy_kernel(x: i32, y: i32, w: i32, h: i32) -> f64 {
+fn inject_vy_kernel(x: i32, y: i32, w: i32, h: i32) -> real {
     var current = vy[idx(x, y, w)]
     var dx = f64(x) - inject_x
     var dy = f64(y) - inject_y
@@ -190,12 +203,12 @@ fn inject_vy_kernel(x: i32, y: i32, w: i32, h: i32) -> f64 {
     var r2 = inject_radius * inject_radius
     if dist2 < r2 {
         var factor = 1.0 - dist2 / r2
-        return current + inject_vel * factor
+        return real(f64(current) + inject_vel * factor)
     }
     return current
 }
 
-fn inject_density_kernel(x: i32, y: i32, w: i32, h: i32) -> f64 {
+fn inject_density_kernel(x: i32, y: i32, w: i32, h: i32) -> real {
     var current = density[idx(x, y, w)]
     var dx = f64(x) - inject_x
     var dy = f64(y) - inject_y
@@ -203,15 +216,15 @@ fn inject_density_kernel(x: i32, y: i32, w: i32, h: i32) -> f64 {
     var r2 = inject_radius * inject_radius
     if dist2 < r2 {
         var factor = 1.0 - dist2 / r2
-        return current + inject_dens * factor
+        return real(f64(current) + inject_dens * factor)
     }
     return current
 }
 
 // ── Initialization ──
 
-fn zero(x: i32, y: i32, w: i32, h: i32) -> f64 {
-    return 0.0
+fn zero(x: i32, y: i32, w: i32, h: i32) -> real {
+    return ZERO
 }
 
 // ── Pipeline ──

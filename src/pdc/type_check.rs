@@ -343,7 +343,8 @@ impl TypeChecker {
     }
 
     fn define_var(&mut self, name: &str, ty: PdcType) {
-        self.scopes.last_mut().unwrap().insert(name.to_string(), ty);
+        let resolved = self.resolve_type(&ty);
+        self.scopes.last_mut().unwrap().insert(name.to_string(), resolved);
     }
 
     fn lookup_var(&self, name: &str) -> Option<&PdcType> {
@@ -999,7 +1000,7 @@ impl TypeChecker {
             }
             Stmt::FnDef(fndef) => {
                 // Lifecycle function frame() must return bool
-                if fndef.name == "frame" && fndef.return_type != PdcType::Bool {
+                if fndef.name == "frame" && self.resolve_type(&fndef.return_type) != PdcType::Bool {
                     return Err(PdcError::Type {
                         span: stmt.span,
                         message: format!(
@@ -1185,7 +1186,10 @@ impl TypeChecker {
                         "vec2f32" => PdcType::Vec2F32,
                         "vec3f32" => PdcType::Vec3F32,
                         "vec4f32" => PdcType::Vec4F32,
-                        _ => PdcType::F32,
+                        other => {
+                            // Check type aliases
+                            self.type_aliases.get(other).cloned().unwrap_or(PdcType::F32)
+                        }
                     };
                     let buf_ty = PdcType::BufferHandle(Box::new(elem_ty));
                     self.set_type(expr.id, buf_ty.clone());
@@ -2078,7 +2082,9 @@ impl TypeChecker {
         for sig in &overloads.sigs {
             let n = arg_types.len();
             if n >= sig.required && n <= sig.params.len()
-                && sig.params[..n].iter().zip(arg_types).all(|(p, a)| p == a)
+                && sig.params[..n].iter().zip(arg_types).all(|(p, a)| {
+                    self.resolve_type(p) == self.resolve_type(a)
+                })
             {
                 return Some(sig.clone());
             }
@@ -2094,11 +2100,13 @@ impl TypeChecker {
                 return false;
             }
             sig.params[..n].iter().zip(arg_types).all(|(p, a)| {
+                let rp = self.resolve_type(p);
+                let ra = self.resolve_type(a);
                 if exact {
-                    p == a
+                    rp == ra
                 } else {
-                    p == a || (p.is_numeric() && a.is_numeric()) ||
-                    matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
+                    rp == ra || (rp.is_numeric() && ra.is_numeric()) ||
+                    matches!((&rp, &ra), (PdcType::Array(_), PdcType::Array(_)))
                 }
             })
         };

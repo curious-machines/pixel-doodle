@@ -24,6 +24,20 @@ struct SendSyncJitModule(#[allow(dead_code)] JITModule);
 unsafe impl Send for SendSyncJitModule {}
 unsafe impl Sync for SendSyncJitModule {}
 
+/// Resolve a type through the type alias map.
+fn resolve_type(ty: &PdcType, type_aliases: &HashMap<String, PdcType>) -> PdcType {
+    match ty {
+        PdcType::Struct(name) => {
+            if let Some(aliased) = type_aliases.get(name) {
+                resolve_type(aliased, type_aliases)
+            } else {
+                ty.clone()
+            }
+        }
+        _ => ty.clone(),
+    }
+}
+
 pub fn compile(
     program: &Program,
     types: &[PdcType],
@@ -33,6 +47,7 @@ pub fn compile(
     enums: &HashMap<String, EnumInfo>,
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
+    type_aliases: &HashMap<String, PdcType>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -80,6 +95,8 @@ pub fn compile(
             Expr::BinaryOp { left, right, .. } => {
                 is_pure_literal(&left.node) && is_pure_literal(&right.node)
             }
+            // Type cast calls like real(0.0), f32(4.0) with pure literal args
+            Expr::Call { args, .. } => args.iter().all(|a| is_pure_literal(&a.node)),
             _ => false,
         }
     }
@@ -145,12 +162,14 @@ pub fn compile(
         sig.call_conv = call_conv;
         // First param: ctx pointer
         sig.params.push(AbiParam::new(pointer_type));
-        // User params
+        // User params (resolve type aliases)
         for param in &fndef.params {
-            sig.params.push(AbiParam::new(pdc_type_to_cl(&param.ty, pointer_type)));
+            let resolved = resolve_type(&param.ty, type_aliases);
+            sig.params.push(AbiParam::new(pdc_type_to_cl(&resolved, pointer_type)));
         }
         if fndef.return_type != PdcType::Void {
-            sig.returns.push(AbiParam::new(pdc_type_to_cl(&fndef.return_type, pointer_type)));
+            let resolved_ret = resolve_type(&fndef.return_type, type_aliases);
+            sig.returns.push(AbiParam::new(pdc_type_to_cl(&resolved_ret, pointer_type)));
         }
 
         let base = mangle_name(qualified_name);
@@ -291,6 +310,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            type_aliases,
         };
 
         // Define parameters as variables
@@ -316,7 +336,8 @@ pub fn compile(
             if fndef.return_type == PdcType::Void {
                 cg.builder.ins().return_(&[]);
             } else {
-                let zero = cg.default_value(&fndef.return_type);
+                let resolved_ret = resolve_type(&fndef.return_type, type_aliases);
+                let zero = cg.default_value(&resolved_ret);
                 cg.builder.ins().return_(&[zero]);
             }
         }
@@ -381,6 +402,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            type_aliases,
         };
 
         // Emit module-level statements (const/var init) before main code
@@ -485,6 +507,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            type_aliases,
         };
 
         // Emit top-level constants so they're accessible in test functions
@@ -547,8 +570,8 @@ pub fn compile(
         *idx += 1;
         let func_id = user_fn_ids[&mangled];
         let fn_code_ptr = jit_module.get_finalized_function(func_id);
-        let param_types: Vec<PdcType> = fndef.params.iter().map(|p| p.ty.clone()).collect();
-        user_fn_ptrs.insert(key, (fn_code_ptr, param_types, fndef.return_type.clone()));
+        let param_types: Vec<PdcType> = fndef.params.iter().map(|p| resolve_type(&p.ty, type_aliases)).collect();
+        user_fn_ptrs.insert(key, (fn_code_ptr, param_types, resolve_type(&fndef.return_type, type_aliases)));
     }
 
     Ok((
@@ -602,6 +625,8 @@ struct CodegenCtx<'a, 'b> {
     enums: &'a HashMap<String, EnumInfo>,
     /// Alias map: unqualified name → qualified "module::name".
     fn_aliases: &'a HashMap<String, String>,
+    /// Type aliases for resolving user-defined type names.
+    type_aliases: &'a HashMap<String, PdcType>,
     /// Operator overloads for user-defined operator dispatch.
     op_overloads: &'a HashMap<String, OverloadSet>,
     /// Operator function dispatch table: (op_name, overload_idx) → FuncId.
@@ -837,9 +862,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let converted = self.convert_value(val, &val_ty, elem_ty);
                     let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
                     let elem_size = elem_cl.bytes() as u32;
-                    // Inline store via buffer data pointer
-                    let data_ptr = self.emit_runtime_call_raw(
-                        "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
+                    let data_ptr = self.emit_buffer_data_ptr(buf_handle)?;
                     self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_cl);
                 }
             }
@@ -1528,6 +1551,38 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
 
     /// Emit an inline array element load via pointer arithmetic.
     /// `data_ptr` is the base pointer, `index` is the element index (i32),
+    /// Resolve a buffer's data pointer, inlining the lookup from PdcContext.buffer_ptrs
+    /// when available (fast path: two loads, no function call), falling back to a runtime
+    /// call to pdc_buffer_data_ptr when buffer_ptrs is null.
+    fn emit_buffer_data_ptr(
+        &mut self,
+        buf_handle: cranelift_codegen::ir::Value,
+    ) -> Result<cranelift_codegen::ir::Value, PdcError> {
+        // PdcContext layout (repr(C), 64-bit):
+        //   offset  0: builtins (*mut f64)
+        //   offset  8: scene (*mut SceneBuilder)
+        //   offset 16: state (*mut u8)
+        //   offset 24: host (*mut u8)
+        //   offset 32: buffer_ptrs (*const *mut u8)
+        //   offset 40: buffer_count (i32)
+        let buffer_ptrs_ptr = self.builder.ins().load(
+            self.pointer_type, MemFlags::trusted(), self.ctx_ptr, 32,
+        );
+
+        // Fast path: buffer_ptrs[handle] — two loads, no function call.
+        // The null check is omitted: buffer_ptrs is always set during render dispatch
+        // (the hot path), and the fallback via pdc_buffer_data_ptr is only needed
+        // for non-render contexts which don't do buffer indexing.
+        let handle_ext = self.builder.ins().sextend(self.pointer_type, buf_handle);
+        let ptr_size = self.builder.ins().iconst(self.pointer_type, 8); // sizeof(*mut u8)
+        let offset = self.builder.ins().imul(handle_ext, ptr_size);
+        let slot_ptr = self.builder.ins().iadd(buffer_ptrs_ptr, offset);
+        let data_ptr = self.builder.ins().load(
+            self.pointer_type, MemFlags::trusted(), slot_ptr, 0,
+        );
+        Ok(data_ptr)
+    }
+
     /// `elem_size` is bytes per element, `elem_cl` is the Cranelift type to load.
     fn emit_inline_array_load(
         &mut self,
@@ -2181,9 +2236,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let idx = self.emit_expr(index)?;
                     let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
                     let elem_size = elem_cl.bytes() as u32;
-                    // Inline load via buffer data pointer
-                    let data_ptr = self.emit_runtime_call_raw(
-                        "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
+                    let data_ptr = self.emit_buffer_data_ptr(buf_handle)?;
                     Ok(self.emit_inline_array_load(data_ptr, idx, elem_size, elem_cl))
                 } else {
                     Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
@@ -2440,13 +2493,20 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             }
         }
 
-        // Type cast
+        // Type cast (check type aliases for names like `real(0.0)`)
         let cast_ty = match name {
             "f32" => Some(PdcType::F32),
             "f64" => Some(PdcType::F64),
             "i32" => Some(PdcType::I32),
             "u32" => Some(PdcType::U32),
-            _ => None,
+            _ => {
+                let resolved = resolve_type(&PdcType::Struct(name.to_string()), self.type_aliases);
+                if resolved != PdcType::Struct(name.to_string()) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }
         };
         if let Some(target) = cast_ty {
             let val = self.emit_expr(&args[0])?;

@@ -489,6 +489,8 @@ pub fn run_pdc_tests(
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         // Clear any previous failures
         runtime::take_assert_failures();
@@ -547,6 +549,7 @@ pub fn compile_only_with_builtins(
         &checker.enums,
         &checker.fn_aliases,
         &checker.op_overloads,
+        &checker.type_aliases,
     )
 }
 
@@ -566,7 +569,9 @@ pub fn eval_expr(expr: &str, expected_type: &str) -> Result<codegen::PdcValue, P
         builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: std::ptr::null_mut(),
-            host: std::ptr::null_mut(),
+        host: std::ptr::null_mut(),
+        buffer_ptrs: std::ptr::null(),
+        buffer_count: 0,
     };
     unsafe { compiled.call_fn("__eval__", &mut ctx, &[]) }
 }
@@ -602,6 +607,7 @@ pub fn compile_for_pipeline(
         &checker.enums,
         &checker.fn_aliases,
         &checker.op_overloads,
+        &checker.type_aliases,
     )
 }
 
@@ -631,11 +637,13 @@ pub fn compile_for_pipeline_with_codegen(
         "cranelift" => codegen_cranelift::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
+            &checker.type_aliases,
         ),
         #[cfg(feature = "llvm-backend")]
         "llvm" => codegen_llvm::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
+            &checker.type_aliases,
         ),
         _ => Err(error::PdcError::Codegen {
             message: format!("unsupported codegen backend '{codegen_backend}'"),
@@ -743,7 +751,7 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads)?;
+    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases)?;
 
     // 4. Execute
     let mut builtins = [width as f64, height as f64];
@@ -753,7 +761,9 @@ pub fn compile_and_run(
         builtins: builtins.as_mut_ptr(),
         scene: &mut scene_builder as *mut _,
         state: state_block.as_mut_ptr(),
-            host: std::ptr::null_mut(),
+        host: std::ptr::null_mut(),
+        buffer_ptrs: std::ptr::null(),
+        buffer_count: 0,
     };
     unsafe {
         (compiled.fn_ptr)(&mut ctx);
@@ -939,6 +949,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         unsafe { compiled.call_fn(fn_name, &mut ctx, args) }.expect("call_fn failed")
     }
@@ -1113,6 +1125,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         let err = unsafe { compiled.call_fn("nonexistent", &mut ctx, &[]) };
         assert!(err.is_err());
@@ -1131,6 +1145,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         let err = unsafe { compiled.call_fn("add", &mut ctx, &[PdcValue::F64(1.0)]) };
         assert!(err.is_err());
@@ -1389,6 +1405,8 @@ mod tests {
             scene: &mut scene_builder as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         super::extract_scene(&scene_builder, 0.5, 16, width, height)
@@ -1534,6 +1552,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // Run pdc_main to initialize state (var x = 0.0)
@@ -1562,6 +1582,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // Run pdc_main to initialize state
@@ -1589,6 +1611,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1619,6 +1643,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // 1. pdc_main initializes state (counter = 0.0)
@@ -1683,6 +1709,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1733,6 +1761,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // 1. pdc_main initializes state
@@ -1763,6 +1793,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -1785,6 +1817,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
@@ -1803,6 +1837,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
@@ -1821,6 +1857,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
         unsafe { (compiled.fn_ptr)(&mut ctx); }
         let result = unsafe { compiled.call_frame(&mut ctx).unwrap() };
@@ -1879,6 +1917,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // Run pdc_main (processes builtin declarations)
@@ -1942,6 +1982,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2023,6 +2065,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // Initialize state vars (calls Buffer/Kernel constructors)
@@ -2102,6 +2146,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2165,6 +2211,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2219,6 +2267,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2286,6 +2336,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2347,6 +2399,8 @@ mod tests {
             scene: &mut scene_builder as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2542,6 +2596,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         // Initialize state + run init() to register handlers
@@ -2635,6 +2691,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2687,6 +2745,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: host_ptr as *mut u8,
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2761,6 +2821,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
@@ -2826,6 +2888,8 @@ mod tests {
             scene: &mut scene as *mut _,
             state: state_block.as_mut_ptr(),
             host: std::ptr::null_mut(),
+            buffer_ptrs: std::ptr::null(),
+            buffer_count: 0,
         };
 
         unsafe { (compiled.fn_ptr)(&mut ctx); }
