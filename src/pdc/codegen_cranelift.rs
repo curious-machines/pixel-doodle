@@ -828,6 +828,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let data_ptr = self.emit_runtime_call_raw(
                         "pdc_array_data_ptr", &[self.ctx_ptr, arr_handle], Some(self.pointer_type))?;
                     self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_cl);
+                } else if obj_ty == PdcType::BufferHandle {
+                    let buf_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    let val = self.emit_expr(value)?;
+                    let val_ty = self.node_type(value.id).clone();
+                    let converted = self.convert_value(val, &val_ty, &PdcType::I32);
+                    // Inline store via buffer data pointer (4-byte elements)
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
+                    self.emit_inline_array_store(data_ptr, idx, 4, converted, I32);
                 }
             }
             Stmt::FieldAssign { object, field, value } => {
@@ -2155,6 +2165,13 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let int_type = match elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
                     let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, start, idx], Some(int_type))?;
                     Ok(self.int_to_float_if_needed(raw, elem_cl))
+                } else if obj_ty == PdcType::BufferHandle {
+                    let buf_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    // Inline load via buffer data pointer (4-byte i32 elements)
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
+                    Ok(self.emit_inline_array_load(data_ptr, idx, 4, I32))
                 } else {
                     Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
                 }

@@ -870,6 +870,18 @@ impl<'a> LlvmCodegenCtx<'a> {
                         "pdc_array_data_ptr", &[self.ctx_ptr.into(), arr_handle],
                         Some(ptr_ty.into()))?.into_pointer_value();
                     self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_ty);
+                } else if obj_ty == PdcType::BufferHandle {
+                    let buf_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    let val = self.emit_expr(value)?;
+                    let val_ty = self.node_type(value.id).clone();
+                    let converted = self.convert_value(val, &val_ty, &PdcType::I32);
+                    // Inline store via buffer data pointer (4-byte elements)
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_buffer_data_ptr", &[self.ctx_ptr.into(), buf_handle],
+                        Some(ptr_ty.into()))?.into_pointer_value();
+                    self.emit_inline_array_store(data_ptr, idx, 4, converted, &PdcType::I32);
                 }
             }
             Stmt::FieldAssign { object, field, value } => {
@@ -1604,6 +1616,15 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let int_type: BasicTypeEnum = match elem_size { 1 => self.context.i8_type().into(), 2 => self.context.i16_type().into(), 4 => self.context.i32_type().into(), _ => self.context.i64_type().into() };
                     let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr.into(), handle_val, start_val, idx], Some(int_type))?;
                     Ok(self.int_to_float_if_needed(raw, elem_ty))
+                } else if obj_ty == PdcType::BufferHandle {
+                    let buf_handle = self.emit_expr(object)?;
+                    let idx = self.emit_expr(index)?;
+                    // Inline load via buffer data pointer (4-byte i32 elements)
+                    let ptr_ty = self.context.ptr_type(inkwell::AddressSpace::default());
+                    let data_ptr = self.emit_runtime_call_raw(
+                        "pdc_buffer_data_ptr", &[self.ctx_ptr.into(), buf_handle],
+                        Some(ptr_ty.into()))?.into_pointer_value();
+                    Ok(self.emit_inline_array_load(data_ptr, idx, 4, &PdcType::I32))
                 } else {
                     Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
                 }

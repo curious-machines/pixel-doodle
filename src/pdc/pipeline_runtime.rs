@@ -649,15 +649,15 @@ impl PipelineHost for HostState {
         type KernelFn = unsafe extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64;
 
         // Create a thread-safe PdcContext for kernel execution:
-        // - Same builtins and state pointers (read-only during dispatch)
-        // - Null host pointer (prevents re-entrant host calls from kernels)
+        // - Same builtins, state, and host pointers (read-only during dispatch)
+        // - Host pointer is needed for buffer data access (pdc_buffer_data_ptr)
         // - Null scene pointer (not needed for pixel kernels)
         let kernel_ctx = unsafe {
             PdcContext {
                 builtins: (*ctx).builtins,
                 scene: std::ptr::null_mut(),
                 state: (*ctx).state,
-                host: std::ptr::null_mut(),
+                host: (*ctx).host,
             }
         };
 
@@ -666,6 +666,7 @@ impl PipelineHost for HostState {
         // Convert pointers to usize for Send safety across rayon threads.
         let ctx_builtins = kernel_ctx.builtins as usize;
         let ctx_state = kernel_ctx.state as usize;
+        let ctx_host = kernel_ctx.host as usize;
 
         let dispatch = || {
             use rayon::prelude::*;
@@ -681,7 +682,7 @@ impl PipelineHost for HostState {
                     builtins: ctx_builtins as *mut f64,
                     scene: std::ptr::null_mut(),
                     state: ctx_state as *mut u8,
-                    host: std::ptr::null_mut(),
+                    host: ctx_host as *mut u8,
                 };
 
                 for y in row_start..row_end {

@@ -701,6 +701,9 @@ impl TypeChecker {
                 let val_ty = self.check_expr(value)?;
                 if let PdcType::Array(ref elem_ty) = obj_ty {
                     self.check_compatible(&val_ty, elem_ty, value.span)?;
+                } else if obj_ty == PdcType::BufferHandle {
+                    // Buffer index-assign: treat element as i32
+                    self.check_compatible(&val_ty, &PdcType::I32, value.span)?;
                 } else {
                     return Err(PdcError::Type {
                         span: object.span,
@@ -1609,6 +1612,9 @@ impl TypeChecker {
                     *elem_ty.clone()
                 } else if let PdcType::Slice(elem_ty) = &obj_ty {
                     *elem_ty.clone()
+                } else if obj_ty == PdcType::BufferHandle {
+                    // Buffer indexing returns i32 (all buffers are 4-byte elements)
+                    PdcType::I32
                 } else {
                     return Err(PdcError::Type {
                         span: expr.span,
