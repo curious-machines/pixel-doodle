@@ -776,6 +776,7 @@ pub extern "C" fn pdc_create_buffer(ctx: *mut PdcContext, type_code: i32) -> i32
         3 => "gpu_vec2_f32",
         4 => "gpu_vec3_f32",
         5 => "gpu_vec4_f32",
+        6 => "gpu_f64",
         _ => "gpu_f32",
     };
     unsafe { get_host(ctx).create_buffer(type_name, 0.0) }

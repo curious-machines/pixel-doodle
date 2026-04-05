@@ -2595,6 +2595,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     PdcType::Vec2F32 => 3,
                     PdcType::Vec3F32 => 4,
                     PdcType::Vec4F32 => 5,
+                    PdcType::F64 => 6,
                     _ => 0,
                 }
             } else {

@@ -7,6 +7,7 @@ use crate::texture::TextureData;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuElementType {
     F32,       // 4 bytes
+    F64,       // 8 bytes — CPU-only (no WGSL f64 support)
     Vec2F32,   // 8 bytes — vec2<f32>
     Vec3F32,   // 12 bytes (padded to 16 in practice) — vec3<f32>
     Vec4F32,   // 16 bytes — vec4<f32>
@@ -19,6 +20,7 @@ impl GpuElementType {
     pub fn byte_size(self) -> u32 {
         match self {
             GpuElementType::F32 => 4,
+            GpuElementType::F64 => 8,
             GpuElementType::Vec2F32 => 8,
             GpuElementType::Vec3F32 => 16, // padded to 16 for alignment
             GpuElementType::Vec4F32 => 16,

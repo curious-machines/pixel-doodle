@@ -185,6 +185,7 @@ impl PipelineHost for HostState {
         // CPU path
         let elem_size = match type_name {
             "gpu_f32" => 4,
+            "gpu_f64" => 8,
             "gpu_i32" | "gpu_u32" => 4,
             "gpu_vec2_f32" => 8,
             "gpu_vec3_f32" => 16, // padded
@@ -248,12 +249,12 @@ impl PipelineHost for HostState {
                 let name_a = self.buffers[ai].name.clone();
                 let name_b = self.buffers[bi].name.clone();
                 runner.swap_buffers(&name_a, &name_b);
-            } else {
-                // CPU path: swap the data vecs
-                let ptr_a = &mut self.buffers[ai].data as *mut Vec<u8>;
-                let ptr_b = &mut self.buffers[bi].data as *mut Vec<u8>;
-                unsafe { std::ptr::swap(ptr_a, ptr_b); }
             }
+            // Always swap CPU data (pixel kernels write to CPU buffers
+            // even when the GPU runner is present)
+            let ptr_a = &mut self.buffers[ai].data as *mut Vec<u8>;
+            let ptr_b = &mut self.buffers[bi].data as *mut Vec<u8>;
+            unsafe { std::ptr::swap(ptr_a, ptr_b); }
         }
     }
 
@@ -636,7 +637,8 @@ impl PipelineHost for HostState {
 
         // Ensure buffer is correctly sized
         let buf_idx = buf_handle as usize;
-        let needed = pixel_count * 4; // u32 per pixel
+        let elem_size = self.buffers[buf_idx].elem_size;
+        let needed = pixel_count * elem_size;
         if self.buffers[buf_idx].data.len() != needed {
             self.buffers[buf_idx].data.resize(needed, 0);
         }
@@ -644,9 +646,12 @@ impl PipelineHost for HostState {
         let output_ptr = self.buffers[buf_idx].data.as_mut_ptr() as usize;
 
         // The JIT'd kernel has signature:
-        //   extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64
+        //   extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64   (for i32/u32 kernels)
+        //   extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> f64   (for f64 kernels)
         // (PDC promotes i32 args to i64 at the ABI level)
-        type KernelFn = unsafe extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64;
+        // The return type matters for calling convention: f64 returns use FP registers.
+        type KernelFnI64 = unsafe extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64;
+        type KernelFnF64 = unsafe extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> f64;
 
         // Create a thread-safe PdcContext for kernel execution:
         // - Same builtins, state, and host pointers (read-only during dispatch)
@@ -667,6 +672,7 @@ impl PipelineHost for HostState {
         let ctx_builtins = kernel_ctx.builtins as usize;
         let ctx_state = kernel_ctx.state as usize;
         let ctx_host = kernel_ctx.host as usize;
+        let is_f64 = elem_size == 8;
 
         let dispatch = || {
             use rayon::prelude::*;
@@ -674,8 +680,6 @@ impl PipelineHost for HostState {
             (0..num_tiles).into_par_iter().for_each(|tile| {
                 let row_start = tile * tile_h;
                 let row_end = ((tile + 1) * tile_h).min(h as usize);
-                let kernel: KernelFn = unsafe { std::mem::transmute(fn_addr) };
-                let out = output_ptr as *mut u32;
 
                 // Each thread gets its own PdcContext copy (on stack)
                 let mut thread_ctx = PdcContext {
@@ -685,19 +689,32 @@ impl PipelineHost for HostState {
                     host: ctx_host as *mut u8,
                 };
 
-                for y in row_start..row_end {
-                    for x in 0..w as usize {
-                        let color = unsafe {
-                            kernel(
-                                &mut thread_ctx as *mut PdcContext,
-                                x as i64,
-                                y as i64,
-                                w as i64,
-                                h as i64,
-                            )
-                        };
-                        unsafe {
-                            *out.add(y * w as usize + x) = color as u32;
+                if is_f64 {
+                    let kernel: KernelFnF64 = unsafe { std::mem::transmute(fn_addr) };
+                    let out = output_ptr as *mut f64;
+                    for y in row_start..row_end {
+                        for x in 0..w as usize {
+                            let result = unsafe {
+                                kernel(
+                                    &mut thread_ctx as *mut PdcContext,
+                                    x as i64, y as i64, w as i64, h as i64,
+                                )
+                            };
+                            unsafe { *out.add(y * w as usize + x) = result; }
+                        }
+                    }
+                } else {
+                    let kernel: KernelFnI64 = unsafe { std::mem::transmute(fn_addr) };
+                    let out = output_ptr as *mut u32;
+                    for y in row_start..row_end {
+                        for x in 0..w as usize {
+                            let result = unsafe {
+                                kernel(
+                                    &mut thread_ctx as *mut PdcContext,
+                                    x as i64, y as i64, w as i64, h as i64,
+                                )
+                            };
+                            unsafe { *out.add(y * w as usize + x) = result as u32; }
                         }
                     }
                 }
@@ -1110,6 +1127,7 @@ impl PipelineHost for HostState {
 fn parse_gpu_element_type(type_name: &str) -> GpuElementType {
     match type_name {
         "gpu_f32" => GpuElementType::F32,
+        "gpu_f64" => GpuElementType::F64,
         "gpu_i32" => GpuElementType::I32,
         "gpu_u32" => GpuElementType::U32,
         "gpu_vec2_f32" => GpuElementType::Vec2F32,
