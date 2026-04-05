@@ -1,0 +1,98 @@
+// PDC pixel kernel: Mandelbrot set (f64 precision)
+// Equivalent to examples/basic/mandelbrot but written entirely in PDC.
+// Uses f64 for deep zoom capability beyond what GPU f32 can achieve.
+// Supports pan (arrow keys), zoom (+/-), reset (0), and max iteration control ([/]).
+
+import { register_pause_step } from "../../shared/pause_step"
+import { min, max } from math
+import { pack_rgb } from color
+
+builtin const width: f64
+builtin const height: f64
+builtin var center_x: f64
+builtin var center_y: f64
+builtin var zoom: f64
+
+var max_iter: i32 = 256
+
+// ── Mandelbrot iteration ──
+
+fn mandelbrot(cx: f64, cy: f64) -> i32 {
+    var zx = 0.0
+    var zy = 0.0
+    var i = 0i32
+    loop {
+        if zx * zx + zy * zy > 4.0 || i >= max_iter {
+            break
+        }
+        var tmp = zx * zx - zy * zy + cx
+        zy = 2.0 * zx * zy + cy
+        zx = tmp
+        i = i + 1
+    }
+    return i
+}
+
+// ── Coloring: polynomial palette ──
+
+fn iter_to_color(iter: i32) -> i32 {
+    if iter >= max_iter {
+        return pack_rgb(0.0, 0.0, 0.0)
+    }
+    var t = f64(iter) / f64(max_iter)
+    var omt = 1.0 - t
+    var r = 9.0 * omt * t * t * t
+    var g = 15.0 * omt * omt * t * t
+    var b = 8.5 * omt * omt * omt * t
+    return pack_rgb(r, g, b)
+}
+
+// ── Pixel kernel ──
+
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    var fw = f64(w)
+    var fh = f64(h)
+    var scale = 3.5 / (zoom * fw)
+    var cx = f64(x) * scale + center_x - 0.5 * 3.5 / zoom - 0.5
+    var cy = f64(y) * scale + center_y - 0.5 * 3.5 * fh / (zoom * fw)
+    var iter = mandelbrot(cx, cy)
+    return iter_to_color(iter)
+}
+
+// ── Pipeline ──
+
+fn init() {
+    register_pause_step()
+    set_keydown(Key.Left, pan_left)
+    set_keydown(Key.Right, pan_right)
+    set_keydown(Key.Up, pan_up)
+    set_keydown(Key.Down, pan_down)
+    set_keydown(Key.Plus, zoom_in)
+    set_keydown(Key.Minus, zoom_out)
+    set_keypress(Key.Digit0, reset_view)
+    set_keypress(Key.BracketRight, more_iters)
+    set_keypress(Key.BracketLeft, fewer_iters)
+}
+
+fn frame() -> bool {
+    var buf = render(pixel)
+    display_buffer(buf)
+    return true
+}
+
+// ── Event handlers ──
+
+fn pan_left() { center_x = center_x - 0.02 / zoom }
+fn pan_right() { center_x = center_x + 0.02 / zoom }
+fn pan_up() { center_y = center_y - 0.02 / zoom }
+fn pan_down() { center_y = center_y + 0.02 / zoom }
+fn zoom_in() { zoom = zoom * 1.03 }
+fn zoom_out() { zoom = zoom / 1.03 }
+fn reset_view() {
+    center_x = 0.0
+    center_y = 0.0
+    zoom = 1.0
+    max_iter = 256
+}
+fn more_iters() { max_iter = min(max_iter * 2, 4096i32) }
+fn fewer_iters() { max_iter = max(max_iter / 2, 32i32) }
