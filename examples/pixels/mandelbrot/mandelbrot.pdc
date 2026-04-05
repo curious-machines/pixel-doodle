@@ -75,7 +75,7 @@ fn init() {
 }
 
 fn frame() -> bool {
-    var buf = render(pixel)
+    var buf = pixel.render()
     display_buffer(buf)
     paused = true
     return true
