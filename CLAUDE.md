@@ -34,6 +34,11 @@ Kernels are WGSL compute shaders. The runtime dispatches them either on the GPU 
 - Reference `.wgsl` kernel files
 - Define execution order, loops, swaps, mouse/keyboard handlers
 
+**PDC syntax notes:**
+- No semicolons — statements are newline-separated
+- Variables use `var` (mutable) or `const` (immutable), never `let`
+- Number literals support type suffixes: `255u8`, `42i32`, `3.14f32`, `0xFFi32`
+
 ### Settings
 
 Two orthogonal settings control execution:
@@ -42,6 +47,11 @@ Two orthogonal settings control execution:
 - **codegen**: `"cranelift"` (default) or `"llvm"` — which JIT backend for CPU render and PDC
 
 Set via `--set render=cpu,codegen=llvm` or `.pds` files.
+
+When running with the LLVM backend, add `--features llvm-backend` to the cargo command:
+```bash
+cargo run --release --features llvm-backend -- example.pdc --set codegen=llvm
+```
 
 ## Implementation Strategy
 
