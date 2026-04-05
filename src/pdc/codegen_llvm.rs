@@ -17,6 +17,7 @@ use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue, Int
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 
 use super::ast::*;
+use super::builtins::BuiltinDef;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
@@ -55,7 +56,7 @@ pub fn compile(
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
     type_aliases: &HashMap<String, PdcType>,
-    builtin_param_names: &HashMap<String, Vec<String>>,
+    builtin_registry: &HashMap<String, BuiltinDef>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     // Create LLVM context, module, target machine.
     let context: &'static Context = Box::leak(Box::new(Context::create()));
@@ -315,7 +316,7 @@ pub fn compile(
             fn_return_type: resolved_ret.clone(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
         };
 
         // Define parameters as allocas
@@ -380,7 +381,7 @@ pub fn compile(
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
         };
 
         // Module-level statements
@@ -455,7 +456,7 @@ pub fn compile(
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
         };
 
         for const_stmt in &top_level_consts {
@@ -615,8 +616,8 @@ struct LlvmCodegenCtx<'a> {
     state_layout: &'a StateLayout,
     /// Names of mutable builtins — reads/writes go directly to the builtins array.
     mutable_builtins: std::collections::HashSet<String>,
-    /// Builtin function parameter names for named argument resolution.
-    builtin_param_names: &'a HashMap<String, Vec<String>>,
+    /// Builtin function registry for named arg resolution, symbol mapping, etc.
+    builtin_registry: &'a HashMap<String, BuiltinDef>,
 }
 
 struct LlvmLoopContext {
@@ -1482,7 +1483,11 @@ impl<'a> LlvmCodegenCtx<'a> {
                     let param_names: Vec<String> = self.user_fns.get(name.as_str())
                         .and_then(|o| o.sigs.first())
                         .map(|s| s.param_names.clone())
-                        .or_else(|| self.builtin_param_names.get(name.as_str()).cloned())
+                        .or_else(|| self.builtin_registry.get(name.as_str())
+                            .and_then(|def| def.sigs.iter()
+                                .find(|s| s.params.len() == args.len())
+                                .or_else(|| def.sigs.iter().max_by_key(|s| s.params.len())))
+                            .map(|sig| sig.param_names.iter().map(|n| n.to_string()).collect()))
                         .unwrap_or_default();
                     if !param_names.is_empty() {
                         let perm = resolve_named_args(arg_names, &param_names, name, expr.span)?;
@@ -2095,41 +2100,16 @@ impl<'a> LlvmCodegenCtx<'a> {
                 &[self.ctx_ptr.into(), name_ptr.into(), name_len.into(), path_ptr.into(), path_len.into()],
                 Some(self.context.i32_type().into()))
         } else {
-            // Runtime function call
-            let runtime_name = match name {
-                "Path" => "pdc_path".to_string(),
-                "swap" => "pdc_swap_buffers".to_string(),
-                "run" => "pdc_run_kernel".to_string(),
-                "render" if args.len() <= 2 && matches!(self.node_type(args[0].id), PdcType::FnRef { .. }) => {
-                    if args.len() == 2 {
-                        "pdc_render_pdc_kernel_buf".to_string()
-                    } else {
-                        "pdc_render_pdc_kernel".to_string()
-                    }
-                }
-                "render" => "pdc_render_kernel".to_string(),
-                "push" => "pdc_array_push".to_string(),
-                "len" => "pdc_array_len".to_string(),
-                "get" => "pdc_array_get".to_string(),
-                "set" => "pdc_array_set".to_string(),
-                "fill" if args.len() == 3 => "pdc_fill_styled".to_string(),
-                "stroke" if args.len() == 5 => "pdc_stroke_styled".to_string(),
-                other => format!("pdc_{}", other),
+            // Runtime function call — look up symbol and context flag from registry
+            let (runtime_name, takes_ctx) = if let Some(def) = self.builtin_registry.get(name) {
+                let sig_idx = def.sigs.iter().position(|s| s.params.len() == args.len()).unwrap_or(0);
+                let symbol = def.codegen.symbol_for_sig(sig_idx)
+                    .unwrap_or_else(|| def.codegen.symbol().unwrap_or("pdc_unknown"))
+                    .to_string();
+                (symbol, def.codegen.takes_ctx())
+            } else {
+                (format!("pdc_{}", name), false)
             };
-
-            let takes_ctx = matches!(
-                name,
-                "Path"
-                | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-                | "fill_styled" | "stroke_styled"
-                | "push" | "len" | "get" | "set"
-                | "swap" | "run" | "render"
-                | "display"
-                | "set_keypress" | "set_keydown" | "set_keyup"
-                | "clear_keypress" | "clear_keydown" | "clear_keyup"
-                | "set_mousedown" | "set_mouseup" | "set_click"
-                | "clear_mousedown" | "clear_mouseup" | "clear_click"
-            );
 
             let mut arg_vals: Vec<BasicValueEnum> = Vec::new();
             if takes_ctx {
@@ -2142,7 +2122,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                 arg_vals.push(converted);
             }
 
-            let ret_type = self.call_return_type(name);
+            let ret_type = self.call_return_type(name, args.len());
             let raw = self.emit_runtime_call_raw(&runtime_name, &arg_vals.iter().map(|v| (*v).into()).collect::<Vec<_>>(), ret_type)?;
             // Runtime functions return i32 for bools; truncate to i8 for PDC's Bool type.
             if self.node_type(call_id) == &PdcType::Bool {
@@ -2153,16 +2133,27 @@ impl<'a> LlvmCodegenCtx<'a> {
         }
     }
 
-    fn call_return_type(&self, name: &str) -> Option<BasicTypeEnum<'static>> {
-        match name {
-            "Path" | "len" | "Texture" | "Scene"
-            | "render" => Some(self.context.i32_type().into()),
-            "get" => Some(self.context.f64_type().into()),
-            "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-            | "fill_styled" | "stroke_styled" | "push" | "set"
-            | "bind" | "swap" | "run" | "set_arg"
-            | "display" => None,
-            _ => Some(self.context.f64_type().into()),
+    fn call_return_type(&self, name: &str, args_len: usize) -> Option<BasicTypeEnum<'static>> {
+        if let Some(def) = self.builtin_registry.get(name) {
+            let sig = def.sigs.iter().find(|s| s.params.len() == args_len)
+                .or_else(|| def.sigs.first());
+            if let Some(sig) = sig {
+                use super::builtins::ReturnSpec;
+                match &sig.ret {
+                    ReturnSpec::Concrete(PdcType::Void) => None,
+                    ReturnSpec::Concrete(PdcType::F64) => Some(self.context.f64_type().into()),
+                    ReturnSpec::Concrete(PdcType::F32) => Some(self.context.f32_type().into()),
+                    ReturnSpec::Concrete(PdcType::Bool) => Some(self.context.i32_type().into()),
+                    ReturnSpec::Concrete(_) => Some(self.context.i32_type().into()),
+                    ReturnSpec::SelfElement => Some(self.context.f64_type().into()),
+                    ReturnSpec::BufferOfKernelReturn | ReturnSpec::SameAsArg(_) => Some(self.context.i32_type().into()),
+                    ReturnSpec::MappedElement | ReturnSpec::SliceOfSelfElement => Some(self.context.i32_type().into()),
+                }
+            } else {
+                None
+            }
+        } else {
+            Some(self.context.f64_type().into())
         }
     }
 

@@ -10,6 +10,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
 use super::ast::*;
+use super::builtins::BuiltinDef;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
@@ -48,7 +49,7 @@ pub fn compile(
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
     type_aliases: &HashMap<String, PdcType>,
-    builtin_param_names: &HashMap<String, Vec<String>>,
+    builtin_registry: &HashMap<String, BuiltinDef>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -311,7 +312,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
             type_aliases,
         };
 
@@ -405,7 +406,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
             type_aliases,
         };
 
@@ -511,7 +512,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
-            builtin_param_names,
+            builtin_registry,
             type_aliases,
         };
 
@@ -645,8 +646,8 @@ struct CodegenCtx<'a, 'b> {
     state_layout: &'a StateLayout,
     /// Names of mutable builtins — reads/writes go directly to the builtins array.
     mutable_builtins: std::collections::HashSet<String>,
-    /// Builtin function parameter names for named argument resolution.
-    builtin_param_names: &'a HashMap<String, Vec<String>>,
+    /// Builtin function registry for named arg resolution, symbol mapping, etc.
+    builtin_registry: &'a HashMap<String, BuiltinDef>,
 }
 
 /// Tracks the jump targets for break and continue within a loop.
@@ -2069,7 +2070,11 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let param_names: Vec<String> = self.user_fns.get(name.as_str())
                         .and_then(|o| o.sigs.first())
                         .map(|s| s.param_names.clone())
-                        .or_else(|| self.builtin_param_names.get(name.as_str()).cloned())
+                        .or_else(|| self.builtin_registry.get(name.as_str())
+                            .and_then(|def| def.sigs.iter()
+                                .find(|s| s.params.len() == args.len())
+                                .or_else(|| def.sigs.iter().max_by_key(|s| s.params.len())))
+                            .map(|sig| sig.param_names.iter().map(|n| n.to_string()).collect()))
                         .unwrap_or_default();
                     if !param_names.is_empty() {
                         let perm = resolve_named_args(arg_names, &param_names, name, expr.span)?;
@@ -2694,44 +2699,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 &[self.ctx_ptr, name_ptr, name_len, path_ptr, path_len], Some(I32));
         }
 
-        // Runtime function call
-        let runtime_name = {
-            match name {
-                "Path" => "pdc_path".to_string(),
-                "swap" => "pdc_swap_buffers".to_string(),
-                "run" => "pdc_run_kernel".to_string(),
-                "render" if args.len() <= 2 && matches!(self.node_type(args[0].id), PdcType::FnRef { .. }) => {
-                    if args.len() == 2 {
-                        "pdc_render_pdc_kernel_buf".to_string()
-                    } else {
-                        "pdc_render_pdc_kernel".to_string()
-                    }
-                }
-                "render" => "pdc_render_kernel".to_string(),
-                "push" => "pdc_array_push".to_string(),
-                "len" => "pdc_array_len".to_string(),
-                "get" => "pdc_array_get".to_string(),
-                "set" => "pdc_array_set".to_string(),
-                // Styled overloads
-                "fill" if args.len() == 3 => "pdc_fill_styled".to_string(),
-                "stroke" if args.len() == 5 => "pdc_stroke_styled".to_string(),
-                other => format!("pdc_{}", other),
-            }
+        // Runtime function call — look up symbol and context flag from registry
+        let (runtime_name, takes_ctx) = if let Some(def) = self.builtin_registry.get(name) {
+            let sig_idx = def.sigs.iter().position(|s| s.params.len() == args.len()).unwrap_or(0);
+            let symbol = def.codegen.symbol_for_sig(sig_idx)
+                .unwrap_or_else(|| def.codegen.symbol().unwrap_or("pdc_unknown"))
+                .to_string();
+            (symbol, def.codegen.takes_ctx())
+        } else {
+            (format!("pdc_{}", name), false)
         };
-
-        let takes_ctx = matches!(
-            name,
-            "Path"
-            | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-            | "fill_styled" | "stroke_styled"
-            | "push" | "len" | "get" | "set"
-            | "swap" | "run" | "render"
-            | "display"
-            | "set_keypress" | "set_keydown" | "set_keyup"
-            | "clear_keypress" | "clear_keydown" | "clear_keyup"
-            | "set_mousedown" | "set_mouseup" | "set_click"
-            | "clear_mousedown" | "clear_mouseup" | "clear_click"
-        );
 
         let mut arg_vals = Vec::new();
         if takes_ctx {
@@ -2751,7 +2728,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             sig.params.push(AbiParam::new(ty));
         }
 
-        let ret_type = self.call_return_type(name);
+        let ret_type = self.call_return_type(name, args.len());
         if let Some(rt) = ret_type {
             sig.returns.push(AbiParam::new(rt));
         }
@@ -2779,17 +2756,31 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         }
     }
 
-    fn call_return_type(&self, name: &str) -> Option<cranelift_codegen::ir::Type> {
-        match name {
-            "Path" | "len" | "Texture" | "Scene"
-            | "render" => Some(I32),
-            "get" => Some(F64),
-            "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
-            | "fill_styled" | "stroke_styled"
-            | "push" | "set"
-            | "swap" | "run"
-            | "display" => None,
-            _ => Some(F64),
+    /// Return the Cranelift type for a runtime function's return value.
+    /// Returns None for void functions. Uses I32 for bool (runtime returns i32,
+    /// narrowed to i8 by the caller).
+    fn call_return_type(&self, name: &str, args_len: usize) -> Option<cranelift_codegen::ir::Type> {
+        if let Some(def) = self.builtin_registry.get(name) {
+            let sig = def.sigs.iter().find(|s| s.params.len() == args_len)
+                .or_else(|| def.sigs.first());
+            if let Some(sig) = sig {
+                use super::builtins::ReturnSpec;
+                match &sig.ret {
+                    ReturnSpec::Concrete(PdcType::Void) => None,
+                    ReturnSpec::Concrete(PdcType::F64) => Some(F64),
+                    ReturnSpec::Concrete(PdcType::F32) => Some(F32),
+                    // All integer/handle/bool types use I32 at the C ABI level
+                    ReturnSpec::Concrete(_) => Some(I32),
+                    ReturnSpec::SelfElement => Some(F64),
+                    ReturnSpec::BufferOfKernelReturn | ReturnSpec::SameAsArg(_) => Some(I32),
+                    ReturnSpec::MappedElement | ReturnSpec::SliceOfSelfElement => Some(I32),
+                }
+            } else {
+                None
+            }
+        } else {
+            // Unknown builtin — assume f64 (math functions default)
+            Some(F64)
         }
     }
 

@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod builtins;
 pub mod codegen_common;
 #[cfg(feature = "cranelift-backend")]
 pub(crate) mod codegen_cranelift;
@@ -550,12 +551,12 @@ pub fn compile_only_with_builtins_and_codegen(
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    let builtin_pnames = checker.builtin_param_names();
+    let builtin_reg = builtins::builtin_map();
     let args = (
         &program, &checker.types as &[_], builtins_layout,
         &checker.user_fns, &checker.structs, &checker.enums,
         &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases,
-        &builtin_pnames,
+        &builtin_reg,
     );
 
     match codegen_backend {
@@ -614,7 +615,7 @@ pub fn compile_for_pipeline(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let builtin_pnames = checker.builtin_param_names();
+    let builtin_reg = builtins::builtin_map();
     codegen::compile(
         &program,
         &checker.types,
@@ -625,7 +626,7 @@ pub fn compile_for_pipeline(
         &checker.fn_aliases,
         &checker.op_overloads,
         &checker.type_aliases,
-        &builtin_pnames,
+        &builtin_reg,
     )
 }
 
@@ -646,19 +647,19 @@ pub fn compile_for_pipeline_with_codegen(
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    let builtin_pnames = checker.builtin_param_names();
+    let builtin_reg = builtins::builtin_map();
     match codegen_backend {
         #[cfg(feature = "cranelift-backend")]
         "cranelift" => codegen_cranelift::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
-            &checker.type_aliases, &builtin_pnames,
+            &checker.type_aliases, &builtin_reg,
         ),
         #[cfg(feature = "llvm-backend")]
         "llvm" => codegen_llvm::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
-            &checker.type_aliases, &builtin_pnames,
+            &checker.type_aliases, &builtin_reg,
         ),
         _ => Err(error::PdcError::Codegen {
             message: format!("unsupported codegen backend '{codegen_backend}'"),
@@ -766,8 +767,8 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let builtin_pnames = checker.builtin_param_names();
-    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases, &builtin_pnames)?;
+    let builtin_reg = builtins::builtin_map();
+    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases, &builtin_reg)?;
 
     // 4. Execute
     let mut builtins = [width as f64, height as f64];

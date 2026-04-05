@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
+use super::builtins::{self, BuiltinDef, ParamSpec, ReturnSpec};
 use super::error::PdcError;
 use super::span::{Span, Spanned};
 
@@ -70,15 +71,6 @@ pub fn resolve_named_args(
     Ok(perm)
 }
 
-/// A built-in function signature.
-#[allow(dead_code)]
-struct BuiltinFn {
-    param_names: Vec<&'static str>,
-    params: Vec<PdcType>,
-    ret: PdcType,
-    takes_ctx: bool,
-}
-
 /// A user-defined function signature (discovered during type checking).
 #[derive(Clone, Debug)]
 pub struct UserFnSig {
@@ -128,7 +120,7 @@ pub struct TypeChecker {
     scopes: Vec<HashMap<String, PdcType>>,
     /// Variables declared as const — assignments to these are rejected.
     const_vars: HashSet<String>,
-    builtins: HashMap<String, BuiltinFn>,
+    builtins: HashMap<String, BuiltinDef>,
     /// User-defined function signatures (supports overloading).
     /// Module functions are stored with qualified keys: "math::lerp".
     pub user_fns: HashMap<String, OverloadSet>,
@@ -165,111 +157,19 @@ impl TypeChecker {
             fn_aliases: HashMap::new(),
             op_overloads: HashMap::new(),
         };
-        tc.register_builtins();
+        // Populate builtins from the registry
+        for def in builtins::builtin_registry() {
+            tc.builtins.insert(def.name.to_string(), def);
+        }
+        tc.register_types();
         tc
     }
 
-    /// Return a map of builtin function names to their parameter names.
-    /// Used by codegen to resolve named arguments.
-    pub fn builtin_param_names(&self) -> HashMap<String, Vec<String>> {
-        self.builtins.iter()
-            .map(|(name, b)| (name.clone(), b.param_names.iter().map(|s| s.to_string()).collect()))
-            .collect()
-    }
 
-    fn register_builtins(&mut self) {
-        self.builtins.insert("Path".into(), BuiltinFn {
-            param_names: vec![],
-            params: vec![],
-            ret: PdcType::PathHandle,
-            takes_ctx: true,
-        });
 
-        for name in &["move_to", "line_to"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["path", "x", "y"],
-                params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64],
-                ret: PdcType::Void,
-                takes_ctx: true,
-            });
-        }
-        self.builtins.insert("quad_to".into(), BuiltinFn {
-            param_names: vec!["path", "cx", "cy", "x", "y"],
-            params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("cubic_to".into(), BuiltinFn {
-            param_names: vec!["path", "c1x", "c1y", "c2x", "c2y", "x", "y"],
-            params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("close".into(), BuiltinFn {
-            param_names: vec!["path"],
-            params: vec![PdcType::PathHandle],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
-        self.builtins.insert("fill".into(), BuiltinFn {
-            param_names: vec!["path", "color"],
-            params: vec![PdcType::PathHandle, PdcType::U32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("stroke".into(), BuiltinFn {
-            param_names: vec!["path", "width", "color"],
-            params: vec![PdcType::PathHandle, PdcType::F32, PdcType::U32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
-        // Array methods also registered as builtins so UFCS-as-function works:
-        // push(arr, val) as well as arr.push(val)
-        // Note: MethodCall path has type-aware handling for generic arrays.
-        let arr_ty = PdcType::Array(Box::new(PdcType::F64));
-        self.builtins.insert("push".into(), BuiltinFn {
-            param_names: vec!["arr", "val"],
-            params: vec![arr_ty.clone(), PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("len".into(), BuiltinFn {
-            param_names: vec!["arr"],
-            params: vec![arr_ty.clone()],
-            ret: PdcType::I32,
-            takes_ctx: true,
-        });
-        self.builtins.insert("get".into(), BuiltinFn {
-            param_names: vec!["arr", "index"],
-            params: vec![arr_ty.clone(), PdcType::I32],
-            ret: PdcType::F64,
-            takes_ctx: true,
-        });
-        self.builtins.insert("set".into(), BuiltinFn {
-            param_names: vec!["arr", "index", "val"],
-            params: vec![arr_ty.clone(), PdcType::I32, PdcType::F64],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
-        // Styled draw overloads
-        self.builtins.insert("fill_styled".into(), BuiltinFn {
-            param_names: vec!["path", "color", "rule"],
-            params: vec![PdcType::PathHandle, PdcType::U32, PdcType::I32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("stroke_styled".into(), BuiltinFn {
-            param_names: vec!["path", "width", "color", "cap", "join"],
-            params: vec![PdcType::PathHandle, PdcType::F32, PdcType::U32, PdcType::I32, PdcType::I32],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-
-        // Built-in enums: Bind, FillRule, LineCap, LineJoin
-        // Buffer and Kernel are type namespaces with factory constructors
+    /// Register built-in types: enums, modules, and other type-level constructs.
+    /// Function builtins come from the registry (populated in new()).
+    fn register_types(&mut self) {
         self.define_var("Kernel", PdcType::Module("Kernel".into()));
 
         self.enums.insert("Bind".into(), EnumInfo {
@@ -329,105 +229,151 @@ impl TypeChecker {
             ],
         });
         self.define_var("Key", PdcType::Enum("Key".into()));
+    }
 
-        for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract", "exp2"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["x"],
-                params: vec![PdcType::F64],
-                ret: PdcType::F64,
-                takes_ctx: false,
-            });
+    /// Resolve a ParamSpec to a concrete PdcType, given the receiver's element type.
+    fn resolve_param_spec(spec: &ParamSpec, receiver_elem: Option<&PdcType>) -> Option<PdcType> {
+        match spec {
+            ParamSpec::Concrete(ty) => Some(ty.clone()),
+            ParamSpec::SelfElement => receiver_elem.cloned(),
+            ParamSpec::FnRefShape { .. } => None, // checked separately
         }
-        for name in &["min", "max", "atan2", "fmod", "pow"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["a", "b"],
-                params: vec![PdcType::F64, PdcType::F64],
-                ret: PdcType::F64,
-                takes_ctx: false,
-            });
+    }
+
+    /// Check whether an argument type matches a ParamSpec.
+    fn arg_matches_param_spec(arg_ty: &PdcType, spec: &ParamSpec, receiver_elem: Option<&PdcType>) -> bool {
+        match spec {
+            ParamSpec::Concrete(expected) => {
+                if arg_ty == expected { return true; }
+                if arg_ty.is_numeric() && expected.is_numeric() { return true; }
+                if matches!((arg_ty, expected), (PdcType::Array(_), PdcType::Array(_))) { return true; }
+                if matches!((arg_ty, expected), (PdcType::BufferHandle(_), PdcType::BufferHandle(_))) { return true; }
+                // FnRef compatibility
+                if matches!((arg_ty, expected), (PdcType::FnRef { .. }, PdcType::FnRef { .. })) { return true; }
+                // Enum compatibility
+                if matches!((arg_ty, expected), (PdcType::Enum(_), PdcType::Enum(_))) { return true; }
+                false
+            }
+            ParamSpec::SelfElement => {
+                if let Some(elem) = receiver_elem {
+                    if arg_ty == elem { return true; }
+                    if arg_ty.is_numeric() && elem.is_numeric() { return true; }
+                }
+                false
+            }
+            ParamSpec::FnRefShape { param_count } => {
+                if let PdcType::FnRef { params, .. } = arg_ty {
+                    params.len() == *param_count
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Resolve a ReturnSpec to a concrete PdcType.
+    fn resolve_return_spec(
+        spec: &ReturnSpec,
+        arg_types: &[PdcType],
+        receiver_elem: Option<&PdcType>,
+    ) -> PdcType {
+        match spec {
+            ReturnSpec::Concrete(ty) => ty.clone(),
+            ReturnSpec::SelfElement => receiver_elem.cloned().unwrap_or(PdcType::F64),
+            ReturnSpec::MappedElement => {
+                // arg[1] (the fn_ref) determines the return element type
+                if let Some(PdcType::FnRef { ret, .. }) = arg_types.get(1).or_else(|| arg_types.first()) {
+                    PdcType::Array(Box::new(*ret.clone()))
+                } else {
+                    PdcType::Array(Box::new(PdcType::F64))
+                }
+            }
+            ReturnSpec::BufferOfKernelReturn => {
+                // First arg is a FnRef; return type wraps its return
+                if let Some(PdcType::FnRef { ret, .. }) = arg_types.first() {
+                    PdcType::BufferHandle(Box::new(*ret.clone()))
+                } else {
+                    PdcType::BufferHandle(Box::new(PdcType::U32))
+                }
+            }
+            ReturnSpec::SliceOfSelfElement => {
+                PdcType::Slice(Box::new(receiver_elem.cloned().unwrap_or(PdcType::F64)))
+            }
+            ReturnSpec::SameAsArg(idx) => {
+                arg_types.get(*idx).cloned().unwrap_or(PdcType::Unknown)
+            }
+        }
+    }
+
+    /// Try to resolve a builtin function call against the registry.
+    /// Returns Some(return_type) if a matching sig is found, None otherwise.
+    fn resolve_builtin_call(
+        &mut self,
+        def: &BuiltinDef,
+        args: &[Spanned<Expr>],
+        arg_names: &[Option<String>],
+        has_named_args: bool,
+        span: Span,
+        expr_id: u32,
+    ) -> Result<Option<PdcType>, PdcError> {
+        // Find the sig matching this arg count
+        let sig = match def.sigs.iter().find(|s| s.params.len() == args.len()) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        // Resolve named args for this sig
+        let perm = if has_named_args {
+            let pnames: Vec<String> = sig.param_names.iter().map(|s| s.to_string()).collect();
+            Some(resolve_named_args(arg_names, &pnames, def.name, span)?)
+        } else {
+            None
+        };
+        let arg_for_param = |param_pos: usize| -> usize {
+            perm.as_ref().and_then(|p| p[param_pos]).unwrap_or(param_pos)
+        };
+
+        // Type-check args and collect types
+        let mut arg_types = Vec::with_capacity(args.len());
+        for param_pos in 0..args.len() {
+            let ai = arg_for_param(param_pos);
+            let hint = Self::resolve_param_spec(&sig.params[param_pos], None);
+            let arg_ty = self.check_expr_with_hint(&args[ai], hint.as_ref())?;
+            arg_types.push(arg_ty);
         }
 
-        // Pipeline host functions
-        // Buffer methods
-        self.builtins.insert("swap".into(), BuiltinFn {
-            param_names: vec!["a", "b"],
-            params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::BufferHandle(Box::new(PdcType::Unknown))],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        // Kernel methods
-        self.builtins.insert("run".into(), BuiltinFn {
-            param_names: vec!["kernel"],
-            params: vec![PdcType::KernelHandle],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
-        self.builtins.insert("render".into(), BuiltinFn {
-            param_names: vec!["kernel", "buffer", "clear"],
-            params: vec![PdcType::KernelHandle, PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::Bool],
-            ret: PdcType::Bool,
-            takes_ctx: true,
-        });
-        // display()
-        self.builtins.insert("display".into(), BuiltinFn {
-            param_names: vec![],
-            params: vec![],
-            ret: PdcType::Void,
-            takes_ctx: true,
+        // Extract receiver element type (from first arg if it's an array/buffer)
+        let receiver_elem = arg_types.first().and_then(|ty| match ty {
+            PdcType::Array(elem) => Some(*elem.clone()),
+            PdcType::BufferHandle(elem) => Some(*elem.clone()),
+            _ => None,
         });
 
-        // Texture(name: string, path: string) -> TextureHandle
-        self.builtins.insert("Texture".into(), BuiltinFn {
-            param_names: vec!["name", "path"],
-            params: vec![PdcType::Str, PdcType::Str],
-            ret: PdcType::TextureHandle,
-            takes_ctx: true,
-        });
+        // Verify each arg matches its param spec
+        for (param_pos, arg_ty) in arg_types.iter().enumerate() {
+            if !Self::arg_matches_param_spec(arg_ty, &sig.params[param_pos], receiver_elem.as_ref()) {
+                // For FnRefShape, give a specific error
+                if let ParamSpec::FnRefShape { param_count } = &sig.params[param_pos] {
+                    return Err(PdcError::Type {
+                        span: args[arg_for_param(param_pos)].span,
+                        message: format!(
+                            "expected function with {} parameters, got {}",
+                            param_count, arg_ty,
+                        ),
+                    });
+                }
+                let expected = Self::resolve_param_spec(&sig.params[param_pos], receiver_elem.as_ref())
+                    .unwrap_or(PdcType::Unknown);
+                return Err(PdcError::Type {
+                    span: args[arg_for_param(param_pos)].span,
+                    message: format!("type mismatch: expected {expected}, got {arg_ty}"),
+                });
+            }
+        }
 
-        // Scene(name: string, path: string) -> SceneHandle
-        self.builtins.insert("Scene".into(), BuiltinFn {
-            param_names: vec!["name", "path"],
-            params: vec![PdcType::Str, PdcType::Str],
-            ret: PdcType::SceneHandle,
-            takes_ctx: true,
-        });
-
-        // Event handler registration
-        let handler_ty = PdcType::FnRef { params: vec![], ret: Box::new(PdcType::Void) };
-        let key_ty = PdcType::Enum("Key".into());
-
-        for name in &["set_keypress", "set_keydown", "set_keyup"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["key", "handler"],
-                params: vec![key_ty.clone(), handler_ty.clone()],
-                ret: PdcType::Void,
-                takes_ctx: true,
-            });
-        }
-        for name in &["clear_keypress", "clear_keydown", "clear_keyup"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["key"],
-                params: vec![key_ty.clone()],
-                ret: PdcType::Void,
-                takes_ctx: true,
-            });
-        }
-        for name in &["set_mousedown", "set_mouseup", "set_click"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec!["handler"],
-                params: vec![handler_ty.clone()],
-                ret: PdcType::Void,
-                takes_ctx: true,
-            });
-        }
-        for name in &["clear_mousedown", "clear_mouseup", "clear_click"] {
-            self.builtins.insert(name.to_string(), BuiltinFn {
-                param_names: vec![],
-                params: vec![],
-                ret: PdcType::Void,
-                takes_ctx: true,
-            });
-        }
+        let ret = Self::resolve_return_spec(&sig.ret, &arg_types, receiver_elem.as_ref());
+        self.set_type(expr_id, ret.clone());
+        Ok(Some(ret))
     }
 
     fn push_scope(&mut self) {
@@ -1163,10 +1109,18 @@ impl TypeChecker {
                 if let Some(ty) = self.lookup_var(name).cloned() {
                     ty
                 } else if let Some(builtin) = self.builtins.get(name.as_str()) {
-                    // Function reference to a builtin
+                    // Function reference to a builtin (use first sig)
+                    let sig = &builtin.sigs[0];
+                    let params: Vec<PdcType> = sig.params.iter().filter_map(|p| {
+                        Self::resolve_param_spec(p, None)
+                    }).collect();
+                    let ret = match &sig.ret {
+                        ReturnSpec::Concrete(ty) => ty.clone(),
+                        _ => PdcType::Void,
+                    };
                     PdcType::FnRef {
-                        params: builtin.params.clone(),
-                        ret: Box::new(builtin.ret.clone()),
+                        params,
+                        ret: Box::new(ret),
                     }
                 } else if let Some(overloads) = self.user_fns.get(name.as_str()) {
                     // Function reference to a user function (use first overload)
@@ -1297,21 +1251,8 @@ impl TypeChecker {
                     return Ok(buf_ty);
                 }
 
-                // Overloaded builtins: fill/stroke with style parameters
-                if name == "fill" && args.len() == 3 {
-                    // fill(path, color, rule) → fill_styled
-                    for arg in args.iter() { self.check_expr(arg)?; }
-                    self.set_type(expr.id, PdcType::Void);
-                    return Ok(PdcType::Void);
-                }
-                if name == "stroke" && args.len() == 5 {
-                    // stroke(path, width, color, cap, join) → stroke_styled
-                    for arg in args.iter() { self.check_expr(arg)?; }
-                    self.set_type(expr.id, PdcType::Void);
-                    return Ok(PdcType::Void);
-                }
-
-                // Test assertion intrinsics
+                // Test assertion intrinsics — polymorphic type checking
+                // (assert_eq accepts any matching type pair, not just f64)
                 if name == "assert_eq" {
                     if args.len() != 2 {
                         return Err(PdcError::Type {
@@ -1352,32 +1293,6 @@ impl TypeChecker {
                     return Ok(PdcType::Void);
                 }
 
-                // render(kernel_fn) or render(kernel_fn, buffer) — PDC pixel kernel dispatch
-                if name == "render" && (args.len() == 1 || args.len() == 2) {
-                    let fn_ty = self.check_expr(&args[0])?;
-                    // Extract return type from kernel function
-                    if let PdcType::FnRef { ref params, ref ret } = fn_ty {
-                        if params.len() == 4
-                            && params.iter().all(|p| *p == PdcType::I32)
-                        {
-                            let elem_ty = *ret.clone();
-                            if args.len() == 2 {
-                                let buf_ty = self.check_expr(&args[1])?;
-                                if let PdcType::BufferHandle(ref buf_elem) = buf_ty {
-                                    self.check_compatible(&elem_ty, buf_elem, args[0].span)?;
-                                }
-                                self.set_type(expr.id, buf_ty.clone());
-                                return Ok(buf_ty);
-                            } else {
-                                let buf_ty = PdcType::BufferHandle(Box::new(elem_ty));
-                                self.set_type(expr.id, buf_ty.clone());
-                                return Ok(buf_ty);
-                            }
-                        }
-                    }
-                    // Fall through to existing render(KernelHandle, BufferHandle, Bool) builtin
-                }
-
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {
@@ -1394,36 +1309,28 @@ impl TypeChecker {
                     // coercion semantics should apply.
                     let has_builtin = self.builtins.contains_key(name.as_str());
 
-                    // When named args are present, resolve the permutation so we
-                    // can check args in parameter order.
+                    // For user function resolution with named args, resolve permutation
+                    // using user function param names (builtin named args handled in
+                    // resolve_builtin_call).
                     let perm: Option<Vec<Option<usize>>> = if has_named_args {
-                        // Get param_names from the best available source
                         let param_names: Option<Vec<String>> =
                             self.user_fns.get(name.as_str())
                                 .and_then(|o| o.sigs.first())
-                                .map(|s| s.param_names.clone())
-                            .or_else(|| self.builtins.get(name.as_str())
-                                .map(|b| b.param_names.iter().map(|s| s.to_string()).collect()));
+                                .map(|s| s.param_names.clone());
                         if let Some(pnames) = param_names {
                             Some(resolve_named_args(arg_names, &pnames, name, expr.span)?)
                         } else {
-                            return Err(PdcError::Type {
-                                span: expr.span,
-                                message: format!("undefined function '{name}'"),
-                            });
+                            // No user function — named args will be resolved in
+                            // resolve_builtin_call below
+                            None
                         }
                     } else {
                         None
                     };
 
                     // Helper: get the arg index for param position i
-                    // With named args, use the permutation; without, identity mapping
                     let arg_for_param = |param_pos: usize| -> usize {
-                        if let Some(ref p) = perm {
-                            p[param_pos].unwrap_or(param_pos)
-                        } else {
-                            param_pos
-                        }
+                        perm.as_ref().and_then(|p| p[param_pos]).unwrap_or(param_pos)
                     };
 
                     let user_result = if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
@@ -1440,7 +1347,6 @@ impl TypeChecker {
                             arg_types[param_pos] = self.check_expr_with_hint(&args[ai], hint)?;
                         }
                         let sig = if has_builtin {
-                            // Only exact matches when there's a builtin fallback
                             self.resolve_overload_exact(&overloads, &arg_types)
                         } else {
                             self.resolve_overload(&overloads, &arg_types)
@@ -1460,25 +1366,23 @@ impl TypeChecker {
 
                     if let Some(ret) = user_result {
                         ret
-                    } else if let Some(builtin) = self.builtins.get(name.as_str()) {
-                        let expected_params = builtin.params.clone();
-                        let ret = builtin.ret.clone();
-                        if args.len() != expected_params.len() {
-                            return Err(PdcError::Type {
-                                span: expr.span,
-                                message: format!(
-                                    "function '{name}' expects {} arguments, got {}",
-                                    expected_params.len(),
-                                    args.len()
-                                ),
-                            });
+                    } else if let Some(builtin) = self.builtins.get(name.as_str()).cloned() {
+                        // Builtin with overload resolution via the registry
+                        if let Some(ret) = self.resolve_builtin_call(&builtin, args, arg_names, has_named_args, expr.span, expr.id)? {
+                            return Ok(ret);
                         }
-                        for param_pos in 0..args.len() {
-                            let ai = arg_for_param(param_pos);
-                            let arg_ty = self.check_expr_with_hint(&args[ai], Some(&expected_params[param_pos]))?;
-                            self.check_compatible(&arg_ty, &expected_params[param_pos], args[ai].span)?;
-                        }
-                        ret
+                        // No sig matched the arg count — build error message
+                        let counts: Vec<String> = builtin.sigs.iter()
+                            .map(|s| s.params.len().to_string())
+                            .collect();
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!(
+                                "function '{name}' expects {} arguments, got {}",
+                                counts.join(" or "),
+                                args.len()
+                            ),
+                        });
                     } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
                         // No builtin — try full overload resolution (with coercion)
                         let mut arg_types = vec![PdcType::Unknown; args.len()];
@@ -1567,9 +1471,14 @@ impl TypeChecker {
                     }
                     // Try builtin (builtins are unqualified — sin, cos, etc.)
                     if let Some(builtin) = self.builtins.get(method.as_str()) {
-                        let ret = builtin.ret.clone();
-                        self.set_type(expr.id, ret.clone());
-                        return Ok(ret);
+                        if let Some(sig) = builtin.sigs.first() {
+                            let ret = match &sig.ret {
+                                ReturnSpec::Concrete(ty) => ty.clone(),
+                                _ => PdcType::Void,
+                            };
+                            self.set_type(expr.id, ret.clone());
+                            return Ok(ret);
+                        }
                     }
                     return Err(PdcError::Type {
                         span: expr.span,
@@ -1777,26 +1686,43 @@ impl TypeChecker {
                         });
                     }
                     PdcType::Void
-                } else if let Some(builtin) = self.builtins.get(method.as_str()) {
-                    let expected_params = builtin.params.clone();
-                    let ret = builtin.ret.clone();
+                } else if let Some(builtin) = self.builtins.get(method.as_str()).cloned() {
+                    // UFCS: obj.method(args) → method(obj, args)
+                    // Find a sig where total args (1 + args.len()) matches param count
                     let total_args = 1 + args.len();
-                    if total_args != expected_params.len() {
+                    let sig = builtin.sigs.iter().find(|s| s.params.len() == total_args);
+                    if let Some(sig) = sig {
+                        // Resolve param specs with receiver element type
+                        let receiver_elem = match &obj_ty {
+                            PdcType::Array(elem) => Some(*elem.clone()),
+                            PdcType::BufferHandle(elem) => Some(*elem.clone()),
+                            _ => None,
+                        };
+                        // Check object against first param
+                        if let Some(expected) = Self::resolve_param_spec(&sig.params[0], receiver_elem.as_ref()) {
+                            self.check_compatible(&obj_ty, &expected, object.span)?;
+                        }
+                        // Check remaining args
+                        let mut arg_types = vec![obj_ty.clone()];
+                        for (i, arg) in args.iter().enumerate() {
+                            let hint = Self::resolve_param_spec(&sig.params[i + 1], receiver_elem.as_ref());
+                            let arg_ty = self.check_expr_with_hint(arg, hint.as_ref())?;
+                            if let Some(ref expected) = hint {
+                                self.check_compatible(&arg_ty, expected, arg.span)?;
+                            }
+                            arg_types.push(arg_ty);
+                        }
+                        Self::resolve_return_spec(&sig.ret, &arg_types, receiver_elem.as_ref())
+                    } else {
                         return Err(PdcError::Type {
                             span: expr.span,
                             message: format!(
                                 "method '{method}' expects {} arguments (including self), got {}",
-                                expected_params.len(),
+                                builtin.sigs.iter().map(|s| s.params.len().to_string()).collect::<Vec<_>>().join(" or "),
                                 total_args,
                             ),
                         });
                     }
-                    self.check_compatible(&obj_ty, &expected_params[0], object.span)?;
-                    for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i + 1]))?;
-                        self.check_compatible(&arg_ty, &expected_params[i + 1], arg.span)?;
-                    }
-                    ret
                 } else if let Some(overloads) = self.user_fns.get(method.as_str()).cloned() {
                     // Build full arg types: [obj_ty, arg0_ty, arg1_ty, ...]
                     let mut arg_types = vec![obj_ty.clone()];
