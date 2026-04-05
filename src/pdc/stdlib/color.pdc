@@ -1,19 +1,21 @@
 // PDC Standard Library: color
 // Color packing and conversion utilities for pixel output.
 
+import { clamp } from math
+
 /// Pack f64 RGB components (0.0–1.0) into an ARGB u32 (as i32).
 pub fn pack_rgb(r: f64, g: f64, b: f64) -> i32 {
-    var ri = i32(min(max(r, 0.0), 1.0) * 255.0)
-    var gi = i32(min(max(g, 0.0), 1.0) * 255.0)
-    var bi = i32(min(max(b, 0.0), 1.0) * 255.0)
+    var ri = i32(clamp(r) * 255.0)
+    var gi = i32(clamp(g) * 255.0)
+    var bi = i32(clamp(b) * 255.0)
     return 0xFF000000i32 | (ri << 16) | (gi << 8) | bi
 }
 
 /// Pack f32 RGB components (0.0–1.0) into an ARGB u32 (as i32).
 pub fn pack_rgb(r: f32, g: f32, b: f32) -> i32 {
-    var ri = i32(min(max(r, 0.0f32), 1.0f32) * 255.0f32)
-    var gi = i32(min(max(g, 0.0f32), 1.0f32) * 255.0f32)
-    var bi = i32(min(max(b, 0.0f32), 1.0f32) * 255.0f32)
+    var ri = i32(clamp(r) * 255.0f32)
+    var gi = i32(clamp(g) * 255.0f32)
+    var bi = i32(clamp(b) * 255.0f32)
     return 0xFF000000i32 | (ri << 16) | (gi << 8) | bi
 }
 
