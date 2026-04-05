@@ -1456,6 +1456,13 @@ impl<'a> LlvmCodegenCtx<'a> {
             }
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.node_type(object.id).clone();
+                // buffer.display() — display buffer contents
+                if matches!(obj_ty, PdcType::BufferHandle(_)) && method == "display" {
+                    let buf_handle = self.emit_expr(object)?;
+                    self.emit_runtime_call_raw("pdc_display_buffer",
+                        &[self.ctx_ptr.into(), buf_handle], None)?;
+                    return Ok(self.i32_const(0).into());
+                }
                 // fn_ref.render() or fn_ref.render(buffer) — PDC pixel kernel dispatch
                 if matches!(obj_ty, PdcType::FnRef { .. }) && method == "render" {
                     let kernel_fn = self.emit_expr(object)?;

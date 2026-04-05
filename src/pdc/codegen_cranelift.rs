@@ -2013,6 +2013,13 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             } => {
                 let obj_ty = self.node_type(object.id).clone();
                 // Module namespaced call: math.sin(x) → math::sin(x)
+                // buffer.display() — display buffer contents
+                if matches!(obj_ty, PdcType::BufferHandle(_)) && method == "display" {
+                    let buf_handle = self.emit_expr(object)?;
+                    self.emit_runtime_call_raw("pdc_display_buffer",
+                        &[self.ctx_ptr, buf_handle], None)?;
+                    return Ok(self.builder.ins().iconst(I32, 0));
+                }
                 // fn_ref.render() or fn_ref.render(buffer) — PDC pixel kernel dispatch
                 if matches!(obj_ty, PdcType::FnRef { .. }) && method == "render" {
                     let kernel_fn = self.emit_expr(object)?;

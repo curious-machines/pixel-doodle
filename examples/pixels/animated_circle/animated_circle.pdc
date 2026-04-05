@@ -56,6 +56,6 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 
 fn frame() -> bool {
     var buf = pixel.render()
-    display_buffer(buf)
+    buf.display()
     return true
 }

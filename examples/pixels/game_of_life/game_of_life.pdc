@@ -130,7 +130,7 @@ fn frame() -> bool {
     }
 
     var pixels = vis_cell.render()
-    pixels.display_buffer()
+    pixels.display()
     return true
 }
 

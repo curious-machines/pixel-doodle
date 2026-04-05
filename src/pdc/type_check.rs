@@ -1592,6 +1592,15 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &var_info.field_types[i], arg.span)?;
                     }
                     PdcType::Enum(ename.clone())
+                } else if method == "display" && matches!(obj_ty, PdcType::BufferHandle(_)) {
+                    // buffer.display() — display buffer contents
+                    if !args.is_empty() {
+                        return Err(PdcError::Type {
+                            span: expr.span,
+                            message: format!("display() takes no arguments, got {}", args.len()),
+                        });
+                    }
+                    PdcType::Void
                 } else if method == "render" && matches!(obj_ty, PdcType::FnRef { .. }) {
                     // fn_ref.render() or fn_ref.render(buffer) — PDC pixel kernel dispatch
                     if let PdcType::FnRef { ref params, ref ret } = obj_ty {
