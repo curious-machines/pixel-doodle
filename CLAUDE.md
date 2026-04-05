@@ -53,6 +53,8 @@ When running with the LLVM backend, add `--features llvm-backend` to the cargo c
 cargo run --release --features llvm-backend -- example.pdc --set codegen=llvm
 ```
 
+**Important:** When running `cargo check`, `cargo test`, or `cargo build` manually, always include `--features llvm-backend` to ensure the LLVM codegen path compiles. Without it, LLVM-specific code changes won't be checked and LLVM regression tests will time out or fail. The `test_regression` script already includes this flag automatically.
+
 ## Implementation Strategy
 
 - Parallel execution model: GPU dispatches workgroups; CPU fallback splits rows across threads

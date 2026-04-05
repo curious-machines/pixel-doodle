@@ -13,7 +13,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
-use super::type_check::{EnumInfo, OverloadSet, StructInfo};
+use super::type_check::{EnumInfo, OverloadSet, StructInfo, resolve_named_args};
 pub use super::codegen_common::*;
 
 /// Wrapper to make `JITModule` Send + Sync.
@@ -48,6 +48,7 @@ pub fn compile(
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
     type_aliases: &HashMap<String, PdcType>,
+    builtin_param_names: &HashMap<String, Vec<String>>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
@@ -310,6 +311,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
             type_aliases,
         };
 
@@ -403,6 +405,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
             type_aliases,
         };
 
@@ -508,6 +511,7 @@ pub fn compile(
             loop_stack: Vec::new(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
             type_aliases,
         };
 
@@ -641,6 +645,8 @@ struct CodegenCtx<'a, 'b> {
     state_layout: &'a StateLayout,
     /// Names of mutable builtins — reads/writes go directly to the builtins array.
     mutable_builtins: std::collections::HashSet<String>,
+    /// Builtin function parameter names for named argument resolution.
+    builtin_param_names: &'a HashMap<String, Vec<String>>,
 }
 
 /// Tracks the jump targets for break and continue within a loop.
@@ -1705,15 +1711,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             0,
         ));
 
-        for (i, arg) in args.iter().enumerate() {
+        // Resolve mixed positional + named args to field order
+        let field_names: Vec<String> = info.fields.iter().map(|(n, _)| n.clone()).collect();
+        let perm = resolve_named_args(arg_names, &field_names, name, super::span::Span::new(0, 0))?;
+
+        for (field_idx, opt_arg_idx) in perm.iter().enumerate() {
+            let arg_idx = opt_arg_idx.unwrap();
+            let arg = &args[arg_idx];
             let val = self.emit_expr(arg)?;
             let arg_ty = self.node_type(arg.id).clone();
-
-            let fname = arg_names[i].as_ref().unwrap();
-            let field_idx = info.fields.iter().position(|(n, _)| n == fname)
-                .ok_or_else(|| PdcError::Codegen {
-                    message: format!("struct '{name}' has no field '{fname}'"),
-                })?;
             let offset = (field_idx * 8) as i32;
             let field_ty = &info.fields[field_idx].1;
             let converted = self.convert_value(val, &arg_ty, field_ty);
@@ -2058,6 +2064,19 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                 if has_named {
                     if let Some(info) = self.structs.get(name).cloned() {
                         return self.emit_struct_construct_from_call(name, args, arg_names, &info);
+                    }
+                    // Function call with named args — reorder to parameter order
+                    let param_names: Vec<String> = self.user_fns.get(name.as_str())
+                        .and_then(|o| o.sigs.first())
+                        .map(|s| s.param_names.clone())
+                        .or_else(|| self.builtin_param_names.get(name.as_str()).cloned())
+                        .unwrap_or_default();
+                    if !param_names.is_empty() {
+                        let perm = resolve_named_args(arg_names, &param_names, name, expr.span)?;
+                        let reordered: Vec<Spanned<Expr>> = perm.iter()
+                            .filter_map(|opt| opt.map(|i| args[i].clone()))
+                            .collect();
+                        return self.emit_call(name, &reordered, expr.id);
                     }
                 }
                 self.emit_call(name, args, expr.id)

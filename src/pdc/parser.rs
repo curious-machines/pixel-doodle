@@ -1178,7 +1178,7 @@ impl<'a> Parser<'a> {
                     let (method, _) = self.expect_ident()?;
                     if *self.peek() == TokenKind::LParen {
                         self.advance();
-                        let args = self.parse_call_args()?;
+                        let (args, _arg_names) = self.parse_call_args()?;
                         let span = Span::new(
                             expr.span.start,
                             self.tokens[self.pos - 1].span.end,
@@ -1255,8 +1255,7 @@ impl<'a> Parser<'a> {
                     let elem_ty = self.parse_type()?;
                     self.expect(&TokenKind::Gt)?;
                     self.expect(&TokenKind::LParen)?;
-                    let args = self.parse_call_args()?;
-                    let arg_names = vec![None; args.len()];
+                    let (args, arg_names) = self.parse_call_args()?;
                     let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
                     // Encode the element type in the call name: "Array<f64>"
                     let full_name = format!("Array<{elem_ty}>");
@@ -1268,29 +1267,16 @@ impl<'a> Parser<'a> {
                     let elem_ty = self.parse_type()?;
                     self.expect(&TokenKind::Gt)?;
                     self.expect(&TokenKind::LParen)?;
-                    let args = self.parse_call_args()?;
-                    let arg_names = vec![None; args.len()];
+                    let (args, arg_names) = self.parse_call_args()?;
                     let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
                     let full_name = format!("Buffer<{elem_ty}>");
                     return Ok(self.ids.spanned(Expr::Call { name: full_name, args, arg_names }, span));
                 }
                 if *self.peek() == TokenKind::LParen {
                     self.advance(); // consume '('
-                    if self.is_named_arg_start() {
-                        // Named args: could be struct construct or named function call
-                        let named = self.parse_named_args()?;
-                        let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-                        let arg_names: Vec<Option<String>> = named.iter().map(|(n, _)| Some(n.clone())).collect();
-                        let args: Vec<Spanned<Expr>> = named.into_iter().map(|(_, e)| e).collect();
-                        // Parser emits Call with arg_names; type checker resolves
-                        // as struct construction or named function call
-                        Ok(self.ids.spanned(Expr::Call { name, args, arg_names }, span))
-                    } else {
-                        let args = self.parse_call_args()?;
-                        let arg_names = vec![None; args.len()];
-                        let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
-                        Ok(self.ids.spanned(Expr::Call { name, args, arg_names }, span))
-                    }
+                    let (args, arg_names) = self.parse_call_args()?;
+                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                    Ok(self.ids.spanned(Expr::Call { name, args, arg_names }, span))
                 } else {
                     Ok(self.ids.spanned(Expr::Variable(name), start))
                 }
@@ -1346,19 +1332,38 @@ impl<'a> Parser<'a> {
         false
     }
 
-    /// Parse named arguments: `name: expr, name: expr, ...)`
-    fn parse_named_args(&mut self) -> Result<Vec<(String, Spanned<Expr>)>, PdcError> {
-        let mut fields = Vec::new();
+    /// Parse call arguments supporting mixed positional + named args.
+    /// Positional args must come first; once a named arg appears, all
+    /// subsequent args must also be named.
+    fn parse_call_args(&mut self) -> Result<(Vec<Spanned<Expr>>, Vec<Option<String>>), PdcError> {
+        let mut args = Vec::new();
+        let mut arg_names: Vec<Option<String>> = Vec::new();
+        let mut seen_named = false;
+
         if *self.peek() != TokenKind::RParen {
             loop {
-                let (name, _) = self.expect_ident()?;
-                self.expect(&TokenKind::Colon)?;
-                let value = self.parse_expr()?;
-                fields.push((name, value));
+                if self.is_named_arg_start() {
+                    seen_named = true;
+                    let (name, _) = self.expect_ident()?;
+                    self.expect(&TokenKind::Colon)?;
+                    let value = self.parse_expr()?;
+                    arg_names.push(Some(name));
+                    args.push(value);
+                } else {
+                    if seen_named {
+                        return Err(PdcError::Parse {
+                            span: self.tokens[self.pos].span,
+                            message: "positional arguments must come before named arguments".into(),
+                        });
+                    }
+                    let value = self.parse_expr()?;
+                    arg_names.push(None);
+                    args.push(value);
+                }
                 if *self.peek() == TokenKind::Comma {
                     self.advance();
                     if *self.peek() == TokenKind::RParen {
-                        break;
+                        break; // trailing comma
                     }
                 } else {
                     break;
@@ -1366,23 +1371,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(&TokenKind::RParen)?;
-        Ok(fields)
-    }
-
-    fn parse_call_args(&mut self) -> Result<Vec<Spanned<Expr>>, PdcError> {
-        let mut args = Vec::new();
-        if *self.peek() != TokenKind::RParen {
-            args.push(self.parse_expr()?);
-            while *self.peek() == TokenKind::Comma {
-                self.advance();
-                if *self.peek() == TokenKind::RParen {
-                    break;
-                }
-                args.push(self.parse_expr()?);
-            }
-        }
-        self.expect(&TokenKind::RParen)?;
-        Ok(args)
+        Ok((args, arg_names))
     }
 }
 

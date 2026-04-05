@@ -20,7 +20,7 @@ use super::ast::*;
 use super::error::PdcError;
 use super::runtime;
 use super::span::Spanned;
-use super::type_check::{EnumInfo, OverloadSet, StructInfo};
+use super::type_check::{EnumInfo, OverloadSet, StructInfo, resolve_named_args};
 pub use super::codegen_common::*;
 
 /// Wrapper to make `ExecutionEngine` Send + Sync.
@@ -55,6 +55,7 @@ pub fn compile(
     fn_aliases: &HashMap<String, String>,
     op_overloads: &HashMap<String, OverloadSet>,
     type_aliases: &HashMap<String, PdcType>,
+    builtin_param_names: &HashMap<String, Vec<String>>,
 ) -> Result<(CompiledProgram, StateLayout), PdcError> {
     // Create LLVM context, module, target machine.
     let context: &'static Context = Box::leak(Box::new(Context::create()));
@@ -314,6 +315,7 @@ pub fn compile(
             fn_return_type: resolved_ret.clone(),
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
         };
 
         // Define parameters as allocas
@@ -378,6 +380,7 @@ pub fn compile(
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
         };
 
         // Module-level statements
@@ -452,6 +455,7 @@ pub fn compile(
             fn_return_type: PdcType::Void,
             state_layout: &state_layout,
             mutable_builtins: mutable_builtin_names.clone(),
+            builtin_param_names,
         };
 
         for const_stmt in &top_level_consts {
@@ -611,6 +615,8 @@ struct LlvmCodegenCtx<'a> {
     state_layout: &'a StateLayout,
     /// Names of mutable builtins — reads/writes go directly to the builtins array.
     mutable_builtins: std::collections::HashSet<String>,
+    /// Builtin function parameter names for named argument resolution.
+    builtin_param_names: &'a HashMap<String, Vec<String>>,
 }
 
 struct LlvmLoopContext {
@@ -1471,6 +1477,19 @@ impl<'a> LlvmCodegenCtx<'a> {
                 if has_named {
                     if let Some(info) = self.structs.get(name).cloned() {
                         return self.emit_struct_construct_from_call(name, args, arg_names, &info);
+                    }
+                    // Function call with named args — reorder to parameter order
+                    let param_names: Vec<String> = self.user_fns.get(name.as_str())
+                        .and_then(|o| o.sigs.first())
+                        .map(|s| s.param_names.clone())
+                        .or_else(|| self.builtin_param_names.get(name.as_str()).cloned())
+                        .unwrap_or_default();
+                    if !param_names.is_empty() {
+                        let perm = resolve_named_args(arg_names, &param_names, name, expr.span)?;
+                        let reordered: Vec<Spanned<Expr>> = perm.iter()
+                            .filter_map(|opt| opt.map(|i| args[i].clone()))
+                            .collect();
+                        return self.emit_call(name, &reordered, expr.id);
                     }
                 }
                 self.emit_call(name, args, expr.id)
@@ -2516,14 +2535,15 @@ impl<'a> LlvmCodegenCtx<'a> {
         let arr_ty = f64_ty.array_type(info.fields.len() as u32);
         let alloca = self.builder.build_alloca(arr_ty, "struct_call").unwrap();
 
-        for (i, arg) in args.iter().enumerate() {
+        // Resolve mixed positional + named args to field order
+        let field_names: Vec<String> = info.fields.iter().map(|(n, _)| n.clone()).collect();
+        let perm = resolve_named_args(arg_names, &field_names, name, super::span::Span::new(0, 0))?;
+
+        for (field_idx, opt_arg_idx) in perm.iter().enumerate() {
+            let arg_idx = opt_arg_idx.unwrap();
+            let arg = &args[arg_idx];
             let val = self.emit_expr(arg)?;
             let arg_ty = self.node_type(arg.id).clone();
-            let fname = arg_names[i].as_ref().unwrap();
-            let field_idx = info.fields.iter().position(|(n, _)| n == fname)
-                .ok_or_else(|| PdcError::Codegen {
-                    message: format!("struct '{name}' has no field '{fname}'"),
-                })?;
             let field_ty = &info.fields[field_idx].1;
             let converted = self.convert_value(val, &arg_ty, field_ty);
             let store_val = self.widen_to_f64(converted, field_ty);

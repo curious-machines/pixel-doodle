@@ -550,19 +550,21 @@ pub fn compile_only_with_builtins_and_codegen(
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
+    let builtin_pnames = checker.builtin_param_names();
     let args = (
         &program, &checker.types as &[_], builtins_layout,
         &checker.user_fns, &checker.structs, &checker.enums,
         &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases,
+        &builtin_pnames,
     );
 
     match codegen_backend {
         #[cfg(feature = "llvm-backend")]
         "llvm" => codegen_llvm::compile(
-            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9,
         ),
         _ => codegen::compile(
-            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8, args.9,
         ),
     }
 }
@@ -612,6 +614,7 @@ pub fn compile_for_pipeline(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
+    let builtin_pnames = checker.builtin_param_names();
     codegen::compile(
         &program,
         &checker.types,
@@ -622,6 +625,7 @@ pub fn compile_for_pipeline(
         &checker.fn_aliases,
         &checker.op_overloads,
         &checker.type_aliases,
+        &builtin_pnames,
     )
 }
 
@@ -642,18 +646,19 @@ pub fn compile_for_pipeline_with_codegen(
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
+    let builtin_pnames = checker.builtin_param_names();
     match codegen_backend {
         #[cfg(feature = "cranelift-backend")]
         "cranelift" => codegen_cranelift::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
-            &checker.type_aliases,
+            &checker.type_aliases, &builtin_pnames,
         ),
         #[cfg(feature = "llvm-backend")]
         "llvm" => codegen_llvm::compile(
             &program, &checker.types, &builtins_layout, &checker.user_fns,
             &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads,
-            &checker.type_aliases,
+            &checker.type_aliases, &builtin_pnames,
         ),
         _ => Err(error::PdcError::Codegen {
             message: format!("unsupported codegen backend '{codegen_backend}'"),
@@ -761,7 +766,8 @@ pub fn compile_and_run(
         ("width", ast::PdcType::F32),
         ("height", ast::PdcType::F32),
     ];
-    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases)?;
+    let builtin_pnames = checker.builtin_param_names();
+    let (compiled, state_layout) = codegen::compile(&program, &checker.types, &builtins_layout, &checker.user_fns, &checker.structs, &checker.enums, &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases, &builtin_pnames)?;
 
     // 4. Execute
     let mut builtins = [width as f64, height as f64];
@@ -2916,5 +2922,74 @@ mod tests {
         assert_eq!(zoom, PdcValue::F64(6.0));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Named function arguments (end-to-end) ──
+
+    #[test]
+    fn named_args_all_named() {
+        run_pdc_tests_and_assert(r#"
+            fn sub(a: f64, b: f64) -> f64 { return a - b }
+            test "all named" {
+                assert_eq(sub(a: 10.0, b: 3.0), 7.0)
+            }
+        "#);
+    }
+
+    #[test]
+    fn named_args_out_of_order() {
+        run_pdc_tests_and_assert(r#"
+            fn sub(a: f64, b: f64) -> f64 { return a - b }
+            test "named out of order" {
+                assert_eq(sub(b: 3.0, a: 10.0), 7.0)
+            }
+        "#);
+    }
+
+    #[test]
+    fn named_args_mixed_positional_and_named() {
+        run_pdc_tests_and_assert(r#"
+            fn calc(a: f64, b: f64, c: f64) -> f64 { return a * 100.0 + b * 10.0 + c }
+            test "mixed positional and named" {
+                assert_eq(calc(1.0, c: 3.0, b: 2.0), 123.0)
+            }
+        "#);
+    }
+
+    #[test]
+    fn named_args_with_defaults() {
+        run_pdc_tests_and_assert(r#"
+            fn greet(a: f64, b: f64, c: f64 = 100.0) -> f64 { return a + b + c }
+            test "named with default" {
+                assert_eq(greet(b: 2.0, a: 1.0), 103.0)
+            }
+        "#);
+    }
+
+    #[test]
+    fn named_args_struct_mixed() {
+        run_pdc_tests_and_assert(r#"
+            struct Vec2 { x: f64, y: f64 }
+            fn sum(v: Vec2) -> f64 { return v.x + v.y }
+            test "struct mixed positional and named" {
+                var v = Vec2(1.0, y: 2.0)
+                assert_eq(sum(v), 3.0)
+            }
+            test "struct all named out of order" {
+                var v = Vec2(y: 20.0, x: 10.0)
+                assert_eq(sum(v), 30.0)
+            }
+        "#);
+    }
+
+    #[test]
+    fn named_args_positional_after_named_error() {
+        let err = compile_err(r#"
+            builtin const width: f32
+            builtin const height: f32
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+            var r = add(a: 1.0, 2.0)
+        "#);
+        assert!(err.contains("positional arguments must come before named"), "got: {err}");
     }
 }

@@ -2,11 +2,78 @@ use std::collections::{HashMap, HashSet};
 
 use super::ast::*;
 use super::error::PdcError;
-use super::span::Spanned;
+use super::span::{Span, Spanned};
+
+/// Resolve mixed positional + named arguments into parameter order.
+///
+/// Returns a vector of length `param_names.len()` where `result[param_pos]`
+/// is `Some(arg_index)` if that param was supplied, or `None` if it wasn't
+/// (the caller handles defaults for missing params).
+///
+/// Rules (parser enforces positional-before-named ordering):
+/// - Named args can appear in any order after positional args
+/// - No duplicate names
+/// - Named args must not target positions already filled by positional args
+pub fn resolve_named_args(
+    arg_names: &[Option<String>],
+    param_names: &[impl AsRef<str>],
+    fn_name: &str,
+    span: Span,
+) -> Result<Vec<Option<usize>>, PdcError> {
+    let mut perm: Vec<Option<usize>> = vec![None; param_names.len()];
+
+    // Count leading positional args
+    let positional_count = arg_names.iter().take_while(|n| n.is_none()).count();
+
+    // Fill positional slots left-to-right
+    for i in 0..positional_count {
+        if i >= param_names.len() {
+            return Err(PdcError::Type {
+                span,
+                message: format!(
+                    "too many arguments in call to '{fn_name}': expected at most {}, got at least {}",
+                    param_names.len(), positional_count,
+                ),
+            });
+        }
+        perm[i] = Some(i);
+    }
+
+    // Fill named args by name lookup
+    let mut used_names: HashSet<&str> = HashSet::new();
+    for (arg_idx, opt_name) in arg_names.iter().enumerate() {
+        if let Some(name) = opt_name {
+            if !used_names.insert(name.as_str()) {
+                return Err(PdcError::Type {
+                    span,
+                    message: format!("duplicate named argument '{name}' in call to '{fn_name}'"),
+                });
+            }
+            let param_pos = param_names.iter().position(|p| p.as_ref() == name.as_str())
+                .ok_or_else(|| PdcError::Type {
+                    span,
+                    message: format!("no parameter named '{name}' in function '{fn_name}'"),
+                })?;
+            if param_pos < positional_count {
+                return Err(PdcError::Type {
+                    span,
+                    message: format!(
+                        "named argument '{name}' (parameter {}) conflicts with positional argument in call to '{fn_name}'",
+                        param_pos + 1,
+                    ),
+                });
+            }
+            perm[param_pos] = Some(arg_idx);
+        }
+    }
+
+    Ok(perm)
+}
 
 /// A built-in function signature.
 #[allow(dead_code)]
 struct BuiltinFn {
+    param_names: Vec<&'static str>,
     params: Vec<PdcType>,
     ret: PdcType,
     takes_ctx: bool,
@@ -15,6 +82,7 @@ struct BuiltinFn {
 /// A user-defined function signature (discovered during type checking).
 #[derive(Clone, Debug)]
 pub struct UserFnSig {
+    pub param_names: Vec<String>,
     pub params: Vec<PdcType>,
     pub ret: PdcType,
     /// Number of required (non-defaulted) parameters.
@@ -101,8 +169,17 @@ impl TypeChecker {
         tc
     }
 
+    /// Return a map of builtin function names to their parameter names.
+    /// Used by codegen to resolve named arguments.
+    pub fn builtin_param_names(&self) -> HashMap<String, Vec<String>> {
+        self.builtins.iter()
+            .map(|(name, b)| (name.clone(), b.param_names.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
     fn register_builtins(&mut self) {
         self.builtins.insert("Path".into(), BuiltinFn {
+            param_names: vec![],
             params: vec![],
             ret: PdcType::PathHandle,
             takes_ctx: true,
@@ -110,33 +187,39 @@ impl TypeChecker {
 
         for name in &["move_to", "line_to"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["path", "x", "y"],
                 params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64],
                 ret: PdcType::Void,
                 takes_ctx: true,
             });
         }
         self.builtins.insert("quad_to".into(), BuiltinFn {
+            param_names: vec!["path", "cx", "cy", "x", "y"],
             params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("cubic_to".into(), BuiltinFn {
+            param_names: vec!["path", "c1x", "c1y", "c2x", "c2y", "x", "y"],
             params: vec![PdcType::PathHandle, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("close".into(), BuiltinFn {
+            param_names: vec!["path"],
             params: vec![PdcType::PathHandle],
             ret: PdcType::Void,
             takes_ctx: true,
         });
 
         self.builtins.insert("fill".into(), BuiltinFn {
+            param_names: vec!["path", "color"],
             params: vec![PdcType::PathHandle, PdcType::U32],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("stroke".into(), BuiltinFn {
+            param_names: vec!["path", "width", "color"],
             params: vec![PdcType::PathHandle, PdcType::F32, PdcType::U32],
             ret: PdcType::Void,
             takes_ctx: true,
@@ -147,21 +230,25 @@ impl TypeChecker {
         // Note: MethodCall path has type-aware handling for generic arrays.
         let arr_ty = PdcType::Array(Box::new(PdcType::F64));
         self.builtins.insert("push".into(), BuiltinFn {
+            param_names: vec!["arr", "val"],
             params: vec![arr_ty.clone(), PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("len".into(), BuiltinFn {
+            param_names: vec!["arr"],
             params: vec![arr_ty.clone()],
             ret: PdcType::I32,
             takes_ctx: true,
         });
         self.builtins.insert("get".into(), BuiltinFn {
+            param_names: vec!["arr", "index"],
             params: vec![arr_ty.clone(), PdcType::I32],
             ret: PdcType::F64,
             takes_ctx: true,
         });
         self.builtins.insert("set".into(), BuiltinFn {
+            param_names: vec!["arr", "index", "val"],
             params: vec![arr_ty.clone(), PdcType::I32, PdcType::F64],
             ret: PdcType::Void,
             takes_ctx: true,
@@ -169,11 +256,13 @@ impl TypeChecker {
 
         // Styled draw overloads
         self.builtins.insert("fill_styled".into(), BuiltinFn {
+            param_names: vec!["path", "color", "rule"],
             params: vec![PdcType::PathHandle, PdcType::U32, PdcType::I32],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("stroke_styled".into(), BuiltinFn {
+            param_names: vec!["path", "width", "color", "cap", "join"],
             params: vec![PdcType::PathHandle, PdcType::F32, PdcType::U32, PdcType::I32, PdcType::I32],
             ret: PdcType::Void,
             takes_ctx: true,
@@ -243,6 +332,7 @@ impl TypeChecker {
 
         for name in &["sin", "cos", "tan", "asin", "acos", "atan", "sqrt", "abs", "floor", "ceil", "round", "exp", "ln", "log2", "log10", "fract", "exp2"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["x"],
                 params: vec![PdcType::F64],
                 ret: PdcType::F64,
                 takes_ctx: false,
@@ -250,6 +340,7 @@ impl TypeChecker {
         }
         for name in &["min", "max", "atan2", "fmod", "pow"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["a", "b"],
                 params: vec![PdcType::F64, PdcType::F64],
                 ret: PdcType::F64,
                 takes_ctx: false,
@@ -259,28 +350,33 @@ impl TypeChecker {
         // Pipeline host functions
         // Buffer methods
         self.builtins.insert("display_buffer".into(), BuiltinFn {
+            param_names: vec!["buffer"],
             params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown))],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("swap".into(), BuiltinFn {
+            param_names: vec!["a", "b"],
             params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::BufferHandle(Box::new(PdcType::Unknown))],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         // Kernel methods
         self.builtins.insert("run".into(), BuiltinFn {
+            param_names: vec!["kernel"],
             params: vec![PdcType::KernelHandle],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("render".into(), BuiltinFn {
+            param_names: vec!["kernel", "buffer", "clear"],
             params: vec![PdcType::KernelHandle, PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::Bool],
             ret: PdcType::Bool,
             takes_ctx: true,
         });
         // display()
         self.builtins.insert("display".into(), BuiltinFn {
+            param_names: vec![],
             params: vec![],
             ret: PdcType::Void,
             takes_ctx: true,
@@ -288,6 +384,7 @@ impl TypeChecker {
 
         // Texture(name: string, path: string) -> TextureHandle
         self.builtins.insert("Texture".into(), BuiltinFn {
+            param_names: vec!["name", "path"],
             params: vec![PdcType::Str, PdcType::Str],
             ret: PdcType::TextureHandle,
             takes_ctx: true,
@@ -295,6 +392,7 @@ impl TypeChecker {
 
         // Scene(name: string, path: string) -> SceneHandle
         self.builtins.insert("Scene".into(), BuiltinFn {
+            param_names: vec!["name", "path"],
             params: vec![PdcType::Str, PdcType::Str],
             ret: PdcType::SceneHandle,
             takes_ctx: true,
@@ -306,6 +404,7 @@ impl TypeChecker {
 
         for name in &["set_keypress", "set_keydown", "set_keyup"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["key", "handler"],
                 params: vec![key_ty.clone(), handler_ty.clone()],
                 ret: PdcType::Void,
                 takes_ctx: true,
@@ -313,6 +412,7 @@ impl TypeChecker {
         }
         for name in &["clear_keypress", "clear_keydown", "clear_keyup"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["key"],
                 params: vec![key_ty.clone()],
                 ret: PdcType::Void,
                 takes_ctx: true,
@@ -320,6 +420,7 @@ impl TypeChecker {
         }
         for name in &["set_mousedown", "set_mouseup", "set_click"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec!["handler"],
                 params: vec![handler_ty.clone()],
                 ret: PdcType::Void,
                 takes_ctx: true,
@@ -327,6 +428,7 @@ impl TypeChecker {
         }
         for name in &["clear_mousedown", "clear_mouseup", "clear_click"] {
             self.builtins.insert(name.to_string(), BuiltinFn {
+                param_names: vec![],
                 params: vec![],
                 ret: PdcType::Void,
                 takes_ctx: true,
@@ -1136,18 +1238,23 @@ impl TypeChecker {
                 let has_named_args = arg_names.iter().any(|n| n.is_some());
                 if has_named_args {
                     if let Some(info) = self.structs.get(name).cloned() {
-                        // Struct construction
-                        for (i, arg) in args.iter().enumerate() {
-                            let val_ty = self.check_expr(arg)?;
-                            let fname = arg_names[i].as_ref().unwrap();
-                            let expected = info.fields.iter()
-                                .find(|(n, _)| n == fname)
-                                .map(|(_, t)| t.clone())
-                                .ok_or_else(|| PdcError::Type {
-                                    span: arg.span,
-                                    message: format!("struct '{name}' has no field '{fname}'"),
-                                })?;
-                            self.check_compatible(&val_ty, &expected, arg.span)?;
+                        // Struct construction with mixed positional + named args
+                        let field_names: Vec<String> = info.fields.iter().map(|(n, _)| n.clone()).collect();
+                        let perm = resolve_named_args(arg_names, &field_names, name, expr.span)?;
+                        if args.len() != info.fields.len() {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!(
+                                    "struct '{name}' has {} fields, got {} arguments",
+                                    info.fields.len(), args.len(),
+                                ),
+                            });
+                        }
+                        for (param_pos, opt_arg_idx) in perm.iter().enumerate() {
+                            let arg_idx = opt_arg_idx.unwrap(); // all struct fields required
+                            let val_ty = self.check_expr(&args[arg_idx])?;
+                            let expected = &info.fields[param_pos].1;
+                            self.check_compatible(&val_ty, expected, args[arg_idx].span)?;
                         }
                         self.set_type(expr.id, PdcType::Struct(name.clone()));
                         return Ok(PdcType::Struct(name.clone()));
@@ -1292,16 +1399,51 @@ impl TypeChecker {
                     // function if there's an exact type match — otherwise the builtin's
                     // coercion semantics should apply.
                     let has_builtin = self.builtins.contains_key(name.as_str());
+
+                    // When named args are present, resolve the permutation so we
+                    // can check args in parameter order.
+                    let perm: Option<Vec<Option<usize>>> = if has_named_args {
+                        // Get param_names from the best available source
+                        let param_names: Option<Vec<String>> =
+                            self.user_fns.get(name.as_str())
+                                .and_then(|o| o.sigs.first())
+                                .map(|s| s.param_names.clone())
+                            .or_else(|| self.builtins.get(name.as_str())
+                                .map(|b| b.param_names.iter().map(|s| s.to_string()).collect()));
+                        if let Some(pnames) = param_names {
+                            Some(resolve_named_args(arg_names, &pnames, name, expr.span)?)
+                        } else {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!("undefined function '{name}'"),
+                            });
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Helper: get the arg index for param position i
+                    // With named args, use the permutation; without, identity mapping
+                    let arg_for_param = |param_pos: usize| -> usize {
+                        if let Some(ref p) = perm {
+                            p[param_pos].unwrap_or(param_pos)
+                        } else {
+                            param_pos
+                        }
+                    };
+
                     let user_result = if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
                         let hints: Option<Vec<PdcType>> = if overloads.sigs.len() == 1 {
                             Some(overloads.sigs[0].params.clone())
                         } else {
                             None
                         };
-                        let mut arg_types = Vec::new();
-                        for (i, arg) in args.iter().enumerate() {
-                            let hint = hints.as_ref().and_then(|h| h.get(i));
-                            arg_types.push(self.check_expr_with_hint(arg, hint)?);
+                        // Build arg_types in parameter order
+                        let mut arg_types = vec![PdcType::Unknown; args.len()];
+                        for param_pos in 0..args.len() {
+                            let ai = arg_for_param(param_pos);
+                            let hint = hints.as_ref().and_then(|h| h.get(param_pos));
+                            arg_types[param_pos] = self.check_expr_with_hint(&args[ai], hint)?;
                         }
                         let sig = if has_builtin {
                             // Only exact matches when there's a builtin fallback
@@ -1310,8 +1452,9 @@ impl TypeChecker {
                             self.resolve_overload(&overloads, &arg_types)
                         };
                         if let Some(sig) = sig {
-                            for (i, arg) in args.iter().enumerate() {
-                                self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                            for param_pos in 0..args.len() {
+                                let ai = arg_for_param(param_pos);
+                                self.check_compatible(&arg_types[param_pos], &sig.params[param_pos], args[ai].span)?;
                             }
                             Some(sig.ret)
                         } else {
@@ -1336,16 +1479,18 @@ impl TypeChecker {
                                 ),
                             });
                         }
-                        for (i, arg) in args.iter().enumerate() {
-                            let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i]))?;
-                            self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
+                        for param_pos in 0..args.len() {
+                            let ai = arg_for_param(param_pos);
+                            let arg_ty = self.check_expr_with_hint(&args[ai], Some(&expected_params[param_pos]))?;
+                            self.check_compatible(&arg_ty, &expected_params[param_pos], args[ai].span)?;
                         }
                         ret
                     } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
                         // No builtin — try full overload resolution (with coercion)
-                        let mut arg_types = Vec::new();
-                        for arg in args.iter() {
-                            arg_types.push(self.check_expr(arg)?);
+                        let mut arg_types = vec![PdcType::Unknown; args.len()];
+                        for param_pos in 0..args.len() {
+                            let ai = arg_for_param(param_pos);
+                            arg_types[param_pos] = self.check_expr(&args[ai])?;
                         }
                         let sig = self.resolve_overload(&overloads, &arg_types)
                             .ok_or_else(|| PdcError::Type {
@@ -1355,8 +1500,9 @@ impl TypeChecker {
                                     arg_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "),
                                 ),
                             })?;
-                        for (i, arg) in args.iter().enumerate() {
-                            self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                        for param_pos in 0..args.len() {
+                            let ai = arg_for_param(param_pos);
+                            self.check_compatible(&arg_types[param_pos], &sig.params[param_pos], args[ai].span)?;
                         }
                         sig.ret
                     } else {
@@ -2070,6 +2216,7 @@ impl TypeChecker {
             .map(|p| p.default.clone().unwrap())
             .collect();
         UserFnSig {
+            param_names: fndef.params.iter().map(|p| p.name.clone()).collect(),
             params: fndef.params.iter().map(|p| self.resolve_type(&p.ty)).collect(),
             ret: self.resolve_type(&fndef.return_type),
             required,
@@ -2562,8 +2709,73 @@ mod tests {
             }
             var p = Point(x: 1.0, z: 2.0)
             "#,
-            "has no field 'z'",
+            "no parameter named 'z'",
         );
+    }
+
+    // ── Named function arguments ──
+
+    #[test]
+    fn named_args_user_fn_all_named() {
+        check_ok(r#"
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+            var r = add(a: 1.0, b: 2.0)
+        "#);
+    }
+
+    #[test]
+    fn named_args_user_fn_mixed() {
+        check_ok(r#"
+            fn add(a: f64, b: f64, c: f64) -> f64 { return a + b + c }
+            var r = add(1.0, c: 3.0, b: 2.0)
+        "#);
+    }
+
+    #[test]
+    fn named_args_user_fn_out_of_order() {
+        check_ok(r#"
+            fn sub(a: f64, b: f64) -> f64 { return a - b }
+            var r = sub(b: 1.0, a: 10.0)
+        "#);
+    }
+
+    #[test]
+    fn named_args_builtin_fn() {
+        check_ok(r#"
+            var r = min(b: 3.0, a: 1.0)
+        "#);
+    }
+
+    #[test]
+    fn named_args_struct_mixed() {
+        check_ok(r#"
+            struct Point { x: f64, y: f64 }
+            var p = Point(1.0, y: 2.0)
+        "#);
+    }
+
+    #[test]
+    fn err_named_args_unknown_param() {
+        check_err(r#"
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+            var r = add(a: 1.0, c: 2.0)
+        "#, "no parameter named 'c'");
+    }
+
+    #[test]
+    fn err_named_args_duplicate() {
+        check_err(r#"
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+            var r = add(a: 1.0, a: 2.0)
+        "#, "duplicate named argument 'a'");
+    }
+
+    #[test]
+    fn err_named_args_conflicts_positional() {
+        check_err(r#"
+            fn add(a: f64, b: f64) -> f64 { return a + b }
+            var r = add(1.0, a: 2.0)
+        "#, "conflicts with positional");
     }
 
     // ── Error cases: type mismatch in binary ops ──
