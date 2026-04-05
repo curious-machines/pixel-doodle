@@ -1224,13 +1224,32 @@ impl PdcRuntime {
         height: u32,
         base_dir: &Path,
     ) -> Result<Self, String> {
+        // Default codegen backend based on compiled-in features
+        let codegen_backend = if cfg!(feature = "cranelift-backend") {
+            "cranelift"
+        } else {
+            "llvm"
+        };
+        Self::new_with_codegen(source, source_path, width, height, base_dir, codegen_backend)
+    }
+
+    /// Create a new PDC pipeline runtime with an explicit codegen backend.
+    pub fn new_with_codegen(
+        source: &str,
+        source_path: Option<&Path>,
+        width: u32,
+        height: u32,
+        base_dir: &Path,
+        codegen_backend: &str,
+    ) -> Result<Self, String> {
         let builtins_layout: Vec<(&str, pdc::ast::PdcType)> =
             PIPELINE_BUILTINS.to_vec();
 
-        let (compiled, state_layout) = pdc::compile_only_with_builtins(
+        let (compiled, state_layout) = pdc::compile_only_with_builtins_and_codegen(
             source,
             source_path,
             &builtins_layout,
+            codegen_backend,
         ).map_err(|e| e.format(source))?;
 
         let state_block = state_layout.alloc();

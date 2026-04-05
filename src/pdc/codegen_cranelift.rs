@@ -313,10 +313,11 @@ pub fn compile(
             type_aliases,
         };
 
-        // Define parameters as variables
+        // Define parameters as variables (resolve type aliases)
         for (i, param) in fndef.params.iter().enumerate() {
             let val = cg.builder.block_params(entry)[i + 1]; // +1 for ctx_ptr
-            let var = cg.new_variable(&param.name, &param.ty);
+            let resolved_ty = resolve_type(&param.ty, type_aliases);
+            let var = cg.new_variable(&param.name, &resolved_ty);
             cg.builder.def_var(var, val);
         }
 

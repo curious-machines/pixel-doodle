@@ -199,13 +199,34 @@ fn run_pdc(source: &ConfigSource, args: &CliArgs) {
         .to_path_buf();
     let source_path = std::path::Path::new(path.as_str());
 
+    // Determine codegen backend before compilation so PDC uses the right backend.
+    // Check --set overrides and .pds file for codegen setting.
+    let codegen_backend = {
+        let mut backend = None;
+        if let Some(ref pds_path) = args.settings_file {
+            if let Ok(pds_src) = std::fs::read_to_string(pds_path) {
+                for (k, v) in parse_pds(&pds_src) {
+                    if k == "codegen" { backend = Some(v); }
+                }
+            }
+        }
+        for (k, v) in &args.set_overrides {
+            if k == "codegen" { backend = Some(v.clone()); }
+        }
+        backend.unwrap_or_else(|| {
+            if cfg!(feature = "cranelift-backend") { "cranelift".to_string() }
+            else { "llvm".to_string() }
+        })
+    };
+
     let compile_start = Instant::now();
-    let mut runtime = pixel_doodle::pdc::pipeline_runtime::PdcRuntime::new(
+    let mut runtime = pixel_doodle::pdc::pipeline_runtime::PdcRuntime::new_with_codegen(
         &src,
         Some(source_path),
         WIDTH,
         HEIGHT,
         &base_dir,
+        &codegen_backend,
     )
     .unwrap_or_else(|e| {
         eprintln!("PDC compile error in '{}':\n{}", path, e);
@@ -224,7 +245,7 @@ fn run_pdc(source: &ConfigSource, args: &CliArgs) {
         runtime.apply_overrides(&pds_overrides);
     }
 
-    // Apply --set CLI overrides
+    // Apply --set CLI overrides (render, threads, etc. — codegen already applied above)
     runtime.apply_overrides(&args.set_overrides);
 
     // Apply --threads CLI override

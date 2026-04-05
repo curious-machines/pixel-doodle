@@ -12,7 +12,7 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 // Change to f32 to compare performance (halves memory bandwidth)
-type real = f64
+type real = f32
 
 // Simulation state: separate buffers for each field component
 var vx = Buffer<real>()

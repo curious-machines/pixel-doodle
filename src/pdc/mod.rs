@@ -534,23 +534,37 @@ pub fn compile_only_with_builtins(
     source_path: Option<&FsPath>,
     builtins_layout: &[(&str, ast::PdcType)],
 ) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
+    compile_only_with_builtins_and_codegen(source, source_path, builtins_layout, "default")
+}
+
+/// Like `compile_only_with_builtins`, but with an explicit codegen backend.
+pub fn compile_only_with_builtins_and_codegen(
+    source: &str,
+    source_path: Option<&FsPath>,
+    builtins_layout: &[(&str, ast::PdcType)],
+    codegen_backend: &str,
+) -> Result<(codegen::CompiledProgram, codegen::StateLayout), PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
     let program = load_and_parse(source, base_dir)?;
     // No DCE — we want all functions available for testing
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
 
-    codegen::compile(
-        &program,
-        &checker.types,
-        builtins_layout,
-        &checker.user_fns,
-        &checker.structs,
-        &checker.enums,
-        &checker.fn_aliases,
-        &checker.op_overloads,
-        &checker.type_aliases,
-    )
+    let args = (
+        &program, &checker.types as &[_], builtins_layout,
+        &checker.user_fns, &checker.structs, &checker.enums,
+        &checker.fn_aliases, &checker.op_overloads, &checker.type_aliases,
+    );
+
+    match codegen_backend {
+        #[cfg(feature = "llvm-backend")]
+        "llvm" => codegen_llvm::compile(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+        ),
+        _ => codegen::compile(
+            args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, args.8,
+        ),
+    }
 }
 
 /// Compile and evaluate a PDC expression, returning its value.
@@ -616,6 +630,7 @@ pub fn compile_for_pipeline(
 pub fn compile_for_pipeline_with_codegen(
     source: &str,
     source_path: Option<&FsPath>,
+    builtins_layout: &[(&str, ast::PdcType)],
     codegen_backend: &str,
 ) -> Result<(codegen::CompiledProgram, codegen::StateLayout), error::PdcError> {
     let base_dir = source_path.and_then(|p| p.parent());
@@ -626,11 +641,6 @@ pub fn compile_for_pipeline_with_codegen(
 
     let mut checker = type_check::TypeChecker::new();
     checker.check_program(&program)?;
-
-    let builtins_layout: Vec<(&str, ast::PdcType)> = vec![
-        ("width", ast::PdcType::F32),
-        ("height", ast::PdcType::F32),
-    ];
 
     match codegen_backend {
         #[cfg(feature = "cranelift-backend")]
