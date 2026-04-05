@@ -119,8 +119,8 @@ impl std::fmt::Display for PdcType {
 
 #[derive(Debug, Clone)]
 pub enum Literal {
-    Int(i64),
-    Float(f64),
+    Int(i64, Option<PdcType>),
+    Float(f64, Option<PdcType>),
     Bool(bool),
     String(String),
 }

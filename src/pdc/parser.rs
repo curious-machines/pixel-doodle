@@ -1,7 +1,22 @@
 use super::ast::*;
 use super::error::PdcError;
 use super::span::{IdAlloc, Span, Spanned};
-use super::token::{Token, TokenKind};
+use super::token::{NumericSuffix, Token, TokenKind};
+
+fn suffix_to_type(suffix: Option<NumericSuffix>) -> Option<PdcType> {
+    suffix.map(|s| match s {
+        NumericSuffix::I8 => PdcType::I8,
+        NumericSuffix::I16 => PdcType::I16,
+        NumericSuffix::I32 => PdcType::I32,
+        NumericSuffix::I64 => PdcType::I64,
+        NumericSuffix::U8 => PdcType::U8,
+        NumericSuffix::U16 => PdcType::U16,
+        NumericSuffix::U32 => PdcType::U32,
+        NumericSuffix::U64 => PdcType::U64,
+        NumericSuffix::F32 => PdcType::F32,
+        NumericSuffix::F64 => PdcType::F64,
+    })
+}
 
 pub fn parse(tokens: Vec<Token>, ids: &mut IdAlloc) -> Result<Vec<Spanned<Stmt>>, PdcError> {
     let mut parser = Parser::new(tokens, ids);
@@ -1136,7 +1151,7 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     // Tuple index access: expr.0, expr.1
-                    if let TokenKind::IntLit(idx) = self.peek().clone() {
+                    if let TokenKind::IntLit(idx, _) = self.peek().clone() {
                         self.advance();
                         let span = Span::new(
                             expr.span.start,
@@ -1207,13 +1222,13 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) -> Result<Spanned<Expr>, PdcError> {
         let start = self.span();
         match self.peek().clone() {
-            TokenKind::IntLit(val) => {
+            TokenKind::IntLit(val, suffix) => {
                 self.advance();
-                Ok(self.ids.spanned(Expr::Literal(Literal::Int(val)), start))
+                Ok(self.ids.spanned(Expr::Literal(Literal::Int(val, suffix_to_type(suffix))), start))
             }
-            TokenKind::FloatLit(val) => {
+            TokenKind::FloatLit(val, suffix) => {
                 self.advance();
-                Ok(self.ids.spanned(Expr::Literal(Literal::Float(val)), start))
+                Ok(self.ids.spanned(Expr::Literal(Literal::Float(val, suffix_to_type(suffix))), start))
             }
             TokenKind::BoolLit(val) => {
                 self.advance();

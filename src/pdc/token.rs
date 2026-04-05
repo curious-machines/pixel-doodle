@@ -1,10 +1,47 @@
 use super::span::Span;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NumericSuffix {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+}
+
+impl NumericSuffix {
+    /// Parse a suffix string into a NumericSuffix, if valid.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "i8" => Some(Self::I8),
+            "i16" => Some(Self::I16),
+            "i32" => Some(Self::I32),
+            "i64" => Some(Self::I64),
+            "u8" => Some(Self::U8),
+            "u16" => Some(Self::U16),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "f32" => Some(Self::F32),
+            "f64" => Some(Self::F64),
+            _ => None,
+        }
+    }
+
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
-    IntLit(i64),
-    FloatLit(f64),
+    IntLit(i64, Option<NumericSuffix>),
+    FloatLit(f64, Option<NumericSuffix>),
     BoolLit(bool),
     StringLit(String),
 

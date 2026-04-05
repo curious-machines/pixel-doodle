@@ -2344,12 +2344,12 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let ty = self.node_type(id);
         let cl = pdc_type_to_cl(ty, self.pointer_type);
         match lit {
-            Literal::Int(v) => match cl {
+            Literal::Int(v, _) => match cl {
                 F32 => Ok(self.builder.ins().f32const(*v as f32)),
                 F64 => Ok(self.builder.ins().f64const(*v as f64)),
                 _ => Ok(self.builder.ins().iconst(cl, *v)),
             },
-            Literal::Float(v) => match cl {
+            Literal::Float(v, _) => match cl {
                 F32 => Ok(self.builder.ins().f32const(*v as f32)),
                 _ => Ok(self.builder.ins().f64const(*v)),
             },

@@ -1043,8 +1043,10 @@ impl TypeChecker {
     fn check_expr(&mut self, expr: &Spanned<Expr>) -> Result<PdcType, PdcError> {
         let ty = match &expr.node {
             Expr::Literal(lit) => match lit {
-                Literal::Int(v) => {
-                    if *v < 0 || *v <= i32::MAX as i64 {
+                Literal::Int(v, suffix_ty) => {
+                    if let Some(ty) = suffix_ty {
+                        ty.clone()
+                    } else if *v < 0 || *v <= i32::MAX as i64 {
                         PdcType::I32
                     } else if *v <= u32::MAX as i64 {
                         PdcType::U32
@@ -1052,7 +1054,13 @@ impl TypeChecker {
                         PdcType::I64
                     }
                 }
-                Literal::Float(_) => PdcType::F64,
+                Literal::Float(_, suffix_ty) => {
+                    if let Some(ty) = suffix_ty {
+                        ty.clone()
+                    } else {
+                        PdcType::F64
+                    }
+                }
                 Literal::Bool(_) => PdcType::Bool,
                 Literal::String(_) => PdcType::Str,
             },

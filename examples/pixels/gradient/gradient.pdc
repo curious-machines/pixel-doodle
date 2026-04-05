@@ -6,7 +6,7 @@ import { pack_rgb } from color
 fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
     var r = x * 255 / (w - 1)
     var b = (w - 1 - x) * 255 / (w - 1)
-    return pack_rgb(i32(r), i32(0), i32(b))
+    return pack_rgb(i32(r), 0i32, i32(b))
 }
 
 fn frame() -> bool {

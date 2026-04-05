@@ -18,9 +18,9 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
     var d = f32(sqrt(f64(px * px + py * py))) - r
 
     // Coloring: warm outside, cool inside
-    var cr = f32(0.0)
-    var cg = f32(0.0)
-    var cb = f32(0.0)
+    var cr = 0.0f32
+    var cg = 0.0f32
+    var cb = 0.0f32
     if d > 0.0 {
         cr = 0.9
         cg = 0.6
@@ -46,10 +46,10 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
     cb = cb * rings
 
     // Edge highlight
-    var edge = 1.0 - smoothstep(f32(0.0), f32(0.01), abs_d)
-    cr = mix(cr, f32(1.0), edge)
-    cg = mix(cg, f32(1.0), edge)
-    cb = mix(cb, f32(1.0), edge)
+    var edge = 1.0 - smoothstep(0.0f32, 0.01f32, abs_d)
+    cr = mix(cr, 1.0f32, edge)
+    cg = mix(cg, 1.0f32, edge)
+    cb = mix(cb, 1.0f32, edge)
 
     return pack_rgb(cr, cg, cb)
 }

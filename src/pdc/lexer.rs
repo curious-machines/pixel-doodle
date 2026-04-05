@@ -1,6 +1,6 @@
 use super::error::PdcError;
 use super::span::Span;
-use super::token::{keyword_lookup, Token, TokenKind};
+use super::token::{keyword_lookup, NumericSuffix, Token, TokenKind};
 
 pub fn lex(source: &str) -> Result<Vec<Token>, PdcError> {
     let mut lexer = Lexer::new(source);
@@ -358,22 +358,52 @@ impl<'a> Lexer<'a> {
                 }
             }
 
-            let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
+            let num_end = self.pos;
+            let suffix = self.lex_numeric_suffix(start)?;
+
+            // Float literals cannot have integer suffixes
+            if let Some(ref s) = suffix {
+                if !s.is_float() {
+                    return Err(self.err(start, format!(
+                        "float literal cannot have integer suffix '{:?}'",
+                        s
+                    )));
+                }
+            }
+
+            let text = std::str::from_utf8(&self.source[start..num_end]).unwrap();
             let val: f64 = text
                 .parse()
                 .map_err(|_| self.err(start, format!("invalid float literal '{text}'")))?;
             return Ok(Token {
-                kind: TokenKind::FloatLit(val),
+                kind: TokenKind::FloatLit(val, suffix),
                 span: self.span_from(start),
             });
         }
 
-        let text = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
+        let num_end = self.pos;
+        let suffix = self.lex_numeric_suffix(start)?;
+
+        let text = std::str::from_utf8(&self.source[start..num_end]).unwrap();
+
+        // Integer literal with float suffix becomes a FloatLit
+        if let Some(ref s) = suffix {
+            if s.is_float() {
+                let val: f64 = text
+                    .parse()
+                    .map_err(|_| self.err(start, format!("invalid numeric literal '{text}'")))?;
+                return Ok(Token {
+                    kind: TokenKind::FloatLit(val, suffix),
+                    span: self.span_from(start),
+                });
+            }
+        }
+
         let val: i64 = text
             .parse()
             .map_err(|_| self.err(start, format!("invalid integer literal '{text}'")))?;
         Ok(Token {
-            kind: TokenKind::IntLit(val),
+            kind: TokenKind::IntLit(val, suffix),
             span: self.span_from(start),
         })
     }
@@ -413,6 +443,51 @@ impl<'a> Lexer<'a> {
         })
     }
 
+    /// Try to consume a numeric type suffix (u8, u32, f32, etc.) after a number literal.
+    fn lex_numeric_suffix(&mut self, start: usize) -> Result<Option<NumericSuffix>, PdcError> {
+        // Check if the next character could start a suffix (f, i, u)
+        let first = match self.peek() {
+            Some(b'f' | b'i' | b'u') => self.source[self.pos] as char,
+            _ => return Ok(None),
+        };
+
+        // Peek ahead to collect potential suffix characters (letters + digits)
+        let suffix_start = self.pos;
+        let mut suffix_end = self.pos + 1;
+        while suffix_end < self.source.len() && (self.source[suffix_end].is_ascii_alphanumeric() || self.source[suffix_end] == b'_') {
+            suffix_end += 1;
+        }
+
+        let candidate = std::str::from_utf8(&self.source[suffix_start..suffix_end]).unwrap();
+
+        // Only consume if it's a valid numeric suffix — otherwise leave it as an identifier
+        if let Some(suffix) = NumericSuffix::from_str(candidate) {
+            // Make sure the suffix isn't part of a longer identifier (e.g., `42u8foo`)
+            if suffix_end < self.source.len() && (self.source[suffix_end].is_ascii_alphanumeric() || self.source[suffix_end] == b'_') {
+                return Err(self.err(start, format!(
+                    "invalid suffix '{}' on numeric literal",
+                    std::str::from_utf8(&self.source[suffix_start..suffix_end + 1]).unwrap_or("?")
+                )));
+            }
+            // Consume the suffix
+            while self.pos < suffix_end {
+                self.advance();
+            }
+            Ok(Some(suffix))
+        } else {
+            // Not a valid suffix — could be something like `42if` which should be
+            // the number 42 followed by the keyword `if`. Don't consume.
+            // But first check: if it starts with a suffix letter followed by digits,
+            // it might be a typo like `u33` — error on that.
+            if matches!(first, 'f' | 'i' | 'u') && candidate.len() >= 2 && candidate[1..].chars().all(|c| c.is_ascii_digit()) {
+                return Err(self.err(start, format!(
+                    "invalid numeric suffix '{candidate}' (valid suffixes: i8, i16, i32, i64, u8, u16, u32, u64, f32, f64)"
+                )));
+            }
+            Ok(None)
+        }
+    }
+
     fn lex_hex(&mut self, start: usize) -> Result<Token, PdcError> {
         let hex_start = self.pos;
         while let Some(ch) = self.peek() {
@@ -432,9 +507,20 @@ impl<'a> Lexer<'a> {
         let val = u64::from_str_radix(hex_text, 16)
             .map_err(|_| self.err(start, format!("invalid hex literal '0x{hex_text}'")))?;
 
+        let suffix = self.lex_numeric_suffix(start)?;
+
+        // Hex literals with float suffix don't make sense
+        if let Some(ref s) = suffix {
+            if s.is_float() {
+                return Err(self.err(start, format!(
+                    "hex literal cannot have float suffix '{:?}'", s
+                )));
+            }
+        }
+
         // Store as i64 (the type checker will determine the actual type)
         Ok(Token {
-            kind: TokenKind::IntLit(val as i64),
+            kind: TokenKind::IntLit(val as i64, suffix),
             span: self.span_from(start),
         })
     }
@@ -473,32 +559,32 @@ mod tests {
 
     #[test]
     fn integer_zero() {
-        assert_eq!(single("0"), TokenKind::IntLit(0));
+        assert_eq!(single("0"), TokenKind::IntLit(0, None));
     }
 
     #[test]
     fn integer_positive() {
-        assert_eq!(single("42"), TokenKind::IntLit(42));
+        assert_eq!(single("42"), TokenKind::IntLit(42, None));
     }
 
     #[test]
     fn integer_large() {
-        assert_eq!(single("2147483647"), TokenKind::IntLit(2147483647));
+        assert_eq!(single("2147483647"), TokenKind::IntLit(2147483647, None));
     }
 
     #[test]
     fn hex_literal() {
-        assert_eq!(single("0xFF"), TokenKind::IntLit(0xFF));
+        assert_eq!(single("0xFF"), TokenKind::IntLit(0xFF, None));
     }
 
     #[test]
     fn hex_uppercase() {
-        assert_eq!(single("0XAB"), TokenKind::IntLit(0xAB));
+        assert_eq!(single("0XAB"), TokenKind::IntLit(0xAB, None));
     }
 
     #[test]
     fn hex_large() {
-        assert_eq!(single("0xDEADBEEF"), TokenKind::IntLit(0xDEADBEEFu64 as i64));
+        assert_eq!(single("0xDEADBEEF"), TokenKind::IntLit(0xDEADBEEFu64 as i64, None));
     }
 
     #[test]
@@ -515,33 +601,33 @@ mod tests {
 
     #[test]
     fn float_simple() {
-        assert_eq!(single("3.14"), TokenKind::FloatLit(3.14));
+        assert_eq!(single("3.14"), TokenKind::FloatLit(3.14, None));
     }
 
     #[test]
     fn float_leading_zero() {
-        assert_eq!(single("0.5"), TokenKind::FloatLit(0.5));
+        assert_eq!(single("0.5"), TokenKind::FloatLit(0.5, None));
     }
 
     #[test]
     fn float_scientific() {
-        assert_eq!(single("1.0e5"), TokenKind::FloatLit(1.0e5));
+        assert_eq!(single("1.0e5"), TokenKind::FloatLit(1.0e5, None));
     }
 
     #[test]
     fn float_scientific_negative_exp() {
-        assert_eq!(single("2.5e-3"), TokenKind::FloatLit(2.5e-3));
+        assert_eq!(single("2.5e-3"), TokenKind::FloatLit(2.5e-3, None));
     }
 
     #[test]
     fn float_scientific_positive_exp() {
-        assert_eq!(single("1.0E+2"), TokenKind::FloatLit(1.0e+2));
+        assert_eq!(single("1.0E+2"), TokenKind::FloatLit(1.0e+2, None));
     }
 
     #[test]
     fn float_no_fractional_digits() {
         // "1." followed by non-digit — should parse as 1.0
-        assert_eq!(single("1.0"), TokenKind::FloatLit(1.0));
+        assert_eq!(single("1.0"), TokenKind::FloatLit(1.0, None));
     }
 
     // ---- Integer vs range disambiguation ----
@@ -550,7 +636,7 @@ mod tests {
     fn integer_before_range() {
         // "0..10" should lex as IntLit(0), DotDot, IntLit(10)
         let k = kinds("0..10");
-        assert_eq!(k, vec![TokenKind::IntLit(0), TokenKind::DotDot, TokenKind::IntLit(10)]);
+        assert_eq!(k, vec![TokenKind::IntLit(0, None), TokenKind::DotDot, TokenKind::IntLit(10, None)]);
     }
 
     // ---- String literals ----
@@ -730,18 +816,18 @@ mod tests {
 
     #[test]
     fn line_comment_skipped() {
-        assert_eq!(kinds("42 // this is a comment"), vec![TokenKind::IntLit(42)]);
+        assert_eq!(kinds("42 // this is a comment"), vec![TokenKind::IntLit(42, None)]);
     }
 
     #[test]
     fn block_comment_skipped() {
-        assert_eq!(kinds("42 /* block */ 7"), vec![TokenKind::IntLit(42), TokenKind::IntLit(7)]);
+        assert_eq!(kinds("42 /* block */ 7"), vec![TokenKind::IntLit(42, None), TokenKind::IntLit(7, None)]);
     }
 
     #[test]
     fn nested_block_comment() {
         assert_eq!(kinds("1 /* outer /* inner */ still comment */ 2"),
-            vec![TokenKind::IntLit(1), TokenKind::IntLit(2)]);
+            vec![TokenKind::IntLit(1, None), TokenKind::IntLit(2, None)]);
     }
 
     #[test]
@@ -770,7 +856,7 @@ mod tests {
 
     #[test]
     fn adjacent_tokens_no_whitespace() {
-        assert_eq!(kinds("123abc"), vec![TokenKind::IntLit(123), TokenKind::Ident("abc".to_string())]);
+        assert_eq!(kinds("123abc"), vec![TokenKind::IntLit(123, None), TokenKind::Ident("abc".to_string())]);
     }
 
     #[test]
@@ -799,7 +885,7 @@ mod tests {
         assert_eq!(k, vec![
             TokenKind::Ident("x".to_string()),
             TokenKind::Plus,
-            TokenKind::FloatLit(3.0),
+            TokenKind::FloatLit(3.0, None),
             TokenKind::Star,
             TokenKind::Ident("y".to_string()),
         ]);
@@ -815,6 +901,140 @@ mod tests {
     #[test]
     fn unexpected_character_backtick() {
         lex_err("`", "unexpected character");
+    }
+
+    // ---- Numeric suffixes ----
+
+    #[test]
+    fn int_suffix_u8() {
+        assert_eq!(single("255u8"), TokenKind::IntLit(255, Some(NumericSuffix::U8)));
+    }
+
+    #[test]
+    fn int_suffix_u16() {
+        assert_eq!(single("1000u16"), TokenKind::IntLit(1000, Some(NumericSuffix::U16)));
+    }
+
+    #[test]
+    fn int_suffix_u32() {
+        assert_eq!(single("42u32"), TokenKind::IntLit(42, Some(NumericSuffix::U32)));
+    }
+
+    #[test]
+    fn int_suffix_u64() {
+        assert_eq!(single("100u64"), TokenKind::IntLit(100, Some(NumericSuffix::U64)));
+    }
+
+    #[test]
+    fn int_suffix_i8() {
+        assert_eq!(single("127i8"), TokenKind::IntLit(127, Some(NumericSuffix::I8)));
+    }
+
+    #[test]
+    fn int_suffix_i16() {
+        assert_eq!(single("500i16"), TokenKind::IntLit(500, Some(NumericSuffix::I16)));
+    }
+
+    #[test]
+    fn int_suffix_i32() {
+        assert_eq!(single("42i32"), TokenKind::IntLit(42, Some(NumericSuffix::I32)));
+    }
+
+    #[test]
+    fn int_suffix_i64() {
+        assert_eq!(single("42i64"), TokenKind::IntLit(42, Some(NumericSuffix::I64)));
+    }
+
+    #[test]
+    fn int_with_float_suffix_f32() {
+        // Integer literal with f32 suffix becomes FloatLit
+        assert_eq!(single("42f32"), TokenKind::FloatLit(42.0, Some(NumericSuffix::F32)));
+    }
+
+    #[test]
+    fn int_with_float_suffix_f64() {
+        assert_eq!(single("42f64"), TokenKind::FloatLit(42.0, Some(NumericSuffix::F64)));
+    }
+
+    #[test]
+    fn float_suffix_f32() {
+        assert_eq!(single("3.14f32"), TokenKind::FloatLit(3.14, Some(NumericSuffix::F32)));
+    }
+
+    #[test]
+    fn float_suffix_f64() {
+        assert_eq!(single("3.14f64"), TokenKind::FloatLit(3.14, Some(NumericSuffix::F64)));
+    }
+
+    #[test]
+    fn float_with_int_suffix_error() {
+        lex_err("3.14u8", "float literal cannot have integer suffix");
+    }
+
+    #[test]
+    fn float_with_i32_suffix_error() {
+        lex_err("1.0i32", "float literal cannot have integer suffix");
+    }
+
+    #[test]
+    fn hex_with_suffix_u8() {
+        assert_eq!(single("0xFFu8"), TokenKind::IntLit(0xFF, Some(NumericSuffix::U8)));
+    }
+
+    #[test]
+    fn hex_with_suffix_u32() {
+        assert_eq!(single("0xDEADu32"), TokenKind::IntLit(0xDEADu64 as i64, Some(NumericSuffix::U32)));
+    }
+
+    #[test]
+    fn hex_with_f_is_hex_digit() {
+        // 'f' is a valid hex digit, so 0xFFf32 is parsed as hex 0xFFf32, not 0xFF with suffix f32
+        assert_eq!(single("0xFFf32"), TokenKind::IntLit(0xFFf32, None));
+    }
+
+    #[test]
+    fn invalid_suffix_error() {
+        lex_err("42u33", "invalid numeric suffix");
+    }
+
+    #[test]
+    fn suffix_not_confused_with_ident() {
+        // `42if` should lex as IntLit(42) + keyword `if`, not a suffix error
+        let k = kinds("42 if");
+        assert_eq!(k, vec![TokenKind::IntLit(42, None), TokenKind::If]);
+    }
+
+    #[test]
+    fn suffix_span_included() {
+        let tokens = lex("42u8").unwrap();
+        // "42u8" is 4 chars, span should be 0..4
+        assert_eq!(tokens[0].span, Span::new(0, 4));
+    }
+
+    #[test]
+    fn zero_with_suffix() {
+        assert_eq!(single("0u8"), TokenKind::IntLit(0, Some(NumericSuffix::U8)));
+    }
+
+    #[test]
+    fn suffix_followed_by_operator() {
+        let k = kinds("42u8 + 1u8");
+        assert_eq!(k, vec![
+            TokenKind::IntLit(42, Some(NumericSuffix::U8)),
+            TokenKind::Plus,
+            TokenKind::IntLit(1, Some(NumericSuffix::U8)),
+        ]);
+    }
+
+    #[test]
+    fn int_before_range_with_suffix() {
+        // "0u32..10u32" should lex correctly
+        let k = kinds("0u32..10u32");
+        assert_eq!(k, vec![
+            TokenKind::IntLit(0, Some(NumericSuffix::U32)),
+            TokenKind::DotDot,
+            TokenKind::IntLit(10, Some(NumericSuffix::U32)),
+        ]);
     }
 
     // ---- Span tracking ----

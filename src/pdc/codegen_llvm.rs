@@ -1784,7 +1784,7 @@ impl<'a> LlvmCodegenCtx<'a> {
     fn emit_literal(&mut self, lit: &Literal, id: u32) -> Result<BasicValueEnum<'static>, PdcError> {
         let ty = self.node_type(id);
         match lit {
-            Literal::Int(v) => {
+            Literal::Int(v, _) => {
                 if ty.is_float() {
                     if *ty == PdcType::F32 {
                         Ok(self.f32_const(*v as f32).into())
@@ -1796,7 +1796,7 @@ impl<'a> LlvmCodegenCtx<'a> {
                     Ok(llvm_ty.const_int(*v as u64, *v < 0).into())
                 }
             }
-            Literal::Float(v) => {
+            Literal::Float(v, _) => {
                 if *ty == PdcType::F32 {
                     Ok(self.f32_const(*v as f32).into())
                 } else {
