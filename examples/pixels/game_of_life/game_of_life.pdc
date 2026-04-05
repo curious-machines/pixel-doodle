@@ -2,12 +2,16 @@
 // Equivalent to examples/sim/game_of_life but written entirely in PDC.
 // Demonstrates multi-pass simulation: init → step → visualize.
 
-import { clamp } from math
+import { register_pause_step } from "../../shared/pause_step"
+import { clamp, min, max } from math
 import { pack_rgb } from color
 
 builtin const width: f32
 builtin const height: f32
+builtin var mouse_x: f64
+builtin var mouse_y: f64
 
+var iterations: i32 = 1
 var grid = Buffer.I32()
 var grid_next = Buffer.I32()
 
@@ -92,17 +96,49 @@ fn vis_cell(x: i32, y: i32, w: i32, h: i32) -> i32 {
     return pack_rgb(0.0f32, 0.0f32, 0.0f32)
 }
 
+// ── Injection kernel: set cells alive within radius ──
+
+var inject_x: f64 = 0.0
+var inject_y: f64 = 0.0
+var inject_radius: f64 = 3.0
+
+fn inject_cell(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    var current = grid[y * w + x]
+    var dx = f64(x) - inject_x
+    var dy = f64(y) - inject_y
+    if dx * dx + dy * dy <= inject_radius * inject_radius {
+        return 1
+    }
+    return current
+}
+
 // ── Pipeline ──
 
 fn init() {
+    register_pause_step()
+    set_keypress(Key.BracketRight, speed_up)
+    set_keypress(Key.BracketLeft, speed_down)
+    set_mousedown(inject_at_mouse)
+
     render(init_cell, grid)
 }
 
 fn frame() -> bool {
-    render(step_cell, grid_next)
-    swap(grid, grid_next)
+    for _i in 0..iterations {
+        render(step_cell, grid_next)
+        swap(grid, grid_next)
+    }
 
     var pixels = render(vis_cell)
     display_buffer(pixels)
     return true
+}
+
+fn speed_up() { iterations = min(8i32, iterations + 1) }
+fn speed_down() { iterations = max(iterations - 1, 1i32) }
+fn inject_at_mouse() {
+    inject_x = mouse_x
+    inject_y = mouse_y
+    render(inject_cell, grid_next)
+    swap(grid, grid_next)
 }

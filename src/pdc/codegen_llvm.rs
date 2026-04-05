@@ -1847,10 +1847,16 @@ impl<'a> LlvmCodegenCtx<'a> {
             let a = self.emit_expr(&args[0])?;
             let b = self.emit_expr(&args[1])?;
             let ty = self.node_type(args[0].id).clone();
-            let runtime_name = match abi_class(&ty) {
-                'd' => "pdc_assert_eq_f64",
-                's' => "pdc_assert_eq_f32",
-                _ => "pdc_assert_eq_i64",
+            let (runtime_name, a, b) = match abi_class(&ty) {
+                'd' => ("pdc_assert_eq_f64", a, b),
+                's' => ("pdc_assert_eq_f32", a, b),
+                _ => {
+                    // Promote smaller integer types to i64
+                    let a = self.convert_value(a, &ty, &PdcType::I64);
+                    let ty_b = self.node_type(args[1].id).clone();
+                    let b = self.convert_value(b, &ty_b, &PdcType::I64);
+                    ("pdc_assert_eq_i64", a, b)
+                }
             };
             return self.emit_runtime_call_raw(runtime_name, &[self.ctx_ptr.into(), a, b], None);
         }
@@ -1887,6 +1893,27 @@ impl<'a> LlvmCodegenCtx<'a> {
             let val = self.emit_expr(&args[0])?;
             let from_ty = self.node_type(args[0].id).clone();
             return Ok(self.convert_value(val, &from_ty, &target));
+        }
+
+        // Emit LLVM intrinsics for float min/max/pow.
+        // Must come before user-function dispatch so that float min/max use
+        // hardware intrinsics even when integer overloads are user-defined.
+        if args.len() == 2 && matches!(name, "min" | "max" | "pow") {
+            let a_ty = self.node_type(args[0].id).clone();
+            let b_ty = self.node_type(args[1].id).clone();
+            if a_ty.is_float() || b_ty.is_float() {
+                let a = self.emit_expr(&args[0])?;
+                let b = self.emit_expr(&args[1])?;
+                let a_f = self.convert_value(a, &a_ty, &PdcType::F64).into_float_value();
+                let b_f = self.convert_value(b, &b_ty, &PdcType::F64).into_float_value();
+                let intrinsic_name = match name {
+                    "min" => "llvm.minnum.f64",
+                    "max" => "llvm.maxnum.f64",
+                    "pow" => "llvm.pow.f64",
+                    _ => unreachable!(),
+                };
+                return Ok(self.call_f64_intrinsic2(intrinsic_name, a_f, b_f).into());
+            }
         }
 
         // User-defined function
@@ -1985,26 +2012,6 @@ impl<'a> LlvmCodegenCtx<'a> {
             } else { 8 };
             let size_val = self.i32_const(elem_size as i64);
             self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr.into(), size_val.into()], Some(self.context.i32_type().into()))
-        } else if args.len() == 2 && matches!(name, "min" | "max" | "pow") {
-            // Emit LLVM intrinsics for 2-arg math functions.
-            let a = self.emit_expr(&args[0])?;
-            let b = self.emit_expr(&args[1])?;
-            let a_ty = self.node_type(args[0].id).clone();
-            let b_ty = self.node_type(args[1].id).clone();
-            if a_ty.is_float() || b_ty.is_float() {
-                let a_f = self.convert_value(a, &a_ty, &PdcType::F64).into_float_value();
-                let b_f = self.convert_value(b, &b_ty, &PdcType::F64).into_float_value();
-                let intrinsic_name = match name {
-                    "min" => "llvm.minnum.f64",
-                    "max" => "llvm.maxnum.f64",
-                    "pow" => "llvm.pow.f64",
-                    _ => unreachable!(),
-                };
-                return Ok(self.call_f64_intrinsic2(intrinsic_name, a_f, b_f).into());
-            }
-            // Integer min/max/pow: fall through to runtime
-            let runtime_name = format!("pdc_{}", name);
-            self.emit_runtime_call_raw(&runtime_name, &[a, b], Some(self.context.f64_type().as_basic_type_enum()))
         } else if (name == "Texture" || name == "Scene") && args.len() == 2 {
             // Texture("name", "path") and Scene("name", "path") take inline string args
             let runtime_name = if name == "Texture" { "pdc_load_texture" } else { "pdc_load_scene" };

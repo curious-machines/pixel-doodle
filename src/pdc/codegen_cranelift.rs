@@ -2391,10 +2391,16 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let a = self.emit_expr(&args[0])?;
             let b = self.emit_expr(&args[1])?;
             let ty = self.node_type(args[0].id).clone();
-            let runtime_name = match abi_class(&ty) {
-                'd' => "pdc_assert_eq_f64",
-                's' => "pdc_assert_eq_f32",
-                _ => "pdc_assert_eq_i64",
+            let (runtime_name, a, b) = match abi_class(&ty) {
+                'd' => ("pdc_assert_eq_f64", a, b),
+                's' => ("pdc_assert_eq_f32", a, b),
+                _ => {
+                    // Promote smaller integer types to i64
+                    let a = self.convert_value(a, &ty, &PdcType::I64);
+                    let ty_b = self.node_type(args[1].id).clone();
+                    let b = self.convert_value(b, &ty_b, &PdcType::I64);
+                    ("pdc_assert_eq_i64", a, b)
+                }
             };
             return self.emit_runtime_call_raw(runtime_name, &[self.ctx_ptr, a, b], None);
         }
@@ -2433,6 +2439,37 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             let val = self.emit_expr(&args[0])?;
             let from_ty = self.node_type(args[0].id).clone();
             return Ok(self.convert_value(val, &from_ty, &target));
+        }
+
+        // Emit native Cranelift instructions for float min/max.
+        // Must come before user-function dispatch so that float min/max use
+        // hardware intrinsics even when integer overloads are user-defined.
+        if args.len() == 2 {
+            match name {
+                "min" => {
+                    let a_ty = self.node_type(args[0].id).clone();
+                    let b_ty = self.node_type(args[1].id).clone();
+                    if a_ty.is_float() || b_ty.is_float() {
+                        let a = self.emit_expr(&args[0])?;
+                        let b = self.emit_expr(&args[1])?;
+                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
+                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
+                        return Ok(self.builder.ins().fmin(a, b));
+                    }
+                }
+                "max" => {
+                    let a_ty = self.node_type(args[0].id).clone();
+                    let b_ty = self.node_type(args[1].id).clone();
+                    if a_ty.is_float() || b_ty.is_float() {
+                        let a = self.emit_expr(&args[0])?;
+                        let b = self.emit_expr(&args[1])?;
+                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
+                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
+                        return Ok(self.builder.ins().fmax(a, b));
+                    }
+                }
+                _ => {}
+            }
         }
 
         // User-defined function (with overload resolution)
@@ -2534,34 +2571,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             return self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32));
         }
 
-        // Emit native Cranelift instructions for 2-arg math functions.
-        if args.len() == 2 {
-            match name {
-                "min" => {
-                    let a = self.emit_expr(&args[0])?;
-                    let b = self.emit_expr(&args[1])?;
-                    let a_ty = self.node_type(args[0].id).clone();
-                    let b_ty = self.node_type(args[1].id).clone();
-                    if a_ty.is_float() || b_ty.is_float() {
-                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
-                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
-                        return Ok(self.builder.ins().fmin(a, b));
-                    }
-                }
-                "max" => {
-                    let a = self.emit_expr(&args[0])?;
-                    let b = self.emit_expr(&args[1])?;
-                    let a_ty = self.node_type(args[0].id).clone();
-                    let b_ty = self.node_type(args[1].id).clone();
-                    if a_ty.is_float() || b_ty.is_float() {
-                        let a = self.convert_value(a, &a_ty, &PdcType::F64);
-                        let b = self.convert_value(b, &b_ty, &PdcType::F64);
-                        return Ok(self.builder.ins().fmax(a, b));
-                    }
-                }
-                _ => {}
-            }
-        }
 
         // Texture("name", "path") and Scene("name", "path") take inline string args
         if (name == "Texture" || name == "Scene") && args.len() == 2 {

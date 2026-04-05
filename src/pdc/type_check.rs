@@ -1254,55 +1254,85 @@ impl TypeChecker {
                     }
                     self.check_expr(&args[0])?;
                     cast_ty
-                } else if let Some(builtin) = self.builtins.get(name.as_str()) {
-                    let expected_params = builtin.params.clone();
-                    let ret = builtin.ret.clone();
-                    if args.len() != expected_params.len() {
-                        return Err(PdcError::Type {
-                            span: expr.span,
-                            message: format!(
-                                "function '{name}' expects {} arguments, got {}",
-                                expected_params.len(),
-                                args.len()
-                            ),
-                        });
-                    }
-                    for (i, arg) in args.iter().enumerate() {
-                        let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i]))?;
-                        self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
-                    }
-                    ret
-                } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
-                    // Type-check args first to get their types for overload resolution.
-                    // If there's exactly one overload, use its param types as hints
-                    // to resolve dot-shorthand enum values.
-                    let hints: Option<Vec<PdcType>> = if overloads.sigs.len() == 1 {
-                        Some(overloads.sigs[0].params.clone())
+                } else {
+                    // Check user-defined functions first, then fall back to builtins.
+                    // When a builtin exists with the same name, only use the user
+                    // function if there's an exact type match — otherwise the builtin's
+                    // coercion semantics should apply.
+                    let has_builtin = self.builtins.contains_key(name.as_str());
+                    let user_result = if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
+                        let hints: Option<Vec<PdcType>> = if overloads.sigs.len() == 1 {
+                            Some(overloads.sigs[0].params.clone())
+                        } else {
+                            None
+                        };
+                        let mut arg_types = Vec::new();
+                        for (i, arg) in args.iter().enumerate() {
+                            let hint = hints.as_ref().and_then(|h| h.get(i));
+                            arg_types.push(self.check_expr_with_hint(arg, hint)?);
+                        }
+                        let sig = if has_builtin {
+                            // Only exact matches when there's a builtin fallback
+                            self.resolve_overload_exact(&overloads, &arg_types)
+                        } else {
+                            self.resolve_overload(&overloads, &arg_types)
+                        };
+                        if let Some(sig) = sig {
+                            for (i, arg) in args.iter().enumerate() {
+                                self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                            }
+                            Some(sig.ret)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     };
-                    let mut arg_types = Vec::new();
-                    for (i, arg) in args.iter().enumerate() {
-                        let hint = hints.as_ref().and_then(|h| h.get(i));
-                        arg_types.push(self.check_expr_with_hint(arg, hint)?);
-                    }
-                    let sig = self.resolve_overload(&overloads, &arg_types)
-                        .ok_or_else(|| PdcError::Type {
+
+                    if let Some(ret) = user_result {
+                        ret
+                    } else if let Some(builtin) = self.builtins.get(name.as_str()) {
+                        let expected_params = builtin.params.clone();
+                        let ret = builtin.ret.clone();
+                        if args.len() != expected_params.len() {
+                            return Err(PdcError::Type {
+                                span: expr.span,
+                                message: format!(
+                                    "function '{name}' expects {} arguments, got {}",
+                                    expected_params.len(),
+                                    args.len()
+                                ),
+                            });
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            let arg_ty = self.check_expr_with_hint(arg, Some(&expected_params[i]))?;
+                            self.check_compatible(&arg_ty, &expected_params[i], arg.span)?;
+                        }
+                        ret
+                    } else if let Some(overloads) = self.user_fns.get(name.as_str()).cloned() {
+                        // No builtin — try full overload resolution (with coercion)
+                        let mut arg_types = Vec::new();
+                        for arg in args.iter() {
+                            arg_types.push(self.check_expr(arg)?);
+                        }
+                        let sig = self.resolve_overload(&overloads, &arg_types)
+                            .ok_or_else(|| PdcError::Type {
+                                span: expr.span,
+                                message: format!(
+                                    "no matching overload for '{name}' with argument types ({})",
+                                    arg_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "),
+                                ),
+                            })?;
+                        for (i, arg) in args.iter().enumerate() {
+                            self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                        }
+                        sig.ret
+                    } else {
+                        return Err(PdcError::Type {
                             span: expr.span,
-                            message: format!(
-                                "no matching overload for '{name}' with argument types ({})",
-                                arg_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "),
-                            ),
-                        })?;
-                    for (i, arg) in args.iter().enumerate() {
-                        self.check_compatible(&arg_types[i], &sig.params[i], arg.span)?;
+                            message: format!("undefined function '{name}'"),
+                        });
                     }
-                    sig.ret
-                } else {
-                    return Err(PdcError::Type {
-                        span: expr.span,
-                        message: format!("undefined function '{name}'"),
-                    });
                 }
             }
             Expr::MethodCall { object, method, args } => {
@@ -2003,6 +2033,18 @@ impl TypeChecker {
     }
 
     /// Resolve the best-matching overload for given argument types.
+    fn resolve_overload_exact(&self, overloads: &OverloadSet, arg_types: &[PdcType]) -> Option<UserFnSig> {
+        for sig in &overloads.sigs {
+            let n = arg_types.len();
+            if n >= sig.required && n <= sig.params.len()
+                && sig.params[..n].iter().zip(arg_types).all(|(p, a)| p == a)
+            {
+                return Some(sig.clone());
+            }
+        }
+        None
+    }
+
     fn resolve_overload(&self, overloads: &OverloadSet, arg_types: &[PdcType]) -> Option<UserFnSig> {
         // Check if arg count is in range [required..=total] and types match
         let matches = |sig: &UserFnSig, exact: bool| -> bool {
