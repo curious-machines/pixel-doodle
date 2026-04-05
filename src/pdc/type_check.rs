@@ -181,13 +181,12 @@ impl TypeChecker {
 
         // Built-in enums: Bind, FillRule, LineCap, LineJoin
         // Buffer and Kernel are type namespaces with factory constructors
-        self.define_var("Buffer", PdcType::Module("Buffer".into()));
         self.define_var("Kernel", PdcType::Module("Kernel".into()));
 
         self.enums.insert("Bind".into(), EnumInfo {
             variants: vec![
-                EnumVariantInfo { name: "In".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle] },
-                EnumVariantInfo { name: "Out".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle] },
+                EnumVariantInfo { name: "In".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown))] },
+                EnumVariantInfo { name: "Out".into(), field_names: vec!["buffer".into()], field_types: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown))] },
             ],
         });
         self.define_var("Bind", PdcType::Enum("Bind".into()));
@@ -260,12 +259,12 @@ impl TypeChecker {
         // Pipeline host functions
         // Buffer methods
         self.builtins.insert("display_buffer".into(), BuiltinFn {
-            params: vec![PdcType::BufferHandle],
+            params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown))],
             ret: PdcType::Void,
             takes_ctx: true,
         });
         self.builtins.insert("swap".into(), BuiltinFn {
-            params: vec![PdcType::BufferHandle, PdcType::BufferHandle],
+            params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::BufferHandle(Box::new(PdcType::Unknown))],
             ret: PdcType::Void,
             takes_ctx: true,
         });
@@ -276,7 +275,7 @@ impl TypeChecker {
             takes_ctx: true,
         });
         self.builtins.insert("render".into(), BuiltinFn {
-            params: vec![PdcType::KernelHandle, PdcType::BufferHandle, PdcType::Bool],
+            params: vec![PdcType::KernelHandle, PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::Bool],
             ret: PdcType::Bool,
             takes_ctx: true,
         });
@@ -701,9 +700,8 @@ impl TypeChecker {
                 let val_ty = self.check_expr(value)?;
                 if let PdcType::Array(ref elem_ty) = obj_ty {
                     self.check_compatible(&val_ty, elem_ty, value.span)?;
-                } else if obj_ty == PdcType::BufferHandle {
-                    // Buffer index-assign: treat element as i32
-                    self.check_compatible(&val_ty, &PdcType::I32, value.span)?;
+                } else if let PdcType::BufferHandle(ref elem_ty) = obj_ty {
+                    self.check_compatible(&val_ty, elem_ty, value.span)?;
                 } else {
                     return Err(PdcError::Type {
                         span: object.span,
@@ -1172,6 +1170,28 @@ impl TypeChecker {
                     return Ok(arr_ty);
                 }
 
+                // Buffer<type>() constructor
+                if name.starts_with("Buffer<") {
+                    let elem_type_str = &name[7..name.len()-1];
+                    let elem_ty = match elem_type_str {
+                        "f32" => PdcType::F32,
+                        "f64" => PdcType::F64,
+                        "i32" => PdcType::I32,
+                        "i64" => PdcType::I64,
+                        "u8" => PdcType::U8,
+                        "u16" => PdcType::U16,
+                        "u32" => PdcType::U32,
+                        "u64" => PdcType::U64,
+                        "vec2f32" => PdcType::Vec2F32,
+                        "vec3f32" => PdcType::Vec3F32,
+                        "vec4f32" => PdcType::Vec4F32,
+                        _ => PdcType::F32,
+                    };
+                    let buf_ty = PdcType::BufferHandle(Box::new(elem_ty));
+                    self.set_type(expr.id, buf_ty.clone());
+                    return Ok(buf_ty);
+                }
+
                 // Overloaded builtins: fill/stroke with style parameters
                 if name == "fill" && args.len() == 3 {
                     // fill(path, color, rule) → fill_styled
@@ -1230,17 +1250,25 @@ impl TypeChecker {
                 // render(kernel_fn) or render(kernel_fn, buffer) — PDC pixel kernel dispatch
                 if name == "render" && (args.len() == 1 || args.len() == 2) {
                     let fn_ty = self.check_expr(&args[0])?;
-                    let expected_kernel = PdcType::FnRef {
-                        params: vec![PdcType::I32, PdcType::I32, PdcType::I32, PdcType::I32],
-                        ret: Box::new(PdcType::I32),
-                    };
-                    if fn_ty == expected_kernel {
-                        if args.len() == 2 {
-                            let buf_ty = self.check_expr(&args[1])?;
-                            self.check_compatible(&buf_ty, &PdcType::BufferHandle, args[1].span)?;
+                    // Extract return type from kernel function
+                    if let PdcType::FnRef { ref params, ref ret } = fn_ty {
+                        if params.len() == 4
+                            && params.iter().all(|p| *p == PdcType::I32)
+                        {
+                            let elem_ty = *ret.clone();
+                            if args.len() == 2 {
+                                let buf_ty = self.check_expr(&args[1])?;
+                                if let PdcType::BufferHandle(ref buf_elem) = buf_ty {
+                                    self.check_compatible(&elem_ty, buf_elem, args[0].span)?;
+                                }
+                                self.set_type(expr.id, buf_ty.clone());
+                                return Ok(buf_ty);
+                            } else {
+                                let buf_ty = PdcType::BufferHandle(Box::new(elem_ty));
+                                self.set_type(expr.id, buf_ty.clone());
+                                return Ok(buf_ty);
+                            }
                         }
-                        self.set_type(expr.id, PdcType::BufferHandle);
-                        return Ok(PdcType::BufferHandle);
                     }
                     // Fall through to existing render(KernelHandle, BufferHandle, Bool) builtin
                 }
@@ -1340,24 +1368,6 @@ impl TypeChecker {
 
                 // Module namespaced call: math.sin(x) → math::sin(x)
                 if let PdcType::Module(mod_name) = &obj_ty {
-                    // Buffer factory constructors: Buffer.I32(), Buffer.Vec4F32(), etc.
-                    if mod_name == "Buffer" {
-                        let valid = ["F32", "I32", "U32", "Vec2F32", "Vec3F32", "Vec4F32"];
-                        if !valid.contains(&method.as_str()) {
-                            return Err(PdcError::Type {
-                                span: expr.span,
-                                message: format!("Buffer has no variant '{method}'. Valid: {}", valid.join(", ")),
-                            });
-                        }
-                        if !args.is_empty() {
-                            return Err(PdcError::Type {
-                                span: expr.span,
-                                message: format!("Buffer.{method}() takes no arguments, got {}", args.len()),
-                            });
-                        }
-                        self.set_type(expr.id, PdcType::BufferHandle);
-                        return Ok(PdcType::BufferHandle);
-                    }
                     // Kernel factory constructors: Kernel.Sim("name", "path"), Kernel.Pixel(...)
                     if mod_name == "Kernel" {
                         let valid = ["Pixel", "Sim"];
@@ -1650,9 +1660,8 @@ impl TypeChecker {
                     *elem_ty.clone()
                 } else if let PdcType::Slice(elem_ty) = &obj_ty {
                     *elem_ty.clone()
-                } else if obj_ty == PdcType::BufferHandle {
-                    // Buffer indexing returns i32 (all buffers are 4-byte elements)
-                    PdcType::I32
+                } else if let PdcType::BufferHandle(ref elem_ty) = obj_ty {
+                    *elem_ty.clone()
                 } else {
                     return Err(PdcError::Type {
                         span: expr.span,
@@ -1736,7 +1745,7 @@ impl TypeChecker {
                         // scene.<anything_else> → BufferHandle (scene buffer lookup)
                         match field.as_str() {
                             "tiles_x" | "num_paths" => PdcType::F64,
-                            _ => PdcType::BufferHandle,
+                            _ => PdcType::BufferHandle(Box::new(PdcType::Unknown)),
                         }
                     }
                     _ => {
@@ -2091,6 +2100,10 @@ impl TypeChecker {
         }
         // Arrays with compatible element types
         if let (PdcType::Array(_), PdcType::Array(_)) = (from, to) {
+            return Ok(());
+        }
+        // Any BufferHandle(T) is compatible with any BufferHandle(U) (polymorphic builtins)
+        if let (PdcType::BufferHandle(_), PdcType::BufferHandle(_)) = (from, to) {
             return Ok(());
         }
         Err(PdcError::Type {

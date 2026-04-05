@@ -1667,7 +1667,7 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 }
 
 fn frame() -> bool {
-    var buf = Buffer.U32()
+    var buf = Buffer<u32>()
     render(pixel, buf)
     display_buffer(buf)
     return false
@@ -1705,8 +1705,8 @@ fn frame() -> bool {
     fn render_multipass_ping_pong() {
         // First pass: write red. Second pass: read from first pass buffer (module scope).
         let src = r#"
-var buf_a = Buffer.U32()
-var buf_b = Buffer.U32()
+var buf_a = Buffer<u32>()
+var buf_b = Buffer<u32>()
 
 fn pass1(x: i32, y: i32, w: i32, h: i32) -> i32 {
     return i32(0xFFFF0000)

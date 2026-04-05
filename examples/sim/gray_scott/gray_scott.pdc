@@ -3,9 +3,9 @@ import { register_pause_step } from "../../shared/pause_step"
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
-var field = Buffer.Vec2F32()
-var field_next = Buffer.Vec2F32()
-var pixels = Buffer.U32()
+var field = Buffer<vec2f32>()
+var field_next = Buffer<vec2f32>()
+var pixels = Buffer<u32>()
 
 var step = Kernel.Sim("step", "gray_scott_step.wgsl")
 var vis = Kernel.Sim("vis", "gray_scott_vis.wgsl")

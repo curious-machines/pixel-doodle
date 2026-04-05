@@ -570,7 +570,8 @@ fn pdc_type_to_cl(ty: &PdcType, pointer_type: cranelift_codegen::ir::Type) -> cr
         PdcType::I16 | PdcType::U16 => I16,
         PdcType::I32 | PdcType::U32 => I32,
         PdcType::I64 | PdcType::U64 => I64,
-        PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => I32,
+        PdcType::PathHandle | PdcType::BufferHandle(_) | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => I32,
+        PdcType::Vec2F32 | PdcType::Vec3F32 | PdcType::Vec4F32 => I32, // not used as value types
         PdcType::Str => I32, // strings are handles (i32)
         PdcType::Slice(_) => pointer_type, // slices are pointers to (handle, start, len)
         PdcType::Struct(_) | PdcType::Tuple(_) => pointer_type, // compound types are pointers
@@ -828,16 +829,18 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let data_ptr = self.emit_runtime_call_raw(
                         "pdc_array_data_ptr", &[self.ctx_ptr, arr_handle], Some(self.pointer_type))?;
                     self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_cl);
-                } else if obj_ty == PdcType::BufferHandle {
+                } else if let PdcType::BufferHandle(ref elem_ty) = obj_ty {
                     let buf_handle = self.emit_expr(object)?;
                     let idx = self.emit_expr(index)?;
                     let val = self.emit_expr(value)?;
                     let val_ty = self.node_type(value.id).clone();
-                    let converted = self.convert_value(val, &val_ty, &PdcType::I32);
-                    // Inline store via buffer data pointer (4-byte elements)
+                    let converted = self.convert_value(val, &val_ty, elem_ty);
+                    let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                    let elem_size = elem_cl.bytes() as u32;
+                    // Inline store via buffer data pointer
                     let data_ptr = self.emit_runtime_call_raw(
                         "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
-                    self.emit_inline_array_store(data_ptr, idx, 4, converted, I32);
+                    self.emit_inline_array_store(data_ptr, idx, elem_size, converted, elem_cl);
                 }
             }
             Stmt::FieldAssign { object, field, value } => {
@@ -2165,13 +2168,15 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
                     let int_type = match elem_size { 1 => I8, 2 => I16, 4 => I32, _ => I64 };
                     let raw = self.emit_runtime_call_raw(&get_name, &[self.ctx_ptr, arr_handle, start, idx], Some(int_type))?;
                     Ok(self.int_to_float_if_needed(raw, elem_cl))
-                } else if obj_ty == PdcType::BufferHandle {
+                } else if let PdcType::BufferHandle(ref elem_ty) = obj_ty {
                     let buf_handle = self.emit_expr(object)?;
                     let idx = self.emit_expr(index)?;
-                    // Inline load via buffer data pointer (4-byte i32 elements)
+                    let elem_cl = pdc_type_to_cl(elem_ty, self.pointer_type);
+                    let elem_size = elem_cl.bytes() as u32;
+                    // Inline load via buffer data pointer
                     let data_ptr = self.emit_runtime_call_raw(
                         "pdc_buffer_data_ptr", &[self.ctx_ptr, buf_handle], Some(self.pointer_type))?;
-                    Ok(self.emit_inline_array_load(data_ptr, idx, 4, I32))
+                    Ok(self.emit_inline_array_load(data_ptr, idx, elem_size, elem_cl))
                 } else {
                     Err(PdcError::Codegen { message: "cannot index non-array/slice type".into() })
                 }
@@ -2571,6 +2576,25 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             return self.emit_runtime_call_raw("pdc_array_new", &[self.ctx_ptr, size_val], Some(I32));
         }
 
+        // Buffer constructor: Buffer<type>() → pdc_create_buffer(ctx, type_code)
+        if name.starts_with("Buffer<") {
+            let result_ty = self.node_type(_call_id).clone();
+            let type_code: i64 = if let PdcType::BufferHandle(ref et) = result_ty {
+                match et.as_ref() {
+                    PdcType::F32 => 0,
+                    PdcType::I32 => 1,
+                    PdcType::U32 => 2,
+                    PdcType::Vec2F32 => 3,
+                    PdcType::Vec3F32 => 4,
+                    PdcType::Vec4F32 => 5,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            let code_val = self.builder.ins().iconst(I32, type_code);
+            return self.emit_runtime_call_raw("pdc_create_buffer", &[self.ctx_ptr, code_val], Some(I32));
+        }
 
         // Texture("name", "path") and Scene("name", "path") take inline string args
         if (name == "Texture" || name == "Scene") && args.len() == 2 {
@@ -2706,7 +2730,8 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fpromote(F64, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle(_) | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle
+            | PdcType::Vec2F32 | PdcType::Vec3F32 | PdcType::Vec4F32 => {
                 self.builder.ins().fcvt_from_sint(F64, val)
             }
             PdcType::Bool => {
@@ -2722,7 +2747,8 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         match ty {
             PdcType::F64 => val,
             PdcType::F32 => self.builder.ins().fdemote(F32, val),
-            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle => {
+            PdcType::I32 | PdcType::U32 | PdcType::PathHandle | PdcType::BufferHandle(_) | PdcType::KernelHandle | PdcType::TextureHandle | PdcType::SceneHandle
+            | PdcType::Vec2F32 | PdcType::Vec3F32 | PdcType::Vec4F32 => {
                 self.builder.ins().fcvt_to_sint_sat(I32, val)
             }
             PdcType::Bool => {

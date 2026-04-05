@@ -2,8 +2,8 @@ import { register_pan_zoom } from "../../shared/pan_zoom"
 
 builtin var sample_index: u32
 
-var pixels = Buffer.U32()
-var accum = Buffer.Vec4F32()
+var pixels = Buffer<u32>()
+var accum = Buffer<vec4f32>()
 var kern = Kernel.Pixel("ray_march_ao", "ray_march_ao.wgsl")
 var max_samples: u32 = 256
 

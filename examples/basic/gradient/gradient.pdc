@@ -1,4 +1,4 @@
-var pixels = Buffer.U32()
+var pixels = Buffer<u32>()
 var kern = Kernel.Pixel("gradient", "gradient.wgsl")
 
 fn frame() -> bool {

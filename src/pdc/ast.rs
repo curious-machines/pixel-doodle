@@ -23,8 +23,12 @@ pub enum PdcType {
     Bool,
     /// Opaque path handle (u32 internally). Becomes a struct in later phases.
     PathHandle,
-    /// Opaque buffer handle (i32 internally).
-    BufferHandle,
+    /// Typed buffer handle (i32 internally). Element type determines read/write semantics.
+    BufferHandle(Box<PdcType>),
+    /// GPU vector types for buffer elements.
+    Vec2F32,
+    Vec3F32,
+    Vec4F32,
     /// Opaque kernel handle (i32 internally).
     KernelHandle,
     /// Opaque texture handle (i32 internally).
@@ -86,7 +90,10 @@ impl std::fmt::Display for PdcType {
             PdcType::U64 => write!(f, "u64"),
             PdcType::Bool => write!(f, "bool"),
             PdcType::PathHandle => write!(f, "Path"),
-            PdcType::BufferHandle => write!(f, "Buffer"),
+            PdcType::BufferHandle(elem) => write!(f, "Buffer<{elem}>"),
+            PdcType::Vec2F32 => write!(f, "vec2f32"),
+            PdcType::Vec3F32 => write!(f, "vec3f32"),
+            PdcType::Vec4F32 => write!(f, "vec4f32"),
             PdcType::KernelHandle => write!(f, "Kernel"),
             PdcType::TextureHandle => write!(f, "Texture"),
             PdcType::SceneHandle => write!(f, "Scene"),

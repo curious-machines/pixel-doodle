@@ -1,6 +1,6 @@
 import { register_pan_zoom } from "../../shared/pan_zoom"
 
-var pixels = Buffer.U32()
+var pixels = Buffer<u32>()
 var kern = Kernel.Pixel("checkerboard", "checkerboard.wgsl")
 
 fn init() {

@@ -5,9 +5,9 @@ builtin var mouse_y: f64
 
 var iterations: f64 = 1.0
 
-var grid = Buffer.I32()
-var grid_next = Buffer.I32()
-var pixels = Buffer.U32()
+var grid = Buffer<i32>()
+var grid_next = Buffer<i32>()
+var pixels = Buffer<u32>()
 
 var step = Kernel.Sim("step", "game_of_life_step.wgsl")
 var vis = Kernel.Sim("vis", "game_of_life_vis.wgsl")

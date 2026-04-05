@@ -5,12 +5,12 @@ builtin var height: f32
 builtin var mouse_x: f64
 builtin var mouse_y: f64
 
-var field = Buffer.Vec4F32()
-var field_next = Buffer.Vec4F32()
-var div = Buffer.F32()
-var press_a = Buffer.F32()
-var press_b = Buffer.F32()
-var pixels = Buffer.U32()
+var field = Buffer<vec4f32>()
+var field_next = Buffer<vec4f32>()
+var div = Buffer<f32>()
+var press_a = Buffer<f32>()
+var press_b = Buffer<f32>()
+var pixels = Buffer<u32>()
 
 var advect = Kernel.Sim("advect", "smoke_advect.wgsl")
 var divergence = Kernel.Sim("divergence", "smoke_divergence.wgsl")

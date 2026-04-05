@@ -832,6 +832,13 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Gt)?;
                 return Ok(PdcType::Array(Box::new(elem_ty)));
             }
+            if name == "Buffer" {
+                self.advance();
+                self.expect(&TokenKind::Lt)?;
+                let elem_ty = self.parse_type()?;
+                self.expect(&TokenKind::Gt)?;
+                return Ok(PdcType::BufferHandle(Box::new(elem_ty)));
+            }
             if name == "slice" {
                 self.advance(); // consume "slice"
                 self.expect(&TokenKind::Lt)?;
@@ -851,9 +858,11 @@ impl<'a> Parser<'a> {
                 "u32" => PdcType::U32,
                 "u64" => PdcType::U64,
                 "bool" => PdcType::Bool,
+                "vec2f32" => PdcType::Vec2F32,
+                "vec3f32" => PdcType::Vec3F32,
+                "vec4f32" => PdcType::Vec4F32,
                 "string" => PdcType::Str,
                 "Path" => PdcType::PathHandle,
-                "Buffer" => PdcType::BufferHandle,
                 "Kernel" => PdcType::KernelHandle,
                 "Texture" => PdcType::TextureHandle,
                 "Scene" => PdcType::SceneHandle,
@@ -1251,6 +1260,18 @@ impl<'a> Parser<'a> {
                     let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
                     // Encode the element type in the call name: "Array<f64>"
                     let full_name = format!("Array<{elem_ty}>");
+                    return Ok(self.ids.spanned(Expr::Call { name: full_name, args, arg_names }, span));
+                }
+                // Buffer<type>() constructor
+                if name == "Buffer" && *self.peek() == TokenKind::Lt {
+                    self.advance(); // consume '<'
+                    let elem_ty = self.parse_type()?;
+                    self.expect(&TokenKind::Gt)?;
+                    self.expect(&TokenKind::LParen)?;
+                    let args = self.parse_call_args()?;
+                    let arg_names = vec![None; args.len()];
+                    let span = Span::new(start.start, self.tokens[self.pos - 1].span.end);
+                    let full_name = format!("Buffer<{elem_ty}>");
                     return Ok(self.ids.spanned(Expr::Call { name: full_name, args, arg_names }, span));
                 }
                 if *self.peek() == TokenKind::LParen {

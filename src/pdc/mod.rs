@@ -1967,8 +1967,8 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var grid: Buffer = Buffer.F32()
-            var grid_next: Buffer = Buffer.F32()
+            var grid: Buffer<f32> = Buffer<f32>()
+            var grid_next: Buffer<f32> = Buffer<f32>()
             var sim_kernel: Kernel = Kernel.Sim("step", "step.wgsl")
 
             fn frame() -> bool {
@@ -2050,7 +2050,7 @@ mod tests {
             builtin const width: f32
             builtin const height: f32
 
-            var pixels: Buffer = Buffer.U32()
+            var pixels: Buffer<u32> = Buffer<u32>()
             var kern: Kernel = Kernel.Pixel("test", "test.wgsl")
 
             fn frame() -> bool {
@@ -2122,12 +2122,12 @@ mod tests {
 
     #[test]
     fn buffer_factory_constructor() {
-        // Test that Buffer.Variant() factory syntax works
+        // Test that Buffer<type>() factory syntax works
         let source = r#"
             builtin const width: f32
             builtin const height: f32
 
-            var buf: Buffer = Buffer.Vec4F32()
+            var buf: Buffer<vec4f32> = Buffer<vec4f32>()
         "#;
         let (compiled, state_layout) =
             compile_only_with_builtins(source, None, codegen::PIPELINE_BUILTINS)

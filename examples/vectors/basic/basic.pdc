@@ -1,6 +1,6 @@
 var scene = Scene("basic", "basic_scene.pdc")
 var rasterizer = Kernel.Sim("rasterize", "../shared/tile_raster.wgsl")
-var pixels = Buffer.U32()
+var pixels = Buffer<u32>()
 
 fn frame() -> bool {
     scene.run()

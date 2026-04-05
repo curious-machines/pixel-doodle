@@ -12,8 +12,8 @@ builtin var mouse_x: f64
 builtin var mouse_y: f64
 
 var iterations: i32 = 1
-var grid = Buffer.I32()
-var grid_next = Buffer.I32()
+var grid = Buffer<i32>()
+var grid_next = Buffer<i32>()
 
 // ── Init kernel: ~30% random live cells via position hash ──
 
