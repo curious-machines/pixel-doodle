@@ -1698,7 +1698,7 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 
 fn frame() -> bool {
     var buf = render(pixel)
-    display_buffer(buf)
+    buf.display()
     return false
 }
 "#;
@@ -1719,7 +1719,7 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 
 fn frame() -> bool {
     var buf = render(pixel)
-    display_buffer(buf)
+    buf.display()
     return false
 }
 "#;
@@ -1743,7 +1743,7 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 fn frame() -> bool {
     var buf = Buffer<u32>()
     render(pixel, buf)
-    display_buffer(buf)
+    buf.display()
     return false
 }
 "#;
@@ -1765,7 +1765,7 @@ fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
 
 fn frame() -> bool {
     var buf = render(pixel)
-    display_buffer(buf)
+    buf.display()
     return false
 }
 "#;
@@ -1793,7 +1793,7 @@ fn pass2(x: i32, y: i32, w: i32, h: i32) -> i32 {
 fn frame() -> bool {
     render(pass1, buf_a)
     render(pass2, buf_b)
-    display_buffer(buf_b)
+    buf_b.display()
     return false
 }
 "#;

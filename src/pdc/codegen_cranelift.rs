@@ -2698,7 +2698,6 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
         let runtime_name = {
             match name {
                 "Path" => "pdc_path".to_string(),
-                "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
                 "render" if args.len() <= 2 && matches!(self.node_type(args[0].id), PdcType::FnRef { .. }) => {
@@ -2726,7 +2725,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             | "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "len" | "get" | "set"
-            | "display_buffer" | "swap" | "run" | "render"
+            | "swap" | "run" | "render"
             | "display"
             | "set_keypress" | "set_keydown" | "set_keyup"
             | "clear_keypress" | "clear_keydown" | "clear_keyup"
@@ -2788,7 +2787,7 @@ impl<'a, 'b> CodegenCtx<'a, 'b> {
             "move_to" | "line_to" | "quad_to" | "cubic_to" | "close" | "fill" | "stroke"
             | "fill_styled" | "stroke_styled"
             | "push" | "set"
-            | "display_buffer" | "swap" | "run"
+            | "swap" | "run"
             | "display" => None,
             _ => Some(F64),
         }

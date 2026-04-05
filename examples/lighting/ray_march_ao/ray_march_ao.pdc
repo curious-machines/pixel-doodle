@@ -16,7 +16,7 @@ fn frame() -> bool {
     kern.output = Bind.Out(pixels)
     kern.accum = Bind.Out(accum)
     kern.run()
-    pixels.display_buffer()
+    pixels.display()
     sample_index = sample_index + 1
     return sample_index < max_samples
 }

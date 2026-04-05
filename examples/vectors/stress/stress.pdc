@@ -19,7 +19,7 @@ fn frame() -> bool {
     rasterizer.num_paths = scene.num_paths
 
     rasterizer.run()
-    pixels.display_buffer()
+    pixels.display()
 
     return false
 }

@@ -29,7 +29,7 @@ fn frame() -> bool {
     vis.field_in = Bind.In(field)
     vis.pixels = Bind.Out(pixels)
     vis.run()
-    pixels.display_buffer()
+    pixels.display()
     return true
 }
 

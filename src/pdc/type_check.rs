@@ -349,12 +349,6 @@ impl TypeChecker {
 
         // Pipeline host functions
         // Buffer methods
-        self.builtins.insert("display_buffer".into(), BuiltinFn {
-            param_names: vec!["buffer"],
-            params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown))],
-            ret: PdcType::Void,
-            takes_ctx: true,
-        });
         self.builtins.insert("swap".into(), BuiltinFn {
             param_names: vec!["a", "b"],
             params: vec![PdcType::BufferHandle(Box::new(PdcType::Unknown)), PdcType::BufferHandle(Box::new(PdcType::Unknown))],
