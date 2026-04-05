@@ -47,8 +47,50 @@ pub fn radians(deg: f64) -> f64 {
     return deg * PI / 180.0
 }
 
+pub fn mix(a: f64, b: f64, t: f64) -> f64 {
+    return a + (b - a) * t
+}
+
 pub fn inversesqrt(x: f64) -> f64 {
     return 1.0 / sqrt(x)
+}
+
+// ── f32 overloads ──
+
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    return a + (b - a) * t
+}
+
+pub fn mix(a: f32, b: f32, t: f32) -> f32 {
+    return a + (b - a) * t
+}
+
+pub fn clamp(x: f32, lo: f32, hi: f32) -> f32 {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+
+pub fn saturate(x: f32) -> f32 {
+    if x < f32(0.0) { return f32(0.0) }
+    if x > f32(1.0) { return f32(1.0) }
+    return x
+}
+
+pub fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    const t = clamp((x - edge0) / (edge1 - edge0), f32(0.0), f32(1.0))
+    return t * t * (f32(3.0) - f32(2.0) * t)
+}
+
+pub fn sign(x: f32) -> f32 {
+    if x > f32(0.0) { return f32(1.0) }
+    if x < f32(0.0) { return f32(-1.0) }
+    return f32(0.0)
+}
+
+pub fn step(edge: f32, x: f32) -> f32 {
+    if x < edge { return f32(0.0) }
+    return f32(1.0)
 }
 
 // ── Tests ──
@@ -153,6 +195,32 @@ test "degrees and radians are inverse" {
 test "inversesqrt" {
     assert_near(inversesqrt(4.0), 0.5, 1.0e-10)
     assert_near(inversesqrt(1.0), 1.0, 1.0e-10)
+}
+
+test "mix f64" {
+    assert_near(mix(0.0, 10.0, 0.5), 5.0, 1.0e-10)
+    assert_near(mix(0.0, 10.0, 0.0), 0.0, 1.0e-10)
+    assert_near(mix(0.0, 10.0, 1.0), 10.0, 1.0e-10)
+}
+
+test "f32 lerp" {
+    assert_near(f64(lerp(f32(0.0), f32(10.0), f32(0.5))), 5.0, 1.0e-5)
+}
+
+test "f32 mix" {
+    assert_near(f64(mix(f32(0.0), f32(10.0), f32(0.5))), 5.0, 1.0e-5)
+}
+
+test "f32 clamp" {
+    assert_near(f64(clamp(f32(5.0), f32(0.0), f32(10.0))), 5.0, 1.0e-5)
+    assert_near(f64(clamp(f32(-5.0), f32(0.0), f32(10.0))), 0.0, 1.0e-5)
+    assert_near(f64(clamp(f32(15.0), f32(0.0), f32(10.0))), 10.0, 1.0e-5)
+}
+
+test "f32 smoothstep" {
+    assert_near(f64(smoothstep(f32(0.0), f32(1.0), f32(0.0))), 0.0, 1.0e-5)
+    assert_near(f64(smoothstep(f32(0.0), f32(1.0), f32(1.0))), 1.0, 1.0e-5)
+    assert_near(f64(smoothstep(f32(0.0), f32(1.0), f32(0.5))), 0.5, 1.0e-5)
 }
 
 test "constants are correct" {

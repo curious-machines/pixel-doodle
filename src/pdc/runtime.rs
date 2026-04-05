@@ -117,6 +117,13 @@ pub trait PipelineHost {
 
     // ── Event handler registration ──
 
+    /// Render a PDC pixel kernel (function ref) into a buffer via rayon.
+    /// `ctx` is the PdcContext from the calling frame (needed for state/builtins access).
+    /// `kernel_fn` is a JIT'd function pointer with signature (ctx, x, y, w, h) -> color.
+    /// `buffer_handle` is -1 for auto-allocate, or a valid handle for explicit target.
+    /// Returns the output buffer handle.
+    fn render_pdc_kernel(&mut self, _ctx: *mut PdcContext, _kernel_fn: *const u8, _buffer_handle: i32) -> i32 { -1 }
+
     /// Register a handler function pointer for a key press event.
     fn set_keypress_handler(&mut self, _key: i32, _fn_ptr: *const u8) {}
     /// Clear the handler for a key press event.
@@ -826,6 +833,18 @@ pub extern "C" fn pdc_render_kernel(ctx: *mut PdcContext, kernel_handle: i32, bu
     continue_flag
 }
 
+/// Render a PDC pixel kernel with auto-allocated buffer.
+/// Called as render(kernel_fn) → buffer_handle.
+pub extern "C" fn pdc_render_pdc_kernel(ctx: *mut PdcContext, kernel_fn: *const u8) -> i32 {
+    unsafe { get_host(ctx).render_pdc_kernel(ctx, kernel_fn, -1) }
+}
+
+/// Render a PDC pixel kernel into an explicit buffer.
+/// Called as render(kernel_fn, buffer_handle) → buffer_handle.
+pub extern "C" fn pdc_render_pdc_kernel_buf(ctx: *mut PdcContext, kernel_fn: *const u8, buffer_handle: i32) -> i32 {
+    unsafe { get_host(ctx).render_pdc_kernel(ctx, kernel_fn, buffer_handle) }
+}
+
 pub extern "C" fn pdc_display(ctx: *mut PdcContext) {
     unsafe { get_host(ctx).display() }
 }
@@ -994,6 +1013,8 @@ pub fn runtime_symbols() -> Vec<(&'static str, *const u8)> {
         ("pdc_set_kernel_arg_f32", pdc_set_kernel_arg_f32 as *const u8),
         ("pdc_run_kernel", pdc_run_kernel as *const u8),
         ("pdc_render_kernel", pdc_render_kernel as *const u8),
+        ("pdc_render_pdc_kernel", pdc_render_pdc_kernel as *const u8),
+        ("pdc_render_pdc_kernel_buf", pdc_render_pdc_kernel_buf as *const u8),
         ("pdc_display", pdc_display as *const u8),
         ("pdc_display_buffer", pdc_display_buffer as *const u8),
         ("pdc_load_texture", pdc_load_texture as *const u8),

@@ -108,6 +108,8 @@ struct HostState {
     keydown_handlers: HashMap<i32, *const u8>,
     /// Registered keyup handlers: Key tag → JIT'd function pointer.
     keyup_handlers: HashMap<i32, *const u8>,
+    /// Cached buffer handle for auto-allocated PDC pixel kernel output.
+    pdc_pixel_buffer: Option<i32>,
     /// Registered mouse down handler.
     mousedown_handler: Option<*const u8>,
     /// Registered mouse up handler.
@@ -612,15 +614,114 @@ impl PipelineHost for HostState {
         self.display_requested = true;
     }
 
+    fn render_pdc_kernel(&mut self, ctx: *mut PdcContext, kernel_fn: *const u8, buffer_handle: i32) -> i32 {
+        let w = self.width;
+        let h = self.height;
+        let pixel_count = (w as usize) * (h as usize);
+
+        // Resolve output buffer: use provided handle or auto-allocate.
+        let buf_handle = if buffer_handle >= 0 && (buffer_handle as usize) < self.buffers.len() {
+            buffer_handle
+        } else {
+            // Auto-allocate or reuse cached buffer
+            match self.pdc_pixel_buffer {
+                Some(h) => h,
+                None => {
+                    let h = self.create_buffer("gpu_u32", 0.0);
+                    self.pdc_pixel_buffer = Some(h);
+                    h
+                }
+            }
+        };
+
+        // Ensure buffer is correctly sized
+        let buf_idx = buf_handle as usize;
+        let needed = pixel_count * 4; // u32 per pixel
+        if self.buffers[buf_idx].data.len() != needed {
+            self.buffers[buf_idx].data.resize(needed, 0);
+        }
+
+        let output_ptr = self.buffers[buf_idx].data.as_mut_ptr() as usize;
+
+        // The JIT'd kernel has signature:
+        //   extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64
+        // (PDC promotes i32 args to i64 at the ABI level)
+        type KernelFn = unsafe extern "C" fn(*mut PdcContext, i64, i64, i64, i64) -> i64;
+
+        // Create a thread-safe PdcContext for kernel execution:
+        // - Same builtins and state pointers (read-only during dispatch)
+        // - Null host pointer (prevents re-entrant host calls from kernels)
+        // - Null scene pointer (not needed for pixel kernels)
+        let kernel_ctx = unsafe {
+            PdcContext {
+                builtins: (*ctx).builtins,
+                scene: std::ptr::null_mut(),
+                state: (*ctx).state,
+                host: std::ptr::null_mut(),
+            }
+        };
+
+        let tile_h = 16usize;
+        let fn_addr = kernel_fn as usize;
+        // Convert pointers to usize for Send safety across rayon threads.
+        let ctx_builtins = kernel_ctx.builtins as usize;
+        let ctx_state = kernel_ctx.state as usize;
+
+        let dispatch = || {
+            use rayon::prelude::*;
+            let num_tiles = (h as usize + tile_h - 1) / tile_h;
+            (0..num_tiles).into_par_iter().for_each(|tile| {
+                let row_start = tile * tile_h;
+                let row_end = ((tile + 1) * tile_h).min(h as usize);
+                let kernel: KernelFn = unsafe { std::mem::transmute(fn_addr) };
+                let out = output_ptr as *mut u32;
+
+                // Each thread gets its own PdcContext copy (on stack)
+                let mut thread_ctx = PdcContext {
+                    builtins: ctx_builtins as *mut f64,
+                    scene: std::ptr::null_mut(),
+                    state: ctx_state as *mut u8,
+                    host: std::ptr::null_mut(),
+                };
+
+                for y in row_start..row_end {
+                    for x in 0..w as usize {
+                        let color = unsafe {
+                            kernel(
+                                &mut thread_ctx as *mut PdcContext,
+                                x as i64,
+                                y as i64,
+                                w as i64,
+                                h as i64,
+                            )
+                        };
+                        unsafe {
+                            *out.add(y * w as usize + x) = color as u32;
+                        }
+                    }
+                }
+            });
+        };
+
+        match &self.thread_pool {
+            Some(pool) => pool.install(dispatch),
+            None => dispatch(),
+        }
+
+        buf_handle
+    }
+
     fn display_buffer(&mut self, buffer_handle: i32) {
         let handle = buffer_handle as usize;
         if handle < self.buffers.len() {
-            if self.gpu_sim_runner.is_some() {
-                // GPU sim path — mark buffer for GPU present
+            let has_cpu_data = !self.buffers[handle].data.is_empty();
+            if self.gpu_sim_runner.is_some() && !has_cpu_data {
+                // GPU sim path — buffer lives on GPU, mark for GPU present
                 self.gpu_rendered_this_frame = true;
                 self.gpu_pixel_buffer_name = Some(self.buffers[handle].name.clone());
             } else {
-                // CPU path — copy buffer data to pixel_buffer (assuming u32 ARGB)
+                // CPU path — buffer has CPU data (e.g., from PDC pixel kernel),
+                // copy to pixel_buffer for display via softbuffer.
                 let buf = &self.buffers[handle];
                 let pixel_count = self.pixel_buffer.len();
                 let src = &buf.data;
@@ -1117,6 +1218,7 @@ impl PdcRuntime {
             gpu_queue: None,
             gpu_kernel_names: Vec::new(),
             thread_pool: None,
+            pdc_pixel_buffer: None,
             keypress_handlers: HashMap::new(),
             keydown_handlers: HashMap::new(),
             keyup_handlers: HashMap::new(),
@@ -1281,6 +1383,9 @@ impl PdcRuntime {
 
         // Finalize GPU pixel kernel now that init has loaded WGSL source
         self.host.finalize_gpu_pixel_kernel();
+
+        // Update has_gpu_kernels based on render mode after settings have been applied.
+        self.has_gpu_kernels = self.host.is_gpu_render();
 
         // Copy host pixel buffer to our pixel buffer (CPU path only)
         if !self.host.gpu_rendered_this_frame() {
@@ -1491,4 +1596,135 @@ pub fn key_code_to_tag(code: winit::keyboard::KeyCode) -> Option<i32> {
         KeyCode::Comma => 17,          // Key.Comma
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Helper to create a PdcRuntime from source, run init + one frame, return pixel buffer.
+    fn run_pdc_frame(src: &str, width: u32, height: u32) -> Vec<u32> {
+        let base_dir = Path::new(".");
+        let mut rt = PdcRuntime::new(src, None, width, height, base_dir)
+            .expect("PdcRuntime::new failed");
+        rt.host.set_render("cpu");
+        rt.execute_init_block(&None);
+        rt.execute_frame(0.0, &None);
+        rt.pixel_buffer.clone()
+    }
+
+    #[test]
+    fn render_solid_color() {
+        let src = r#"
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    return i32(0xFF00FF00)
+}
+
+fn frame() -> bool {
+    var buf = render(pixel)
+    display_buffer(buf)
+    return false
+}
+"#;
+        let pixels = run_pdc_frame(src, 4, 4);
+        assert_eq!(pixels.len(), 16);
+        for &p in &pixels {
+            assert_eq!(p, 0xFF00FF00, "expected solid green, got 0x{:08X}", p);
+        }
+    }
+
+    #[test]
+    fn render_gradient_varies_by_x() {
+        let src = r#"
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    var r = x * 255 / (w - 1)
+    return i32(0xFF000000) | (r << 16)
+}
+
+fn frame() -> bool {
+    var buf = render(pixel)
+    display_buffer(buf)
+    return false
+}
+"#;
+        let pixels = run_pdc_frame(src, 8, 2);
+        // First column should be black (r=0), last column should have r=255
+        let first = pixels[0];
+        let last = pixels[7];
+        assert_eq!(first & 0x00FF0000, 0x00000000, "first pixel red channel should be 0");
+        assert_eq!(last & 0x00FF0000, 0x00FF0000, "last pixel red channel should be 255");
+        // Pixels should vary across x
+        assert_ne!(pixels[0], pixels[7]);
+    }
+
+    #[test]
+    fn render_with_explicit_buffer() {
+        let src = r#"
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    return i32(0xFFFF0000)
+}
+
+fn frame() -> bool {
+    var buf = Buffer.U32()
+    render(pixel, buf)
+    display_buffer(buf)
+    return false
+}
+"#;
+        let pixels = run_pdc_frame(src, 4, 4);
+        assert_eq!(pixels.len(), 16);
+        for &p in &pixels {
+            assert_eq!(p, 0xFFFF0000, "expected solid red, got 0x{:08X}", p);
+        }
+    }
+
+    #[test]
+    fn render_reads_module_scope() {
+        let src = r#"
+var color_value = i32(0xFF0000FF)
+
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    return color_value
+}
+
+fn frame() -> bool {
+    var buf = render(pixel)
+    display_buffer(buf)
+    return false
+}
+"#;
+        let pixels = run_pdc_frame(src, 2, 2);
+        for &p in &pixels {
+            assert_eq!(p, 0xFF0000FF, "expected blue from module var, got 0x{:08X}", p);
+        }
+    }
+
+    #[test]
+    fn render_multipass_ping_pong() {
+        // First pass: write red. Second pass: read from first pass buffer (module scope).
+        let src = r#"
+var buf_a = Buffer.U32()
+var buf_b = Buffer.U32()
+
+fn pass1(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    return i32(0xFFFF0000)
+}
+
+fn pass2(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    return i32(0xFF00FF00)
+}
+
+fn frame() -> bool {
+    render(pass1, buf_a)
+    render(pass2, buf_b)
+    display_buffer(buf_b)
+    return false
+}
+"#;
+        let pixels = run_pdc_frame(src, 2, 2);
+        for &p in &pixels {
+            assert_eq!(p, 0xFF00FF00, "expected green from pass2, got 0x{:08X}", p);
+        }
+    }
 }

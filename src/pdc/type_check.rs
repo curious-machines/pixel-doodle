@@ -1216,6 +1216,24 @@ impl TypeChecker {
                     return Ok(PdcType::Void);
                 }
 
+                // render(kernel_fn) or render(kernel_fn, buffer) — PDC pixel kernel dispatch
+                if name == "render" && (args.len() == 1 || args.len() == 2) {
+                    let fn_ty = self.check_expr(&args[0])?;
+                    let expected_kernel = PdcType::FnRef {
+                        params: vec![PdcType::I32, PdcType::I32, PdcType::I32, PdcType::I32],
+                        ret: Box::new(PdcType::I32),
+                    };
+                    if fn_ty == expected_kernel {
+                        if args.len() == 2 {
+                            let buf_ty = self.check_expr(&args[1])?;
+                            self.check_compatible(&buf_ty, &PdcType::BufferHandle, args[1].span)?;
+                        }
+                        self.set_type(expr.id, PdcType::BufferHandle);
+                        return Ok(PdcType::BufferHandle);
+                    }
+                    // Fall through to existing render(KernelHandle, BufferHandle, Bool) builtin
+                }
+
                 if let Some(cast_ty) = self.is_type_cast(name) {
                     if args.len() != 1 {
                         return Err(PdcError::Type {

@@ -1881,19 +1881,32 @@ impl<'a> LlvmCodegenCtx<'a> {
             let overloads = overloads.clone();
             let arg_types: Vec<PdcType> = args.iter().map(|a| self.node_type(a.id).clone()).collect();
 
-            let (overload_idx, sig) = overloads.sigs.iter().enumerate()
-                .find(|(_, sig)| {
-                    let n = arg_types.len();
-                    n >= sig.required && n <= sig.params.len() &&
-                    sig.params[..n].iter().zip(&arg_types).all(|(p, a)| {
-                        p == a || (p.is_numeric() && a.is_numeric()) ||
-                        matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
-                    })
-                })
-                .map(|(i, s)| (i, s.clone()))
-                .ok_or_else(|| PdcError::Codegen {
-                    message: format!("no matching overload for '{name}'"),
-                })?;
+            // Find matching overload: exact match first, then compatible match.
+            // This mirrors the type checker's two-phase resolution to ensure
+            // the same overload is selected (e.g., f32 vs f64 variants).
+            let (overload_idx, sig) = {
+                let find_match = |exact: bool| {
+                    overloads.sigs.iter().enumerate()
+                        .find(|(_, sig)| {
+                            let n = arg_types.len();
+                            n >= sig.required && n <= sig.params.len() &&
+                            sig.params[..n].iter().zip(&arg_types).all(|(p, a)| {
+                                if exact {
+                                    p == a
+                                } else {
+                                    p == a || (p.is_numeric() && a.is_numeric()) ||
+                                    matches!((p, a), (PdcType::Array(_), PdcType::Array(_)))
+                                }
+                            })
+                        })
+                        .map(|(i, s)| (i, s.clone()))
+                };
+                find_match(true)
+                    .or_else(|| find_match(false))
+                    .ok_or_else(|| PdcError::Codegen {
+                        message: format!("no matching overload for '{name}'"),
+                    })?
+            };
 
             let base = mangle_name(&resolved_name);
             let mangled = if overload_idx == 0 {
@@ -1986,6 +1999,13 @@ impl<'a> LlvmCodegenCtx<'a> {
                 "display_buffer" => "pdc_display_buffer".to_string(),
                 "swap" => "pdc_swap_buffers".to_string(),
                 "run" => "pdc_run_kernel".to_string(),
+                "render" if args.len() <= 2 && matches!(self.node_type(args[0].id), PdcType::FnRef { .. }) => {
+                    if args.len() == 2 {
+                        "pdc_render_pdc_kernel_buf".to_string()
+                    } else {
+                        "pdc_render_pdc_kernel".to_string()
+                    }
+                }
                 "render" => "pdc_render_kernel".to_string(),
                 "push" => "pdc_array_push".to_string(),
                 "len" => "pdc_array_len".to_string(),

@@ -48,6 +48,7 @@ const STDLIB_POINT3D: &str = include_str!("stdlib/point3d.pdc");
 const STDLIB_POINT4D: &str = include_str!("stdlib/point4d.pdc");
 const STDLIB_AFFINE2D: &str = include_str!("stdlib/affine2d.pdc");
 const STDLIB_AFFINE3D: &str = include_str!("stdlib/affine3d.pdc");
+const STDLIB_COLOR: &str = include_str!("stdlib/color.pdc");
 
 /// Resolve a module name to source code. Checks stdlib first, then filesystem.
 fn resolve_module(name: &str, base_dir: Option<&FsPath>) -> Result<String, PdcError> {
@@ -62,6 +63,7 @@ fn resolve_module(name: &str, base_dir: Option<&FsPath>) -> Result<String, PdcEr
         "point4d" => Ok(STDLIB_POINT4D.to_string()),
         "affine2d" => Ok(STDLIB_AFFINE2D.to_string()),
         "affine3d" => Ok(STDLIB_AFFINE3D.to_string()),
+        "color" => Ok(STDLIB_COLOR.to_string()),
         _ => {
             // File-based import: resolve relative to the importing file's directory
             let base = base_dir.unwrap_or_else(|| FsPath::new("."));
@@ -1333,6 +1335,9 @@ mod tests {
 
     #[test]
     fn pdc_stdlib_affine3d() { run_stdlib_tests(STDLIB_AFFINE3D, "affine3d"); }
+
+    #[test]
+    fn pdc_stdlib_color() { run_stdlib_tests(STDLIB_COLOR, "color"); }
 
     #[test]
     fn compile_for_pipeline_basic() {

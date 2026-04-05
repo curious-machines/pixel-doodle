@@ -1,0 +1,97 @@
+// PDC Standard Library: color
+// Color packing and conversion utilities for pixel output.
+
+/// Pack f64 RGB components (0.0–1.0) into an ARGB u32 (as i32).
+pub fn pack_rgb(r: f64, g: f64, b: f64) -> i32 {
+    var ri = i32(min(max(r, 0.0), 1.0) * 255.0)
+    var gi = i32(min(max(g, 0.0), 1.0) * 255.0)
+    var bi = i32(min(max(b, 0.0), 1.0) * 255.0)
+    return i32(0xFF000000) | (ri << 16) | (gi << 8) | bi
+}
+
+/// Pack f32 RGB components (0.0–1.0) into an ARGB u32 (as i32).
+pub fn pack_rgb(r: f32, g: f32, b: f32) -> i32 {
+    var ri = i32(f32(min(max(f64(r), 0.0), 1.0)) * 255.0)
+    var gi = i32(f32(min(max(f64(g), 0.0), 1.0)) * 255.0)
+    var bi = i32(f32(min(max(f64(b), 0.0), 1.0)) * 255.0)
+    return i32(0xFF000000) | (ri << 16) | (gi << 8) | bi
+}
+
+/// Pack i64 RGB components (0–255) into an ARGB u32 (as i32).
+pub fn pack_rgb(r: i64, g: i64, b: i64) -> i32 {
+    return i32(0xFF000000) | (i32(r & 0xFF) << 16) | (i32(g & 0xFF) << 8) | i32(b & 0xFF)
+}
+
+/// Pack i32 RGB components (0–255) into an ARGB u32 (as i32).
+pub fn pack_rgb(r: i32, g: i32, b: i32) -> i32 {
+    return i32(0xFF000000) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)
+}
+
+// ── Tests ──
+
+test "pack_rgb f64 black" {
+    assert_eq(pack_rgb(0.0, 0.0, 0.0), i32(0xFF000000))
+}
+
+test "pack_rgb f64 white" {
+    assert_eq(pack_rgb(1.0, 1.0, 1.0), i32(0xFFFFFFFF))
+}
+
+test "pack_rgb f64 red" {
+    assert_eq(pack_rgb(1.0, 0.0, 0.0), i32(0xFFFF0000))
+}
+
+test "pack_rgb f64 green" {
+    assert_eq(pack_rgb(0.0, 1.0, 0.0), i32(0xFF00FF00))
+}
+
+test "pack_rgb f64 blue" {
+    assert_eq(pack_rgb(0.0, 0.0, 1.0), i32(0xFF0000FF))
+}
+
+test "pack_rgb f64 clamps" {
+    assert_eq(pack_rgb(2.0, -1.0, 0.5), pack_rgb(1.0, 0.0, 0.5))
+}
+
+test "pack_rgb f32 red" {
+    assert_eq(pack_rgb(f32(1.0), f32(0.0), f32(0.0)), i32(0xFFFF0000))
+}
+
+test "pack_rgb f32 green" {
+    assert_eq(pack_rgb(f32(0.0), f32(1.0), f32(0.0)), i32(0xFF00FF00))
+}
+
+test "pack_rgb i64 red" {
+    var r: i64 = 255
+    var g: i64 = 0
+    var b: i64 = 0
+    assert_eq(pack_rgb(r, g, b), i32(0xFFFF0000))
+}
+
+test "pack_rgb i64 white" {
+    var r: i64 = 255
+    var g: i64 = 255
+    var b: i64 = 255
+    assert_eq(pack_rgb(r, g, b), i32(0xFFFFFFFF))
+}
+
+test "pack_rgb i32 red" {
+    var r: i32 = i32(255)
+    var g: i32 = i32(0)
+    var b: i32 = i32(0)
+    assert_eq(pack_rgb(r, g, b), i32(0xFFFF0000))
+}
+
+test "pack_rgb i32 blue" {
+    var r: i32 = i32(0)
+    var g: i32 = i32(0)
+    var b: i32 = i32(255)
+    assert_eq(pack_rgb(r, g, b), i32(0xFF0000FF))
+}
+
+test "pack_rgb i32 masks overflow" {
+    var r: i32 = i32(256)
+    var g: i32 = i32(0)
+    var b: i32 = i32(0)
+    assert_eq(pack_rgb(r, g, b), pack_rgb(g, g, g))
+}
