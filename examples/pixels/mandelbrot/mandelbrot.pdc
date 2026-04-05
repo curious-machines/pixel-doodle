@@ -77,22 +77,48 @@ fn init() {
 fn frame() -> bool {
     var buf = render(pixel)
     display_buffer(buf)
+    paused = true
     return true
 }
 
 // ── Event handlers ──
 
-fn pan_left() { center_x = center_x - 0.02 / zoom }
-fn pan_right() { center_x = center_x + 0.02 / zoom }
-fn pan_up() { center_y = center_y - 0.02 / zoom }
-fn pan_down() { center_y = center_y + 0.02 / zoom }
-fn zoom_in() { zoom = zoom * 1.03 }
-fn zoom_out() { zoom = zoom / 1.03 }
+fn pan_left() {
+    center_x -= 0.02 / zoom
+    paused = false
+}
+fn pan_right() {
+    center_x += 0.02 / zoom
+    paused = false
+}
+fn pan_up() {
+    center_y -= 0.02 / zoom
+    paused = false
+}
+fn pan_down() {
+    center_y += 0.02 / zoom
+    paused = false
+}
+fn zoom_in() {
+    zoom *= 1.03
+    paused = false
+}
+fn zoom_out() {
+    zoom /= 1.03
+    paused = false
+}
 fn reset_view() {
     center_x = 0.0
     center_y = 0.0
     zoom = 1.0
     max_iter = 256
+    paused = false
 }
-fn more_iters() { max_iter = min(max_iter * 2, 4096i32) }
-fn fewer_iters() { max_iter = max(max_iter / 2, 32i32) }
+fn more_iters() {
+    max_iter = min(max_iter * 2, 4096i32)
+    paused = false
+}
+fn fewer_iters() {
+    max_iter = max(max_iter / 2, 32i32)
+    paused = false
+}
