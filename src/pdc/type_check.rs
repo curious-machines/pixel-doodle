@@ -1592,6 +1592,29 @@ impl TypeChecker {
                         self.check_compatible(&arg_ty, &var_info.field_types[i], arg.span)?;
                     }
                     PdcType::Enum(ename.clone())
+                } else if method == "render" && matches!(obj_ty, PdcType::FnRef { .. }) {
+                    // fn_ref.render() or fn_ref.render(buffer) — PDC pixel kernel dispatch
+                    if let PdcType::FnRef { ref params, ref ret } = obj_ty {
+                        if params.len() == 4 && params.iter().all(|p| *p == PdcType::I32) {
+                            let elem_ty = *ret.clone();
+                            if args.len() == 1 {
+                                let buf_ty = self.check_expr(&args[0])?;
+                                if let PdcType::BufferHandle(ref buf_elem) = buf_ty {
+                                    self.check_compatible(&elem_ty, buf_elem, args[0].span)?;
+                                }
+                                self.set_type(expr.id, buf_ty.clone());
+                                return Ok(buf_ty);
+                            } else if args.is_empty() {
+                                let buf_ty = PdcType::BufferHandle(Box::new(elem_ty));
+                                self.set_type(expr.id, buf_ty.clone());
+                                return Ok(buf_ty);
+                            }
+                        }
+                    }
+                    return Err(PdcError::Type {
+                        span: expr.span,
+                        message: "invalid pixel kernel signature for render (expected fn(i32, i32, i32, i32) -> T)".into(),
+                    });
                 } else if obj_ty == PdcType::SceneHandle && method == "run" {
                     // scene.run() → pdc_run_scene(ctx, handle)
                     if !args.is_empty() {

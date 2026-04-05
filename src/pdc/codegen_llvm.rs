@@ -1456,19 +1456,21 @@ impl<'a> LlvmCodegenCtx<'a> {
             }
             Expr::MethodCall { object, method, args } => {
                 let obj_ty = self.node_type(object.id).clone();
-                if let PdcType::Module(ref mod_name) = obj_ty {
-                    // Buffer factory: Buffer.I32() → pdc_create_buffer(ctx, type_code)
-                    if mod_name == "Buffer" {
-                        let type_code = match method.as_str() {
-                            "F32" => 0, "I32" => 1, "U32" => 2,
-                            "Vec2F32" => 3, "Vec3F32" => 4, "Vec4F32" => 5,
-                            _ => 0,
-                        };
-                        let code_val = self.i32_const(type_code);
-                        return self.emit_runtime_call_raw("pdc_create_buffer",
-                            &[self.ctx_ptr.into(), code_val.into()],
+                // fn_ref.render() or fn_ref.render(buffer) — PDC pixel kernel dispatch
+                if matches!(obj_ty, PdcType::FnRef { .. }) && method == "render" {
+                    let kernel_fn = self.emit_expr(object)?;
+                    if args.len() == 1 {
+                        let buf = self.emit_expr(&args[0])?;
+                        return self.emit_runtime_call_raw("pdc_render_pdc_kernel_buf",
+                            &[self.ctx_ptr.into(), kernel_fn, buf],
+                            Some(self.context.i32_type().into()));
+                    } else {
+                        return self.emit_runtime_call_raw("pdc_render_pdc_kernel",
+                            &[self.ctx_ptr.into(), kernel_fn],
                             Some(self.context.i32_type().into()));
                     }
+                }
+                if let PdcType::Module(ref mod_name) = obj_ty {
                     // Kernel factory: Kernel.Sim("name", "path") → pdc_load_kernel(ctx, name_ptr, name_len, path_ptr, path_len, kind)
                     if mod_name == "Kernel" {
                         let kind = match method.as_str() {

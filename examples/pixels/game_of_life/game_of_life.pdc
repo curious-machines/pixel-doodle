@@ -120,17 +120,17 @@ fn init() {
     set_keypress(Key.BracketLeft, speed_down)
     set_mousedown(inject_at_mouse)
 
-    render(init_cell, grid)
+    init_cell.render(grid)
 }
 
 fn frame() -> bool {
     for _i in 0..iterations {
-        render(step_cell, grid_next)
+        step_cell.render(grid_next)
         swap(grid, grid_next)
     }
 
-    var pixels = render(vis_cell)
-    display_buffer(pixels)
+    var pixels = vis_cell.render()
+    pixels.display_buffer()
     return true
 }
 
@@ -139,6 +139,6 @@ fn speed_down() { iterations = max(iterations - 1, 1i32) }
 fn inject_at_mouse() {
     inject_x = mouse_x
     inject_y = mouse_y
-    render(inject_cell, grid_next)
+    inject_cell.render(grid_next)
     swap(grid, grid_next)
 }
