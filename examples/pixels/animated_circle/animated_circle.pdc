@@ -1,0 +1,61 @@
+// PDC pixel kernel: animated pulsing circle SDF
+// Equivalent to examples/sdf/animated_circle but written entirely in PDC.
+
+import { clamp, mix, smoothstep } from math
+import { pack_rgb } from color
+
+builtin const time: f64
+
+fn pixel(x: i32, y: i32, w: i32, h: i32) -> i32 {
+    var aspect = f32(w) / f32(h)
+    var px = (f32(x) / f32(w) - 0.5) * 3.5
+    var py = (f32(y) / f32(h) - 0.5) * 3.5 / aspect
+
+    // Pulsing radius
+    var r = 0.4 + 0.15 * f32(sin(time * 3.0))
+
+    // SDF: circle at origin with animated radius
+    var d = f32(sqrt(f64(px * px + py * py))) - r
+
+    // Coloring: warm outside, cool inside
+    var cr = f32(0.0)
+    var cg = f32(0.0)
+    var cb = f32(0.0)
+    if d > 0.0 {
+        cr = 0.9
+        cg = 0.6
+        cb = 0.3
+    } else {
+        cr = 0.65
+        cg = 0.85
+        cb = 1.0
+    }
+
+    // Distance-based darkening
+    var abs_d = d
+    if abs_d < 0.0 { abs_d = -abs_d }
+    var darken = 1.0 - f32(exp(f64(-6.0 * abs_d)))
+    cr = cr * darken
+    cg = cg * darken
+    cb = cb * darken
+
+    // Contour rings
+    var rings = 0.8 + 0.2 * f32(cos(f64(150.0 * d)))
+    cr = cr * rings
+    cg = cg * rings
+    cb = cb * rings
+
+    // Edge highlight
+    var edge = 1.0 - smoothstep(f32(0.0), f32(0.01), abs_d)
+    cr = mix(cr, f32(1.0), edge)
+    cg = mix(cg, f32(1.0), edge)
+    cb = mix(cb, f32(1.0), edge)
+
+    return pack_rgb(cr, cg, cb)
+}
+
+fn frame() -> bool {
+    var buf = render(pixel)
+    display_buffer(buf)
+    return true
+}
